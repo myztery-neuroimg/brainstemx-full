@@ -7,6 +7,11 @@ set -o pipefail
 # Process DiCOM MRI images into NiFTi files appropriate for use in FSL/freeview
 # My intention is to try to use the `ants` library as well where it can optimise conversions etc.. this is a second attempt only
 
+# Function for logging with timestamps
+log_message() {
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$log_file"
+}   
+
 SRC_DIR="../DiCOM"
 EXTRACT_DIR="../extracted"
 RESULTS_DIR="../mri_results"
@@ -14,7 +19,6 @@ RESULTS_DIR="../mri_results"
 N4_ITERATIONS="50x50x50x50"
 N4_CONVERGENCE="0.000001"
 
-#!/usr/local/bin/bash
 # Configuration parameters for MRI processing pipeline
 # Optimized for high-quality processing (512x512x512 resolution)
 
@@ -33,7 +37,7 @@ LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
 
 # Data type for processing (float32 for processing, int16 for storage)
 PROCESSING_DATATYPE="float"
-OUTPUT_DATATYPE="int16"
+OUTPUT_DATATYPE="int"
 
 # Quality settings (LOW, MEDIUM, HIGH)
 QUALITY_PRESET="HIGH"
@@ -166,7 +170,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Log function
-log_with_formatted_message_unused() {
+log_formatted() {
   local level=$1
   local message=$2
   
@@ -183,8 +187,8 @@ standardize_datatype() {
   local output=$2
   local datatype=${3:-"float"}
   
-  fslmaths "$input" -dt "$datatype" "$output" -odt "$datatype"
-  log "Standardized $input to $datatype datatype"
+  fslmaths "$input"  "$output" -odt "$datatype"
+  log_message "Standardized $input to $datatype datatype"
 }
 
 # Function to set sequence-specific parameters
@@ -216,7 +220,7 @@ set_sequence_params() {
         params+=("$THRESHOLD_WM_SD_MULTIPLIER")
     fi
     
-    log "${params[@]}"
+    log_message "${params[@]}"
 }
 
 
@@ -229,12 +233,12 @@ check_command() {
   local install_hint=${3:-""}
   
   if command -v $cmd &> /dev/null; then
-     log_with_formatted_message_unused "SUCCESS" "✓ $package is installed ($(command -v $cmd))"
+     log_formatted "SUCCESS" "✓ $package is installed ($(command -v $cmd))"
     return 0
   else
-    log_with_formatted_message_unused "ERROR" "✗ $package is not installed or not in PATH"
+    log_formatted "ERROR" "✗ $package is not installed or not in PATH"
     if [ -n "$install_hint" ]; then
-      log_with_formatted_message_unused "INFO:  $install_hint"
+      log_formatted "INFO"  "$install_hint"
     fi
     return 1
   fi
@@ -245,13 +249,13 @@ check_ants() {
   local ants_tools=("antsRegistrationSyN.sh" "N4BiasFieldCorrection" "antsApplyTransforms" "antsBrainExtraction.sh")
   local missing=0
   
-  log_with_formatted_message_unused "INFO: Checking ANTs tools..."
+  log_formatted "INFO" "Checking ANTs tools..."
   
   # Check for ANTSPATH environment variable
   if [ -z "$ANTSPATH" ]; then
-    log_with_formatted_message_unused "WARNING" "ANTSPATH environment variable is not set. This may cause issues with some ANTs scripts."
+    log_formatted "WARNING" "ANTSPATH environment variable is not set. This may cause issues with some ANTs scripts."
   else
-    log_with_formatted_message_unused "SUCCESS" "ANTSPATH is set to $ANTSPATH"
+    log_formatted "SUCCESS" "ANTSPATH is set to $ANTSPATH"
   fi
   
   # Check each required ANTs tool
@@ -262,9 +266,9 @@ check_ants() {
   done
   
   if [ $missing -gt 0 ]; then
-   log_with_formatted_message_unused  "ERROR" "Some ANTs tools are missing. Install ANTs from:"
-    log_with_formatted_message_unused "INFO" "  • Using Homebrew: brew install ants"
-    log_with_formatted_message_unused "INFO" "  • Or from source: https://github.com/ANTsX/ANTs/wiki/Compiling-ANTs-on-MacOS"
+   log_formatted  "ERROR" "Some ANTs tools are missing. Install ANTs from:"
+    log_formatted "INFO" "  • Using Homebrew: brew install ants"
+    log_formatted "INFO" "  • Or from source: https://github.com/ANTsX/ANTs/wiki/Compiling-ANTs-on-MacOS"
     return 1
   else
     return 0
@@ -276,13 +280,13 @@ check_fsl() {
   local fsl_tools=("fslinfo" "fslstats" "fslmaths" "bet" "flirt" "fast")
   local missing=0
   
-  log_with_formatted_message_unused "INFO" "Checking FSL tools..."
+  log_formatted "INFO" "Checking FSL tools..."
   
   # Check for FSLDIR environment variable
   if [ -z "$FSLDIR" ]; then
-    log_with_formatted_message_unused "WARNING" "FSLDIR environment variable is not set. This may cause issues with some FSL scripts."
+    log_formatted "WARNING" "FSLDIR environment variable is not set. This may cause issues with some FSL scripts."
   else
-    log_with_formatted_message_unused "SUCCESS" "FSLDIR is set to $FSLDIR"
+    log_formatted "SUCCESS" "FSLDIR is set to $FSLDIR"
   fi
   
   # Check each required FSL tool
@@ -293,9 +297,9 @@ check_fsl() {
   done
   
   if [ $missing -gt 0 ]; then
-    log_with_formatted_message_unused "ERROR" "Some FSL tools are missing. Install FSL from:"
-    log_with_formatted_message_unused "INFO" "  • Download from: https://fsl.fmrib.ox.ac.uk/fsl/fslwiki/FslInstallation"
-    log_with_formatted_message_unused "INFO" "  • Follow the macOS installation instructions"
+    log_formatted "ERROR" "Some FSL tools are missing. Install FSL from:"
+    log_formatted "INFO" "  • Download from: https://fsl.fmrib.ox.ac.uk/fsl/fslwiki/FslInstallation"
+    log_formatted "INFO" "  • Follow the macOS installation instructions"
     return 1
   else
     return 0
@@ -307,13 +311,13 @@ check_freesurfer() {
   local fs_tools=("mri_convert" "freeview")
   local missing=0
   
-  log_with_formatted_message_unused "INFO" "Checking FreeSurfer tools..."
+  log_formatted "INFO" "Checking FreeSurfer tools..."
   
   # Check for FREESURFER_HOME environment variable
   if [ -z "$FREESURFER_HOME" ]; then
-    log_with_formatted_message_unused "WARNING" "FREESURFER_HOME environment variable is not set. This may cause issues with some FreeSurfer tools."
+    log_formatted "WARNING" "FREESURFER_HOME environment variable is not set. This may cause issues with some FreeSurfer tools."
   else
-    log_with_formatted_message_unused "SUCCESS" "FREESURFER_HOME is set to $FREESURFER_HOME"
+    log_formatted "SUCCESS" "FREESURFER_HOME is set to $FREESURFER_HOME"
   fi
   
   # Check each required FreeSurfer tool
@@ -324,9 +328,9 @@ check_freesurfer() {
   done
   
   if [ $missing -gt 0 ]; then
-    log_with_formatted_message_unused "ERROR" "Some FreeSurfer tools are missing. Install FreeSurfer from:"
-    log_with_formatted_message_unused "INFO" "  • Download from: https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall"
-    log_with_formatted_message_unused "INFO" "  • Follow the macOS installation instructions"
+    log_formatted "ERROR" "Some FreeSurfer tools are missing. Install FreeSurfer from:"
+    log_formatted "INFO" "  • Download from: https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall"
+    log_formatted "INFO" "  • Follow the macOS installation instructions"
     return 1
   else
     return 0
@@ -335,7 +339,7 @@ check_freesurfer() {
 
 # Function to check for Convert3D (c3d)
 check_c3d() {
-  log_with_formatted_message_unused "INFO" "Checking Convert3D..."
+  log_formatted "INFO" "Checking Convert3D..."
   
   if ! check_command "c3d" "Convert3D" "Download from: http://www.itksnap.org/pmwiki/pmwiki.php?n=Downloads.C3D"; then
     return 1
@@ -346,41 +350,41 @@ check_c3d() {
 
 # Function to check for dcm2niix
 check_dcm2niix() {
-  log_with_formatted_message_unused "INFO" "Checking dcm2niix..."
+  log_formatted "INFO" "Checking dcm2niix..."
   
   if ! check_command "dcm2niix" "dcm2niix" "Install with: brew install dcm2niix"; then
     return 1
   else
     # Check version
     local version=$(dcm2niix -v 2>&1 | head -n 1)
-    log_with_formatted_message_unused "INFO" "  dcm2niix version: $version"
+    log_formatted "INFO" "  dcm2niix version: $version"
     return 0
   fi
 }
 
 # Check if running on macOS
 check_os() {
-  log_with_formatted_message_unused "INFO" "Checking operating system..."
+  log_formatted "INFO" "Checking operating system..."
   
   if [[ "$(uname)" == "Darwin" ]]; then
-    log_with_formatted_message_unused "SUCCESS" "✓ Running on macOS"
+    log_formatted "SUCCESS" "✓ Running on macOS"
     
     # Check if running on Apple Silicon
     if [[ "$(uname -m)" == "arm64" ]]; then
-      log_with_formatted_message_unused "SUCCESS" "✓ Running on Apple Silicon"
+      log_formatted "SUCCESS" "✓ Running on Apple Silicon"
     else
-      log_with_formatted_message_unused "INFO" "Running on Intel-based Mac"
+      log_formatted "INFO" "Running on Intel-based Mac"
     fi
     return 0  
   else
-    log_with_formatted_message_unused "ERROR" "This script is designed for macOS"
+    log_formatted "ERROR" "This script is designed for macOS"
     exit 1
   fi
 }
 
 error_count=0
 
-log_with_formatted_message_unused "INFO" "==== MRI Processing Dependency Checker ===="
+log_formatted "INFO" "==== MRI Processing Dependency Checker ===="
 
 check_os || error_count=$((error_count+1))
 check_dcm2niix || error_count=$((error_count+1))
@@ -389,22 +393,22 @@ check_fsl || error_count=$((error_count+1))
 check_freesurfer || error_count=$((error_count+1))
 check_c3d || error_count=$((error_count+1))
 
-log_with_formatted_message_unused "INFO" "==== Checking optional but recommended tools ===="
+log_formatted "INFO" "==== Checking optional but recommended tools ===="
 
 # Check for ImageMagick (useful for image manipulation)
-check_command "convert" "ImageMagick" "Install with: brew install imagemagick" || log_with_formatted_message_unused "WARNING" "ImageMagick is recommended for image conversions"
+check_command "convert" "ImageMagick" "Install with: brew install imagemagick" || log_formatted "WARNING" "ImageMagick is recommended for image conversions"
 
 # Check for parallel (useful for parallel processing)
-check_command "parallel" "GNU Parallel" "Install with: brew install parallel" || log_with_formatted_message_unused "WARNING" "GNU Parallel is recommended for faster processing"
+check_command "parallel" "GNU Parallel" "Install with: brew install parallel" || log_formatted "WARNING" "GNU Parallel is recommended for faster processing"
 
 # Summary
-log_with_formatted_message_unused "INFO" "==== Dependency Check Summary ===="
+log_formatted "INFO" "==== Dependency Check Summary ===="
 
 if [ $error_count -eq 0 ]; then
-  log_with_formatted_message_unused "SUCCESS" "All required dependencies are installed!"
+  log_formatted "SUCCESS" "All required dependencies are installed!"
 else
-  log_with_formatted_message_unused "ERROR" "$error_count required dependencies are missing."
-  log_with_formatted_message_unused "INFO" "Please install the missing dependencies before running the processing pipeline."
+  log_formatted "ERROR" "$error_count required dependencies are missing."
+  log_formatted "INFO" "Please install the missing dependencies before running the processing pipeline."
   exit 1
 fi
 
@@ -418,17 +422,21 @@ log_file="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
 
 # Check for required dependencies
 if ! command -v fslstats &> /dev/null || ! command -v fslroi &> /dev/null; then
-    log "Error: FSL is not installed or not in your PATH."
+    log_message "Error: FSL is not installed or not in your PATH."
     exit 1
 fi
 
 NUM_SRC_DICOM_FILES=`find ${SRC_DIR} -name Image"*"  | wc -l`
 
-log "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to cancel the script if that's wrong. Going to extract to ${EXTRACT_DIR}"
+log_message "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to cancel the script if that's wrong. Going to extract to ${EXTRACT_DIR}"
 sleep 5 
 
 combine_multiaxis_images() {
     local sequence_type="$1"
+    # Handle different naming conventions
+    if [ "$sequence_type" = "T1" ]; then
+        sequence_type="MPRAGE"
+    fi
     local output_dir="$2"
     
     # Create output directory
@@ -439,11 +447,11 @@ combine_multiaxis_images() {
     cor_files=($(find "$EXTRACT_DIR" -name "*COR*${sequence_type}*.nii.gz"))
     ax_files=($(find "$EXTRACT_DIR" -name "*AX*${sequence_type}*.nii.gz"))
     
-    log_with_formatted_message_unused "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
+    log_formatted "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
     
     # Skip if no files found
     if [ ${#sag_files[@]} -eq 0 ] && [ ${#cor_files[@]} -eq 0 ] && [ ${#ax_files[@]} -eq 0 ]; then
-        log_with_formatted_message_unused "WARNING" "No ${sequence_type} files found to combine"
+        log_formatted "WARNING" "No ${sequence_type} files found to combine"
         return 1
     fi
     
@@ -497,7 +505,7 @@ combine_multiaxis_images() {
     local output_file="${output_dir}/${sequence_type}_combined_highres.nii.gz"
     
     # Register and combine the best files using ANTs
-    log_with_formatted_message_unused "INFO" "Combining best ${sequence_type} images to create high-resolution volume"
+    log_formatted "INFO" "Combining best ${sequence_type} images to create high-resolution volume"
     
     if [ -n "$best_sag" ] && [ -n "$best_cor" ] && [ -n "$best_ax" ]; then
         # Use ANTs multivariate template creation to combine the three views
@@ -523,7 +531,7 @@ combine_multiaxis_images() {
         # Ensure INT16 output format
         standardize_datatype "$output_file" "$output_file" "$OUTPUT_DATATYPE"
         
-        log_with_formatted_message_unused "SUCCESS" "Created high-resolution ${sequence_type} volume: $output_file"
+        log_formatted "SUCCESS" "Created high-resolution ${sequence_type} volume: $output_file"
         return 0
     elif [ -n "$best_sag" ] || [ -n "$best_cor" ] || [ -n "$best_ax" ]; then
         # If we have at least one orientation, use that
@@ -540,10 +548,10 @@ combine_multiaxis_images() {
         cp "$best_file" "$output_file"
         standardize_datatype "$output_file" "$output_file" "$OUTPUT_DATATYPE"
         
-        log_with_formatted_message_unused "INFO" "Only one orientation available for ${sequence_type}, using: $best_file"
+        log_formatted "INFO" "Only one orientation available for ${sequence_type}, using: $best_file"
         return 0
     else
-        log_with_formatted_message_unused "ERROR" "No suitable ${sequence_type} files found"
+        log_formatted "ERROR" "No suitable ${sequence_type} files found"
         return 1
     fi
 }
@@ -567,51 +575,44 @@ get_n4_parameters() {
         shrink=$N4_SHRINK_FLAIR
     fi
     
-    #log "$iterations" "$convergence" "$bspline" "$shrink"
+    #log_message "$iterations" "$convergence" "$bspline" "$shrink"
 }
 
-
-# Function for logging with timestamps
-log() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$log_file"
-}
 
 # Step 1: Convert DICOM to NIfTI using dcm2niix with Siemens optimizations
-log "==== Step 1: DICOM to NIfTI Conversion ===="
-log "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
+log_message "==== Step 1: DICOM to NIfTI Conversion ===="
+log_message "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
 dcm2niix -b y -z y -f "%p_%s" -o "$EXTRACT_DIR" -m y -p y -s y "${SRC_DIR}"
 
 # Check conversion success
 if [ $(find "$EXTRACT_DIR" -name "*.nii.gz" | wc -l) -eq 0 ]; then
-    log "⚠️ No NIfTI files created. DICOM conversion may have failed."
+    log_message "⚠️ No NIfTI files created. DICOM conversion may have failed."
     exit 1
 fi
 
 sleep 5
 
 find "${EXTRACT_DIR}" -name "*.nii.gz" -print0 | while IFS= read -r -d '' file; do
-  log "Checking ${file}..:"
-  fslinfo "${file}"
-  fslstats "${file}" -R -M -S
+  log_message "Checking ${file}..:"
+  fslinfo "${file}" >> ${EXTRACTED_DIR}/tmp_fslinfo.log
+  fslstats "${file}" -R -M -S >> ${EXTRACTED_DIR}/tmp_fslinfo.log
 done
 
-log "==== Combining multi-axis images for high-resolution volumes ===="
+log_message "==== Combining multi-axis images for high-resolution volumes ===="
 combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
 combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
 combine_multiaxis_images "SWI" "${RESULTS_DIR}/combined"
 COMBINED_DIR="${RESULTS_DIR}/combined"
 
 
-echo "Opening freeview with all the files in case you want to check"
+log "Opening freeview with all the files in case you want to check"
 nohup freeview ${RESULTS_DIR}/combined/*.nii.gz &
-
-echo "Continuing anyway.. "
 
 # Input directory
 TRIMMED_OUTPUT_SUFFIX="${EXTRACT_DIR}_trimmed"
 
-# Loop over all NIfTI files in the directory
-for file in ${RESULTS_DIR}/combined/*.nii.gz; do
+process_all_nifti_files_in_dir(){
+    file="$1"
     # Skip if no files are found
     [ -e "$file" ] || continue
 
@@ -671,13 +672,16 @@ for file in ${RESULTS_DIR}/combined/*.nii.gz; do
 
     echo "Saved trimmed file: ${output_file}"
     fslinfo "${output_file}"
-done
+}
+
+export -f process_all_nifti_files_in_dir  # Ensure function is available in subshells
+
+find "${RESULTS_DIR}/combined" -name "*.nii.gz" -print0 | parallel -0 -j 8 process_all_nifti_files_in_dir {}
 
 echo "✅ All files processed to trim missing slices."
 
-
 # Step 2: N4 Bias Field Correction with ANTs
-log "==== Step 2: ANTs N4 Bias Field Correction ===="
+log_message "==== Step 2: ANTs N4 Bias Field Correction ===="
 mkdir -p "${RESULTS_DIR}/bias_corrected"
 
 # N4BiasFieldCorrection parameters
@@ -718,30 +722,43 @@ mkdir -p "${RESULTS_DIR}/bias_corrected"
 ###Controls smoothness of the B-spline interpolation
 ###Range: 0-5 (higher = smoother but more computation)
 
-find "$COMBINED_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0  | while IFS= read -r -d '' file; do
-    basename=$(basename "$file" .nii.gz)
-    output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
-    
-    log "Performing bias correction on: $basename"
-    
-    # Create an initial brain mask for better bias correction
-    antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" -e "$ANTSPATH/data/T_template0.nii.gz" -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
-    n4_params=($(get_n4_parameters "$file"))
-    N4BiasFieldCorrection -d 3 \
-      -i "$file" \
-      -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
-      -o "$output_file" \
-      -b [${n4_params[2]}] \
-      -s ${n4_params[3]} \
-      -c "[${n4_params[0]},${n4_params[1]}]"
-        
-    log "Saved bias-corrected image to: $output_file"
-done
+process_n4_correction() {
+    local file="$1"
+    local basename=$(basename "$file" .nii.gz)
+    local output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
 
-log "✅ Bias field correction complete."
+    log_message "Performing bias correction on: $basename"
+
+    # Create an initial brain mask for better bias correction
+    antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
+        -e "$ANTSPATH/data/T_template0.nii.gz" \
+        -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
+        -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
+
+    # Get sequence-specific N4 parameters
+    n4_params=($(get_n4_parameters "$file"))
+
+    # Run N4 bias correction
+    N4BiasFieldCorrection -d 3 \
+        -i "$file" \
+        -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
+        -o "$output_file" \
+        -b [${n4_params[2]}] \
+        -s ${n4_params[3]} \
+        -c "[${n4_params[0]},${n4_params[1]}]"
+
+    log_message "Saved bias-corrected image to: $output_file"
+}
+
+export -f process_n4_correction get_n4_parameters log_message  # Export functions
+
+find "$COMBINED_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | \
+parallel -0 -j 8 process_n4_correction {}
+
+log_message "✅ Bias field correction complete."
 
 # Step 3: ANTs-based motion correction and registration
-log "==== Step 3: ANTs Motion Correction and Registration ===="
+log_message "==== Step 3: ANTs Motion Correction and Registration ===="
 mkdir -p "${RESULTS_DIR}/registered"
 
 # First identify a T1w reference image if available
@@ -765,11 +782,11 @@ if [ ${#t1_files[@]} -gt 0 ]; then
   done
   
   reference_image="$best_t1"
-  log "Using ${reference_image} as reference for registration"
+  log_message "Using ${reference_image} as reference for registration"
 else
    # If no T1w found, use the first file
    reference_image=$(find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" | head -1)
-   log "No T1w reference found. Using ${reference_image} as reference"
+   log_message "No T1w reference found. Using ${reference_image} as reference"
 fi
 
 # Process all images - register to the reference
@@ -777,7 +794,7 @@ find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read 
     basename=$(basename "$file" .nii.gz)
     output_prefix="${RESULTS_DIR}/registered/${basename}_"
     
-    log "Registering: $basename to reference using ANTs"
+    log_message "Registering: $basename to reference using ANTs"
     
     # For FLAIR or T2 to T1 registration, use mutual information metric
     # This handles cross-modality registration better
@@ -802,16 +819,16 @@ find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read 
             -j 1
     fi
     
-    log "Saved registered image to: ${output_prefix}Warped.nii.gz"
+    log_message "Saved registered image to: ${output_prefix}Warped.nii.gz"
     
     # Create a symlink with a more intuitive name
     ln -sf "${output_prefix}Warped.nii.gz" "${RESULTS_DIR}/registered/${basename}_reg.nii.gz"
 done
 
-log "✅ ANTs registration complete."
+log_message "✅ ANTs registration complete."
 
 # Step 4: ANTs-based quality assessment 
-log "==== Step 4: ANTs-based Quality Assessment ===="
+log_message "==== Step 4: ANTs-based Quality Assessment ===="
 mkdir -p "${RESULTS_DIR}/quality_checks"
 
 # Process each registered file
@@ -819,7 +836,7 @@ find "${RESULTS_DIR}/registered" -name "*reg.nii.gz" -print0 | while IFS= read -
     basename=$(basename "$file" .nii.gz)
     output_prefix="${RESULTS_DIR}/quality_checks/${basename}_"
     
-    log "Performing quality checks on: $basename"
+    log_message "Performing quality checks on: $basename"
     
     # Extract brain with ANTs for more accurate SNR calculation
     antsBrainExtraction.sh -d 3 \
@@ -846,29 +863,29 @@ find "${RESULTS_DIR}/registered" -name "*reg.nii.gz" -print0 | while IFS= read -
     
     # Save to log
     echo "$basename,$snr" >> "${RESULTS_DIR}/quality_checks/snr_values.csv"
-    log "SNR for $basename: $snr"
+    log_message "SNR for $basename: $snr"
     
     # For qualitative assessment, generate a check image
     CreateTiledMosaic -i "$file" -r "$reference_image" -o "${output_prefix}check.png" -a 0.3 -t -1x-1 -p mask -m "${output_prefix}BrainExtractionMask.nii.gz"
 done
 
-log "✅ Quality assessment complete."
+log_message "✅ Quality assessment complete."
 
 # Step 5: ANTs-based intensity normalization for FLAIR
-log "==== Step 5: ANTs-based Intensity Normalization ===="
+log_message "==== Step 5: ANTs-based Intensity Normalization ===="
 mkdir -p "${RESULTS_DIR}/intensity_normalized"
 
 # Find all FLAIR images after registration
 flair_files=($(find "$RESULTS_DIR/registered" -name "*FLAIR*reg.nii.gz"))
 
 if [ ${#flair_files[@]} -gt 0 ]; then
-    log "Found ${#flair_files[@]} FLAIR images to normalize"
+    log_message "Found ${#flair_files[@]} FLAIR images to normalize"
     
     for file in "${flair_files[@]}"; do
         basename=$(basename "$file" .nii.gz)
         output_file="${RESULTS_DIR}/intensity_normalized/${basename}_norm.nii.gz"
         
-        log "Normalizing: $basename"
+        log_message "Normalizing: $basename"
         
         # Advanced intensity normalization using N4 and histogram matching
         ImageMath 3 "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz" RescaleImage "$file" 0 1000
@@ -884,17 +901,17 @@ if [ ${#flair_files[@]} -gt 0 ]; then
         # Clean up
         rm -f "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz"
         
-        log "Saved intensity-normalized image to: $output_file"
+        log_message "Saved intensity-normalized image to: $output_file"
     done
     
-    log "✅ Intensity normalization complete for FLAIR images."
+    log_message "✅ Intensity normalization complete for FLAIR images."
 else
-    log "⚠️ No FLAIR images found for intensity normalization."
+    log_message "⚠️ No FLAIR images found for intensity normalization."
 fi
 
 # Step 6: Hyperintensity detection for FLAIR (using ANTs tools)
 if [ ${#flair_files[@]} -gt 0 ]; then
-    log "==== Step 6: Hyperintensity Detection on FLAIR ===="
+    log_message "==== Step 6: Hyperintensity Detection on FLAIR ===="
     mkdir -p "${RESULTS_DIR}/hyperintensities"
     
     for file in "${flair_files[@]}"; do
@@ -908,7 +925,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
             input_file="$file"
         fi
         
-        log "Detecting hyperintensities on: $basename"
+        log_message "Detecting hyperintensities on: $basename"
         
         # First get brain mask
         cp "${RESULTS_DIR}/quality_checks/${basename}_BrainExtractionMask.nii.gz" "${output_prefix}brain_mask.nii.gz"
@@ -924,7 +941,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
         
         # If T1 is available, use it for tissue segmentation
         if [ -n "$t1_reg" ]; then
-            log "Using $t1_reg for tissue segmentation"
+            log_message "Using $t1_reg for tissue segmentation"
             
             # Run ANTs segmentation on T1
              Atropos -d 3 \
@@ -944,10 +961,10 @@ if [ ${#flair_files[@]} -gt 0 ]; then
             ThresholdImage 3 "${output_prefix}atropos_segmentation.nii.gz" "${output_prefix}gm_mask.nii.gz" 2 2
 
 
-            log "T1-based tissue segmentation complete."
+            log_message "T1-based tissue segmentation complete."
         else
             # Fallback to intensity-based segmentation on FLAIR
-            log "No T1 found. Using intensity-based segmentation on FLAIR."
+            log_message "No T1 found. Using intensity-based segmentation on FLAIR."
             
             # Use Otsu thresholding to create rough tissue classes
             ThresholdImage 3 "$input_file" "${output_prefix}otsu.nii.gz" Otsu 3 "${output_prefix}brain_mask.nii.gz"
@@ -960,7 +977,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
         fi
         
   # Method 1: Morphological approach for hyperintensity detection
-  log "Using morphological approach for hyperintensity detection..."
+  log_message "Using morphological approach for hyperintensity detection..."
   
   # First get WM statistics for initial threshold
   wm_mean=$(ImageStats "$input_file" "${output_prefix}wm_mask.nii.gz" 2 | awk '{print $2}')
@@ -974,7 +991,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
   
   # Define threshold based on sequence type
   threshold=$(echo "$wm_mean + $threshold_multiplier * $wm_sd" | bc -l)
-  log "$sequence_type WM mean: $wm_mean, WM SD: $wm_sd, Threshold multiplier: $threshold_multiplier, Final threshold: $threshold"
+  log_message "$sequence_type WM mean: $wm_mean, WM SD: $wm_sd, Threshold multiplier: $threshold_multiplier, Final threshold: $threshold"
   
   # Initial threshold using intensity
   ThresholdImage 3 "$input_file" "${output_prefix}init_threshold.nii.gz" $threshold 99999 "${output_prefix}brain_mask.nii.gz"
@@ -1004,14 +1021,14 @@ if [ ${#flair_files[@]} -gt 0 ]; then
   
   # Calculate final hyperintensity volume and other metrics
   hyper_voxels=$(ImageStats "${output_prefix}hyperintensities_clean.nii.gz" 0 | grep "Voxels" | cut -d: -f2)
-  log "Detected $hyper_voxels hyperintensity voxels"
+  log_message "Detected $hyper_voxels hyperintensity voxels"
   
   # Measure intensity distribution within hyperintensities
   mean_intensity=$(ImageStats "$input_file" "${output_prefix}hyperintensities_clean.nii.gz" 2 | awk '{print $2}')
   peak_intensity=$(ImageStats "$input_file" "${output_prefix}hyperintensities_clean.nii.gz" 9 | awk '{print $2}')
-  log "Hyperintensity mean intensity: $mean_intensity, peak intensity: $peak_intensity"
+  log_message "Hyperintensity mean intensity: $mean_intensity, peak intensity: $peak_intensity"
   
-  log "✅ Morphological hyperintensity detection complete."
+  log_message "✅ Morphological hyperintensity detection complete."
   
           
  # Create overlay files for visualization in freeview
@@ -1028,7 +1045,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
  # Also convert the normalized FLAIR for viewing
  mri_convert "$input_file" "${output_prefix}flair_norm.mgz"
           
- log "Converted results to .mgz format for Freeview."
+ log_message "Converted results to .mgz format for Freeview."
           
  # Create a convenience script for opening in freeview with proper overlays
  cat > "${output_prefix}view_in_freeview.sh" << EOL
@@ -1043,26 +1060,26 @@ EOL
 fi
 
 # Final step: Create cropped versions with padding using ANTs (better than FSL's fslroi)
-log "==== Creating Cropped Versions with Padding ===="
+log_message "==== Creating Cropped Versions with Padding ===="
 mkdir -p "${RESULTS_DIR}/cropped"
 
 find "${RESULTS_DIR}/registered" -name "*reg.nii.gz" -print0 | while IFS= read -r -d '' file; do
     basename=$(basename "$file" .nii.gz)
     output_file="${RESULTS_DIR}/cropped/${basename}_cropped.nii.gz"
     
-    log "Creating cropped version with padding for: $basename"
+    log_message "Creating cropped version with padding for: $basename"
     
     # Use ExtractRegionFromImageByMask from ANTs
     # This provides better cropping with customizable padding
     c3d "$file" -as S "${RESULTS_DIR}/quality_checks/${basename}_BrainExtractionMask.nii.gz" -push S -thresh $C3D_CROP_THRESHOLD 1 1 0 -trim ${C3D_PADDING_MM}mm -o "$output_file"
     
-    log "Saved cropped file: $output_file"
+    log_message "Saved cropped file: $output_file"
 done
 
-log "✅ All processing steps complete!"
+log_message "✅ All processing steps complete!"
 
 # Create a summary report
-log "==== Creating Summary Report ===="
+log_message "==== Creating Summary Report ===="
 
 # Find all generated hyperintensity files
 hyperintensity_files=($(find "${RESULTS_DIR}/hyperintensities" -name "*hyperintensities_clean.nii.gz"))
@@ -1095,7 +1112,7 @@ for file in "${hyperintensity_files[@]}"; do
     echo "$basename, $volume, $percentage%" >> "${RESULTS_DIR}/hyperintensity_report.txt"
 done
 
-log "Summary report created at ${RESULTS_DIR}/hyperintensity_report.txt"
+log_message "Summary report created at ${RESULTS_DIR}/hyperintensity_report.txt"
 
 # Create a comprehensive freeview script that includes all relevant overlays
 cat > "${RESULTS_DIR}/view_all_results.sh" << EOL
@@ -1127,14 +1144,14 @@ if [ \${#flair_files[@]} -gt 0 ]; then
     done
     
     # Execute command
-    log "Running: \$cmd"
+    log_message "Running: \$cmd"
     eval \$cmd
 else
-    log "No FLAIR files found. Cannot open freeview."
+    log_message "No FLAIR files found. Cannot open freeview."
 fi
 EOL
 chmod +x "${RESULTS_DIR}/view_all_results.sh"
 
-log "Created comprehensive freeview script at ${RESULTS_DIR}/view_all_results.sh"
-log "==== Processing Pipeline Complete! ===="
+log_message "Created comprehensive freeview script at ${RESULTS_DIR}/view_all_results.sh"
+log_message "==== Processing Pipeline Complete! ===="
 
