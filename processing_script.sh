@@ -602,6 +602,7 @@ log "==== Combining multi-axis images for high-resolution volumes ===="
 combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
 combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
 combine_multiaxis_images "SWI" "${RESULTS_DIR}/combined"
+COMBINED_DIR="${RESULTS_DIR}/combined"
 
 
 echo "Opening freeview with all the files in case you want to check"
@@ -720,8 +721,7 @@ mkdir -p "${RESULTS_DIR}/bias_corrected"
 ###Controls smoothness of the B-spline interpolation
 ###Range: 0-5 (higher = smoother but more computation)
 
-
-find "$EXTRACT_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | while IFS= read -r -d '' file; do
+find "$COMBINED_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0  | while IFS= read -r -d '' file; do
     basename=$(basename "$file" .nii.gz)
     output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
     
@@ -927,9 +927,10 @@ if [ ${#flair_files[@]} -gt 0 ]; then
             
                         
             # Extract WM (label 3) and GM (label 2)
-            ThresholdImage 3 "${output_prefix}segmentation.nii.gz" "${output_prefix}wm_mask.nii.gz" 3 3
-            ThresholdImage 3 "${output_prefix}segmentation.nii.gz" "${output_prefix}gm_mask.nii.gz" 2 2
-            
+            ThresholdImage 3 "${output_prefix}atropos_segmentation.nii.gz" "${output_prefix}wm_mask.nii.gz" 3 3
+            ThresholdImage 3 "${output_prefix}atropos_segmentation.nii.gz" "${output_prefix}gm_mask.nii.gz" 2 2
+
+
             log "T1-based tissue segmentation complete."
         else
             # Fallback to intensity-based segmentation on FLAIR
