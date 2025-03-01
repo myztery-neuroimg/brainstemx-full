@@ -38,11 +38,21 @@ log() {
   esac
 }
 
+standardize_datatype() {
+  local input=$1
+  local output=$2
+  local datatype=${3:-"float"}
+  
+  fslmaths "$input" -dt "$datatype" "$output" -odt "$datatype"
+  log "Standardized $input to $datatype datatype"
+}
+
+
 # Function to check if a command exists
 check_command() {
   local cmd=$1
   local package=$2
-  local install_hint=$3
+  local install_hint=${3:-""}
   
   if command -v $cmd &> /dev/null; then
     log "SUCCESS" "✓ $package is installed ($(command -v $cmd))"
@@ -241,13 +251,28 @@ echo "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to canc
 sleep 5 
 
 # Using -no-exit-on-error -auto-runseq here, it means you should probably check the output.txt after the script runs & the console output
-echo "Using dcmunpack to convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format"
-echo "Using -no-exit-on-error -auto-runseq here, it means you should probably check the output.txt after the script runs & the console output"
-dcmunpack -src "${SRC_DIR}" -targ "${EXTRACT_DIR}" -fsfast -no-exit-on-error -auto-runseq nii.gz
+#echo "Using dcmunpack to convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format"
+#echo "Using -no-exit-on-error -auto-runseq here, it means you should probably check the output.txt after the script runs & the console output"
+#dcmunpack -src "${SRC_DIR}" -targ "${EXTRACT_DIR}" -fsfast -no-exit-on-error -auto-runseq nii.gz
 
-echo "Command completed with status $? -5 seconds to stop now if something went wrong.."
+
+# Function for logging with timestamps
+log() {
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$log_file"
+}
+
+# Step 1: Convert DICOM to NIfTI using dcm2niix with Siemens optimizations
+log "==== Step 1: DICOM to NIfTI Conversion ===="
+print "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
+dcm2niix -b y -z y -f "%p_%s" -o "$EXTRACT_DIR" -m y -p y -s y "${SRC_DIR}"
+
+# Check conversion success
+if [ $(find "$EXTRACT_DIR" -name "*.nii.gz" | wc -l) -eq 0 ]; then
+    log "⚠️ No NIfTI files created. DICOM conversion may have failed."
+    exit 1
+fi
+
 sleep 5
-
 
 find "${EXTRACT_DIR}" -name "*.nii.gz" -print0 | while IFS= read -r -d '' file; do
   echo "Checking ${file}..:"
