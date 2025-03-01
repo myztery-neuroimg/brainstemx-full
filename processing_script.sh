@@ -51,10 +51,10 @@ for file in ${EXTRACT_DIR}/*.nii.gz; do
     echo "Processing: $file"
 
     # Get the base filename (without path)
-    base=$(basename "$file" .nii.gz)
+    base=$(basename "${file}" .nii.gz)
 
     # Get smallest bounding box of nonzero voxels
-    bbox=($(fslstats "$file" -w))
+    bbox=($(fslstats "${file}" -w))
 
     xmin=${bbox[0]}
     xsize=${bbox[1]}
@@ -68,10 +68,15 @@ for file in ${EXTRACT_DIR}/*.nii.gz; do
     # Output filename
     output_file="${EXTRACT_DIR}/${base}${TRIMMED_OUTPUT_SUFFIX}.nii.gz"
 
-    # Apply the cropping
-    fslroi "$file" "$output_file" $xmin $xsize $ymin $ysize $zmin $zsize
+    # Add padding to avoid cutting too close
+    xpad=5
+    ypad=5
+    zpad=5
 
-    echo "Saved trimmed file: $output_file"
+    fslroi "$file" "$output_file" $((xmin-xpad)) $((xsize+2*xpad)) $((ymin-ypad)) $((ysize+2*ypad)) $((zmin-zpad)) $((zsize+2*zpad))
+
+    echo "Saved trimmed file: ${output_file}"
+    fslinfo "${output_file}"
 done
 
 echo "✅ All files processed to trim missing slices."
