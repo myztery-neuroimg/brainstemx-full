@@ -166,7 +166,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Log function
-log() {
+log_with_formatted_message_unused() {
   local level=$1
   local message=$2
   
