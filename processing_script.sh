@@ -4,15 +4,17 @@ set -u
 set -o pipefail
 
 
-# Process DiCOM MRI images from Siemens MRI machines into NiFTi files appropriate for use in FSL/freeview
+# Process DiCOM MRI images into NiFTi files appropriate for use in FSL/freeview
 # My intention is to try to use the `ants` library as well where it can optimise conversions etc.. this is a second attempt only
 
 SRC_DIR="../DiCOM"
 EXTRACT_DIR="../extracted"
 RESULTS_DIR="../mri_results"
+# N4 Bias Field Correction parameters
+N4_ITERATIONS="50x50x50x50"
+N4_CONVERGENCE="0.000001"
 
 
-#!/usr/local/bin/bash
 # Check if all required tools for MRI processing are installed
 # Compatible with macOS/Apple Silicon
 
@@ -610,7 +612,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
         
         # Create a convenience script for opening in freeview with proper overlays
         cat > "${output_prefix}view_in_freeview.sh" << EOL
-#!/bin/bash
+
 # Open results in Freeview with proper overlays
 freeview -v "${output_prefix}flair_norm.mgz" \\
          -v "${output_prefix}hyperintensities_clean.mgz:colormap=heat:opacity=0.5" \\
@@ -677,7 +679,7 @@ log "Summary report created at ${RESULTS_DIR}/hyperintensity_report.txt"
 
 # Create a comprehensive freeview script that includes all relevant overlays
 cat > "${RESULTS_DIR}/view_all_results.sh" << EOL
-#!/bin/bash
+
 # Open all results in Freeview with proper overlays
 
 # Find FLAIR files
