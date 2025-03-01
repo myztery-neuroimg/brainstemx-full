@@ -38,6 +38,25 @@ OUTPUT_DATATYPE="int16"
 # Quality settings (LOW, MEDIUM, HIGH)
 QUALITY_PRESET="HIGH"
 
+# Template creation options
+
+# Number of iterations for template creation
+TEMPLATE_ITERATIONS=4
+# Gradient step size
+TEMPLATE_GRADIENT_STEP=0.2
+# Transformation model: Rigid, Affine, SyN
+TEMPLATE_TRANSFORM_MODEL="SyN"
+# Similarity metric: CC, MI, MSQ
+TEMPLATE_SIMILARITY_METRIC="CC"
+# Registration shrink factors
+TEMPLATE_SHRINK_FACTORS="6x4x2x1"
+# Smoothing sigmas
+TEMPLATE_SMOOTHING_SIGMAS="3x2x1x0"
+# Similarity metric weights
+TEMPLATE_WEIGHTS="100x70x50x10"
+
+
+
 #############################################
 # N4 Bias Field Correction parameters
 #############################################
@@ -86,7 +105,7 @@ REG_METRIC_CROSS_MODALITY="MI"
 REG_METRIC_SAME_MODALITY="CC"
 
 # Number of threads for ANTs tools
-ANTS_THREADS=$(nproc)
+ANTS_THREADS=8
 
 # Registration precision (0=float, 1=double)
 REG_PRECISION=1
@@ -197,7 +216,7 @@ set_sequence_params() {
         params+=("$THRESHOLD_WM_SD_MULTIPLIER")
     fi
     
-    echo "${params[@]}"
+    log "${params[@]}"
 }
 
 
@@ -379,7 +398,6 @@ check_command "convert" "ImageMagick" "Install with: brew install imagemagick" |
 check_command "parallel" "GNU Parallel" "Install with: brew install parallel" || log "WARNING" "GNU Parallel is recommended for faster processing"
 
 # Summary
-echo ""
 log "INFO" "==== Dependency Check Summary ===="
 
 if [ $error_count -eq 0 ]; then
@@ -393,24 +411,22 @@ fi
 # Create directories
 mkdir -p "$EXTRACT_DIR"
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$LOG_DIR"
+log_file="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
+
+
 
 # Check for required dependencies
 if ! command -v fslstats &> /dev/null || ! command -v fslroi &> /dev/null; then
-    echo "Error: FSL is not installed or not in your PATH."
+    log "Error: FSL is not installed or not in your PATH."
     exit 1
 fi
 
 NUM_SRC_DICOM_FILES=`find ${SRC_DIR} -name Image"*"  | wc -l`
 
-echo "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to cancel the script if that's wrong. Going to extract to ${EXTRACT_DIR}"
+log "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to cancel the script if that's wrong. Going to extract to ${EXTRACT_DIR}"
 sleep 5 
 
-# Using -no-exit-on-error -auto-runseq here, it means you should probably check the output.txt after the script runs & the console output
-#echo "Using dcmunpack to convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format"
-#echo "Using -no-exit-on-error -auto-runseq here, it means you should probably check the output.txt after the script runs & the console output"
-#dcmunpack -src "${SRC_DIR}" -targ "${EXTRACT_DIR}" -fsfast -no-exit-on-error -auto-runseq nii.gz
-
-# Add this function to combine SAG/COR/AX versions of the same sequence type
 combine_multiaxis_images() {
     local sequence_type="$1"
     local output_dir="$2"
@@ -488,19 +504,21 @@ combine_multiaxis_images() {
     
     if [ -n "$best_sag" ] && [ -n "$best_cor" ] && [ -n "$best_ax" ]; then
         # Use ANTs multivariate template creation to combine the three views
-        antsMultivariateTemplateConstruction2.sh \
-            -d 3 \
-            -o "${output_dir}/${sequence_type}_template_" \
-            -i 4 \
-            -g 0.2 \
-            -j ${ANTS_THREADS} \
-            -f 6x4x2x1 \
-            -s 3x2x1x0 \
-            -q 100x70x50x10 \
-            -t SyN \
-            -m CC \
-            -c 0 \
-            "$best_sag" "$best_cor" "$best_ax"
+         antsMultivariateTemplateConstruction2.sh \
+             -d 3 \
+             -o "${output_dir}/${sequence_type}_template_" \
+             -i ${TEMPLATE_ITERATIONS} \
+             -g ${TEMPLATE_GRADIENT_STEP} \
+             -j ${ANTS_THREADS} \
+             -f ${TEMPLATE_SHRINK_FACTORS} \
+             -s ${TEMPLATE_SMOOTHING_SIGMAS} \
+             -q ${TEMPLATE_WEIGHTS} \
+             -t ${TEMPLATE_TRANSFORM_MODEL} \
+             -m ${TEMPLATE_SIMILARITY_METRIC} \
+             -c 0 \
+             "$best_sag" "$best_cor" "$best_ax"
+
+
         
         # Move the final template to our desired output
         mv "${output_dir}/${sequence_type}_template_template0.nii.gz" "$output_file"
@@ -552,7 +570,7 @@ get_n4_parameters() {
         shrink=$N4_SHRINK_FLAIR
     fi
     
-    echo "$iterations" "$convergence" "$bspline" "$shrink"
+    log "$iterations" "$convergence" "$bspline" "$shrink"
 }
 
 
@@ -563,7 +581,7 @@ log() {
 
 # Step 1: Convert DICOM to NIfTI using dcm2niix with Siemens optimizations
 log "==== Step 1: DICOM to NIfTI Conversion ===="
-print "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
+log "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
 dcm2niix -b y -z y -f "%p_%s" -o "$EXTRACT_DIR" -m y -p y -s y "${SRC_DIR}"
 
 # Check conversion success
@@ -575,13 +593,19 @@ fi
 sleep 5
 
 find "${EXTRACT_DIR}" -name "*.nii.gz" -print0 | while IFS= read -r -d '' file; do
-  echo "Checking ${file}..:"
+  log "Checking ${file}..:"
   fslinfo "${file}"
   fslstats "${file}" -R -M -S
 done
 
+log "==== Combining multi-axis images for high-resolution volumes ===="
+combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
+combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
+combine_multiaxis_images "SWI" "${RESULTS_DIR}/combined"
+
+
 echo "Opening freeview with all the files in case you want to check"
-nohup freeview ${EXTRACT_DIR}/*.nii.gz &
+nohup freeview ${RESULTS_DIR}/combined/*.nii.gz &
 
 echo "Continuing anyway.. "
 
@@ -589,7 +613,7 @@ echo "Continuing anyway.. "
 TRIMMED_OUTPUT_SUFFIX="${EXTRACT_DIR}_trimmed"
 
 # Loop over all NIfTI files in the directory
-for file in ${EXTRACT_DIR}/*.nii.gz; do
+for file in ${RESULTS_DIR}/combined/*.nii.gz; do
     # Skip if no files are found
     [ -e "$file" ] || continue
 
@@ -618,7 +642,34 @@ for file in ${EXTRACT_DIR}/*.nii.gz; do
     ypad=5
     zpad=5
 
-    fslroi "$file" "$output_file" $((xmin-xpad)) $((xsize+2*xpad)) $((ymin-ypad)) $((ysize+2*ypad)) $((zmin-zpad)) $((zsize+2*zpad))
+    # Get image dimensions
+    xdim=$(fslval "$file" dim1)
+    ydim=$(fslval "$file" dim2)
+    zdim=$(fslval "$file" dim3)
+    
+    # Calculate safe starting points with padding
+    safe_xmin=$((xmin > PADDING_X ? xmin - PADDING_X : 0))
+    safe_ymin=$((ymin > PADDING_Y ? ymin - PADDING_Y : 0))
+    safe_zmin=$((zmin > PADDING_Z ? zmin - PADDING_Z : 0))
+    
+    # Calculate safe sizes ensuring we don't exceed dimensions
+    safe_xsize=$((xsize + 2*PADDING_X))
+    if [ $((safe_xmin + safe_xsize)) -gt "$xdim" ]; then
+        safe_xsize=$((xdim - safe_xmin))
+    fi
+    
+    safe_ysize=$((ysize + 2*PADDING_Y))
+    if [ $((safe_ymin + safe_ysize)) -gt "$ydim" ]; then
+        safe_ysize=$((ydim - safe_ymin))
+    fi
+    
+    safe_zsize=$((zsize + 2*PADDING_Z))
+    if [ $((safe_zmin + safe_zsize)) -gt "$zdim" ]; then
+        safe_zsize=$((zdim - safe_zmin))
+    fi
+    
+    # Apply the cropping with safe boundaries
+    fslroi "$file" "$output_file" $safe_xmin $safe_xsize $safe_ymin $safe_ysize $safe_zmin $safe_zsize
 
     echo "Saved trimmed file: ${output_file}"
     fslinfo "${output_file}"
@@ -864,14 +915,15 @@ if [ ${#flair_files[@]} -gt 0 ]; then
             log "Using $t1_reg for tissue segmentation"
             
             # Run ANTs segmentation on T1
-            Atropos -d 3 \
-                -a "$input_file" \
-                -x "${output_prefix}brain_mask.nii.gz" \
-                -o [${output_prefix}atropos_segmentation.nii.gz,${output_prefix}atropos_prob%d.nii.gz] \
-                -c [${ATROPOS_CONVERGENCE}] \
-                -m ${ATROPOS_MRF} \
-                -i ${ATROPOS_INIT_METHOD}[${ATROPOS_FLAIR_CLASSES}] \
-                -k Gaussian
+             Atropos -d 3 \
+                 -a "$input_file" \
+                 -x "${output_prefix}brain_mask.nii.gz" \
+                 -o [${output_prefix}atropos_segmentation.nii.gz,${output_prefix}atropos_prob%d.nii.gz] \
+                 -c [${ATROPOS_CONVERGENCE}] \
+                 -m ${ATROPOS_MRF} \
+                 -i ${ATROPOS_INIT_METHOD}[${ATROPOS_FLAIR_CLASSES}] \
+                 -k Gaussian
+
             
                         
             # Extract WM (label 3) and GM (label 2)
@@ -1044,10 +1096,10 @@ if [ \${#flair_files[@]} -gt 0 ]; then
     done
     
     # Execute command
-    echo "Running: \$cmd"
+    log "Running: \$cmd"
     eval \$cmd
 else
-    echo "No FLAIR files found. Cannot open freeview."
+    log "No FLAIR files found. Cannot open freeview."
 fi
 EOL
 chmod +x "${RESULTS_DIR}/view_all_results.sh"
