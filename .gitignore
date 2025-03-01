@@ -1,0 +1,8 @@
+DS_Store
+.git
+*.nii.gz
+log
+*.txt
+*.b*
+nohup.out
+
