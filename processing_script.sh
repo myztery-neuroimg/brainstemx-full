@@ -443,9 +443,9 @@ combine_multiaxis_images() {
     mkdir -p "$output_dir"
     
     # Find all matching sequence files
-    sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "SAG" | egrep -v "^[0-9]"))
-    cor_files=($(find "$EXTRACT_DIR" -name "${sequence_type}*.nii.gz" | fgrep "COR" | egrep -v "^[0-9]"))
-    ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "AX" | egrep -v "^[0-9]"))
+    sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "SAG" | egrep -v "^[0-9]" || true))
+    cor_files=($(find "$EXTRACT_DIR" -name "${sequence_type}*.nii.gz" | fgrep "COR" | egrep -v "^[0-9]" || true))
+    ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "AX" | egrep -v "^[0-9]" || true))
     
     log_formatted "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
     
