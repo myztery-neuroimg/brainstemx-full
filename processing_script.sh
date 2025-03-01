@@ -333,6 +333,45 @@ echo "✅ All files processed to trim missing slices."
 log "==== Step 2: ANTs N4 Bias Field Correction ===="
 mkdir -p "${RESULTS_DIR}/bias_corrected"
 
+# N4BiasFieldCorrection parameters
+###-d 3 - Dimensionality parameter
+###
+###Specifies that we're working with 3D image data
+###Options: 2, 3, or 4 (for 2D, 3D, or 4D images)
+###
+###-b [200] - B-spline grid resolution control
+###
+###Controls the resolution of the B-spline mesh used to model the bias field
+###Lower values (e.g., [100]) = smoother bias field with less detail
+###Higher values (e.g., [300]) = more detailed bias field that captures local variations
+###Can specify different resolutions per dimension: [200x200x200]
+###
+###-s 4 - Shrink factor
+###
+###Downsamples the input image to speed up processing
+###Higher values = faster but potentially less accurate
+###Typical values: 2-4
+###For high-resolution images, 4 is good; for lower resolution, use 2
+###
+###Other important parameters that could be configurable:
+###-w - Weight image
+###
+###Optional binary mask defining the region where bias correction is applied
+###Different from the exclusion mask (-x)
+###
+###-n - Number of histogram bins used for N4
+###
+###Default is usually 200
+###Controls precision of intensity histogram
+###Lower = faster but less precise; higher = more precise but slower
+###
+###--weight-spline-order - B-spline interpolation order
+###
+###Default is 3
+###Controls smoothness of the B-spline interpolation
+###Range: 0-5 (higher = smoother but more computation)
+
+
 find "$EXTRACT_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | while IFS= read -r -d '' file; do
     basename=$(basename "$file" .nii.gz)
     output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
@@ -341,15 +380,13 @@ find "$EXTRACT_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | while IFS= re
     
     # Create an initial brain mask for better bias correction
     antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" -e "$ANTSPATH/data/T_template0.nii.gz" -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
-    
-    # Run N4 bias field correction
     N4BiasFieldCorrection -d 3 \
-        -i "$file" \
-        -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
-        -o "$output_file" \
-        -b [200] \
-        -s 4 \
-        -c [50x50x50x50,0.000001]
+      -i "$file" \
+      -x "$mask" \
+      -o "$output_file" \
+      -b [200] \
+      -s 4 \
+      -c "[${N4_ITERATIONS},${N4_CONVERGENCE}]"
         
     log "Saved bias-corrected image to: $output_file"
 done
