@@ -435,7 +435,7 @@ combine_multiaxis_images() {
     local sequence_type="$1"
     # Handle different naming conventions
     if [ "$sequence_type" = "T1" ]; then
-        sequence_type="MPRAGE"
+        sequence_type="T1"
     fi
     local output_dir="$2"
     
@@ -443,9 +443,9 @@ combine_multiaxis_images() {
     mkdir -p "$output_dir"
     
     # Find all matching sequence files
-    sag_files=($(find "$EXTRACT_DIR" -name "*SAG*${sequence_type}*.nii.gz"))
-    cor_files=($(find "$EXTRACT_DIR" -name "*COR*${sequence_type}*.nii.gz"))
-    ax_files=($(find "$EXTRACT_DIR" -name "*AX*${sequence_type}*.nii.gz"))
+    sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "SAG" | egrep -v "^[0-9]"))
+    cor_files=($(find "$EXTRACT_DIR" -name "${sequence_type}*.nii.gz" | fgrep "COR" | egrep -v "^[0-9]"))
+    ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "AX" | egrep -v "^[0-9]"))
     
     log_formatted "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
     
@@ -594,8 +594,8 @@ sleep 5
 
 find "${EXTRACT_DIR}" -name "*.nii.gz" -print0 | while IFS= read -r -d '' file; do
   log_message "Checking ${file}..:"
-  fslinfo "${file}" >> ${EXTRACTED_DIR}/tmp_fslinfo.log
-  fslstats "${file}" -R -M -S >> ${EXTRACTED_DIR}/tmp_fslinfo.log
+  fslinfo "${file}" >> ${EXTRACT_DIR}/tmp_fslinfo.log
+  fslstats "${file}" -R -M -S >> ${EXTRACT_DIR}/tmp_fslinfo.log
 done
 
 log_message "==== Combining multi-axis images for high-resolution volumes ===="
