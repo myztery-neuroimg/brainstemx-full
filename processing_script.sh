@@ -444,7 +444,7 @@ combine_multiaxis_images() {
     
     # Find all matching sequence files
     sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "SAG" | egrep -v "^[0-9]" || true))
-    cor_files=($(find "$EXTRACT_DIR" -name "${sequence_type}*.nii.gz" | fgrep "COR" | egrep -v "^[0-9]" || true))
+    cor_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "COR" | egrep -v "^[0-9]" || true))
     ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "AX" | egrep -v "^[0-9]" || true))
     
     log_formatted "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
@@ -599,13 +599,16 @@ find "${EXTRACT_DIR}" -name "*.nii.gz" -print0 | while IFS= read -r -d '' file; 
 done
 
 log_message "==== Combining multi-axis images for high-resolution volumes ===="
+export COMBINED_DIR="${RESULTS_DIR}/combined"
 combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
+log_message "Combined FLAIR"
 combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
+log_message "Combined T1"
 combine_multiaxis_images "SWI" "${RESULTS_DIR}/combined"
-COMBINED_DIR="${RESULTS_DIR}/combined"
+log_message "Combined SWI"
 
 
-log "Opening freeview with all the files in case you want to check"
+log_message "Opening freeview with all the files in case you want to check"
 nohup freeview ${RESULTS_DIR}/combined/*.nii.gz &
 
 # Input directory
