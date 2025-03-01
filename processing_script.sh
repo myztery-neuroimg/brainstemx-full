@@ -14,6 +14,125 @@ RESULTS_DIR="../mri_results"
 N4_ITERATIONS="50x50x50x50"
 N4_CONVERGENCE="0.000001"
 
+#!/usr/local/bin/bash
+# Configuration parameters for MRI processing pipeline
+# Optimized for high-quality processing (512x512x512 resolution)
+
+#############################################
+# General processing parameters
+#############################################
+
+# Data directories
+SRC_DIR="../DiCOM"
+EXTRACT_DIR="../extracted"
+RESULTS_DIR="../mri_results"
+
+# Logging
+LOG_DIR="${RESULTS_DIR}/logs"
+LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
+
+# Data type for processing (float32 for processing, int16 for storage)
+PROCESSING_DATATYPE="float"
+OUTPUT_DATATYPE="int16"
+
+# Quality settings (LOW, MEDIUM, HIGH)
+QUALITY_PRESET="HIGH"
+
+#############################################
+# N4 Bias Field Correction parameters
+#############################################
+
+# Presets for different quality levels
+# Format: iterations, convergence, b-spline grid resolution, shrink factor
+N4_PRESET_LOW="25x25x25,0.0001,150,4"
+N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
+N4_PRESET_HIGH="100x100x100x50,0.0000001,300,2"
+N4_PRESET_FLAIR="75x75x75x75,0.0000001,250,2"
+
+# Parse preset into individual parameters
+if [ "$QUALITY_PRESET" = "HIGH" ]; then
+    N4_PARAMS=$N4_PRESET_HIGH
+elif [ "$QUALITY_PRESET" = "MEDIUM" ]; then
+    N4_PARAMS=$N4_PRESET_MEDIUM
+else
+    N4_PARAMS=$N4_PRESET_LOW
+fi
+
+# Parse N4 parameters
+N4_ITERATIONS=$(echo $N4_PARAMS | cut -d',' -f1)
+N4_CONVERGENCE=$(echo $N4_PARAMS | cut -d',' -f2)
+N4_BSPLINE=$(echo $N4_PARAMS | cut -d',' -f3)
+N4_SHRINK=$(echo $N4_PARAMS | cut -d',' -f4)
+
+# Set parameters by sequence type
+N4_ITERATIONS_FLAIR=$(echo $N4_PRESET_FLAIR | cut -d',' -f1)
+N4_CONVERGENCE_FLAIR=$(echo $N4_PRESET_FLAIR | cut -d',' -f2)
+N4_BSPLINE_FLAIR=$(echo $N4_PRESET_FLAIR | cut -d',' -f3)
+N4_SHRINK_FLAIR=$(echo $N4_PRESET_FLAIR | cut -d',' -f4)
+
+#############################################
+# Registration and motion correction parameters
+#############################################
+
+# Registration parameters for antsRegistrationSyN.sh
+# Options: 0=rigid, 1=affine, 2=rigid+affine+syn (default), 3=affine+syn
+REG_TRANSFORM_TYPE=2
+
+# For cross-modality registration (T2/FLAIR to T1)
+# Options: CC=cross-correlation, MI=mutual information, Mattes=Mattes mutual information
+REG_METRIC_CROSS_MODALITY="MI"
+
+# For same-modality registration
+REG_METRIC_SAME_MODALITY="CC"
+
+# Number of threads for ANTs tools
+ANTS_THREADS=$(nproc)
+
+# Registration precision (0=float, 1=double)
+REG_PRECISION=1
+
+#############################################
+# Hyperintensity detection parameters
+#############################################
+
+# Threshold-based method parameters
+# Threshold = WM_mean + (WM_SD * THRESHOLD_WM_SD_MULTIPLIER)
+THRESHOLD_WM_SD_MULTIPLIER=2.5
+
+# Minimum hyperintensity cluster size (in voxels)
+MIN_HYPERINTENSITY_SIZE=5
+
+# Atropos segmentation parameters
+# Number of tissue classes for T1 segmentation
+ATROPOS_T1_CLASSES=3
+
+# Number of tissue classes for FLAIR segmentation (including hyperintensities)
+ATROPOS_FLAIR_CLASSES=4
+
+# Atropos convergence: max_iterations,convergence_threshold
+ATROPOS_CONVERGENCE="5,0.0"
+
+# Atropos smoothing factor: MRF_radius,MRF_strength
+ATROPOS_MRF="[0.1,1x1x1]"
+
+# Atropos initialization method: kmeans, otsu, or priorprobabilityimages
+ATROPOS_INIT_METHOD="kmeans"
+
+#############################################
+# Cropping and padding parameters
+#############################################
+
+# Padding in voxels for each dimension
+PADDING_X=5
+PADDING_Y=5
+PADDING_Z=5
+
+# C3D cropping threshold (below this value is considered background)
+C3D_CROP_THRESHOLD=0.1
+
+# Padding in mm for C3D cropping
+C3D_PADDING_MM=5
+
 
 # Check if all required tools for MRI processing are installed
 # Compatible with macOS/Apple Silicon
@@ -48,6 +167,40 @@ standardize_datatype() {
   fslmaths "$input" -dt "$datatype" "$output" -odt "$datatype"
   log "Standardized $input to $datatype datatype"
 }
+
+# Function to set sequence-specific parameters
+set_sequence_params() {
+    local file="$1"
+    
+    # Base parameters
+    local params=()
+    
+    if [[ "$file" == *"FLAIR"* ]]; then
+        # FLAIR-specific parameters
+        params+=("FLAIR")
+        params+=("$N4_ITERATIONS_FLAIR")
+        params+=("$THRESHOLD_WM_SD_MULTIPLIER")
+    elif [[ "$file" == *"DWI"* || "$file" == *"ADC"* ]]; then
+        # DWI-specific parameters
+        params+=("DWI")
+        params+=("$N4_ITERATIONS")
+        params+=("2.0") # Different threshold multiplier for DWI
+    elif [[ "$file" == *"SWI"* ]]; then
+        # SWI-specific parameters
+        params+=("SWI")
+        params+=("$N4_ITERATIONS")
+        params+=("3.0") # Different threshold multiplier for SWI
+    else
+        # Default parameters
+        params+=("T1")
+        params+=("$N4_ITERATIONS")
+        params+=("$THRESHOLD_WM_SD_MULTIPLIER")
+    fi
+    
+    echo "${params[@]}"
+}
+
+
 
 
 # Function to check if a command exists
@@ -257,6 +410,151 @@ sleep 5
 #echo "Using -no-exit-on-error -auto-runseq here, it means you should probably check the output.txt after the script runs & the console output"
 #dcmunpack -src "${SRC_DIR}" -targ "${EXTRACT_DIR}" -fsfast -no-exit-on-error -auto-runseq nii.gz
 
+# Add this function to combine SAG/COR/AX versions of the same sequence type
+combine_multiaxis_images() {
+    local sequence_type="$1"
+    local output_dir="$2"
+    
+    # Create output directory
+    mkdir -p "$output_dir"
+    
+    # Find all matching sequence files
+    sag_files=($(find "$EXTRACT_DIR" -name "*SAG*${sequence_type}*.nii.gz"))
+    cor_files=($(find "$EXTRACT_DIR" -name "*COR*${sequence_type}*.nii.gz"))
+    ax_files=($(find "$EXTRACT_DIR" -name "*AX*${sequence_type}*.nii.gz"))
+    
+    log "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
+    
+    # Skip if no files found
+    if [ ${#sag_files[@]} -eq 0 ] && [ ${#cor_files[@]} -eq 0 ] && [ ${#ax_files[@]} -eq 0 ]; then
+        log "WARNING" "No ${sequence_type} files found to combine"
+        return 1
+    fi
+    
+    # Find highest resolution file in each orientation
+    local best_sag=""
+    local best_cor=""
+    local best_ax=""
+    local best_sag_res=0
+    local best_cor_res=0
+    local best_ax_res=0
+    
+    # Process sagittal files
+    for file in "${sag_files[@]}"; do
+        # Get resolution
+        dim1=$(fslval "$file" dim1)
+        dim2=$(fslval "$file" dim2)
+        dim3=$(fslval "$file" dim3)
+        res=$((dim1 * dim2 * dim3))
+        
+        if [ $res -gt $best_sag_res ]; then
+            best_sag="$file"
+            best_sag_res=$res
+        fi
+    done
+    for file in "${ax_files[@]}"; do
+        # Get resolution
+        dim1=$(fslval "$file" dim1)
+        dim2=$(fslval "$file" dim2)
+        dim3=$(fslval "$file" dim3)
+        res=$((dim1 * dim2 * dim3))
+     
+        if [ $res -gt $best_ax_res ]; then 
+            best_ax="$file"
+            best_ax_res=$res
+        fi   
+    done 
+    for file in "${cor_files[@]}"; do
+        # Get resolution
+        dim1=$(fslval "$file" dim1)
+        dim2=$(fslval "$file" dim2)
+        dim3=$(fslval "$file" dim3)
+        res=$((dim1 * dim2 * dim3))
+     
+        if [ $res -gt $best_cor_res ]; then 
+            best_cor="$file"
+            best_cor_res=$res
+        fi   
+    done 
+
+    # Process coronal files (similar code for coronal and axial)
+    # ... (similar code for finding best_cor and best_ax)
+    
+    # Create output filename
+    local output_file="${output_dir}/${sequence_type}_combined_highres.nii.gz"
+    
+    # Register and combine the best files using ANTs
+    log "INFO" "Combining best ${sequence_type} images to create high-resolution volume"
+    
+    if [ -n "$best_sag" ] && [ -n "$best_cor" ] && [ -n "$best_ax" ]; then
+        # Use ANTs multivariate template creation to combine the three views
+        antsMultivariateTemplateConstruction2.sh \
+            -d 3 \
+            -o "${output_dir}/${sequence_type}_template_" \
+            -i 4 \
+            -g 0.2 \
+            -j ${ANTS_THREADS} \
+            -f 6x4x2x1 \
+            -s 3x2x1x0 \
+            -q 100x70x50x10 \
+            -t SyN \
+            -m CC \
+            -c 0 \
+            "$best_sag" "$best_cor" "$best_ax"
+        
+        # Move the final template to our desired output
+        mv "${output_dir}/${sequence_type}_template_template0.nii.gz" "$output_file"
+        
+        # Ensure INT16 output format
+        standardize_datatype "$output_file" "$output_file" "$OUTPUT_DATATYPE"
+        
+        log "SUCCESS" "Created high-resolution ${sequence_type} volume: $output_file"
+        return 0
+    elif [ -n "$best_sag" ] || [ -n "$best_cor" ] || [ -n "$best_ax" ]; then
+        # If we have at least one orientation, use that
+        local best_file=""
+        if [ -n "$best_sag" ]; then
+            best_file="$best_sag"
+        elif [ -n "$best_cor" ]; then
+            best_file="$best_cor"
+        else
+            best_file="$best_ax"
+        fi
+        
+        # Copy and ensure INT16 format
+        cp "$best_file" "$output_file"
+        standardize_datatype "$output_file" "$output_file" "$OUTPUT_DATATYPE"
+        
+        log "INFO" "Only one orientation available for ${sequence_type}, using: $best_file"
+        return 0
+    else
+        log "ERROR" "No suitable ${sequence_type} files found"
+        return 1
+    fi
+}
+
+
+
+# Get sequence-specific N4 parameters
+get_n4_parameters() {
+    local file="$1"
+    
+    local iterations=$N4_ITERATIONS
+    local convergence=$N4_CONVERGENCE
+    local bspline=$N4_BSPLINE
+    local shrink=$N4_SHRINK
+    
+    # Use FLAIR-specific parameters if it's a FLAIR sequence
+    if [[ "$file" == *"FLAIR"* ]]; then
+        iterations=$N4_ITERATIONS_FLAIR
+        convergence=$N4_CONVERGENCE_FLAIR
+        bspline=$N4_BSPLINE_FLAIR
+        shrink=$N4_SHRINK_FLAIR
+    fi
+    
+    echo "$iterations" "$convergence" "$bspline" "$shrink"
+}
+
 
 # Function for logging with timestamps
 log() {
@@ -380,13 +678,14 @@ find "$EXTRACT_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | while IFS= re
     
     # Create an initial brain mask for better bias correction
     antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" -e "$ANTSPATH/data/T_template0.nii.gz" -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
+    n4_params=($(get_n4_parameters "$file"))
     N4BiasFieldCorrection -d 3 \
       -i "$file" \
-      -x "$mask" \
+      -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
       -o "$output_file" \
-      -b [200] \
-      -s 4 \
-      -c "[${N4_ITERATIONS},${N4_CONVERGENCE}]"
+      -b [${n4_params[2]}] \
+      -s ${n4_params[3]} \
+      -c "[${n4_params[0]},${n4_params[1]}]"
         
     log "Saved bias-corrected image to: $output_file"
 done
@@ -566,14 +865,15 @@ if [ ${#flair_files[@]} -gt 0 ]; then
             
             # Run ANTs segmentation on T1
             Atropos -d 3 \
-                -a "$t1_reg" \
+                -a "$input_file" \
                 -x "${output_prefix}brain_mask.nii.gz" \
-                -o "${output_prefix}segmentation.nii.gz" \
-                -c [5,0.0] \
-                -m [0.1,1x1x1] \
-                -i kmeans[3] \
+                -o [${output_prefix}atropos_segmentation.nii.gz,${output_prefix}atropos_prob%d.nii.gz] \
+                -c [${ATROPOS_CONVERGENCE}] \
+                -m ${ATROPOS_MRF} \
+                -i ${ATROPOS_INIT_METHOD}[${ATROPOS_FLAIR_CLASSES}] \
                 -k Gaussian
             
+                        
             # Extract WM (label 3) and GM (label 2)
             ThresholdImage 3 "${output_prefix}segmentation.nii.gz" "${output_prefix}wm_mask.nii.gz" 3 3
             ThresholdImage 3 "${output_prefix}segmentation.nii.gz" "${output_prefix}gm_mask.nii.gz" 2 2
