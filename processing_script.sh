@@ -1004,12 +1004,7 @@ process_n4_correction() {
     log_message "Performing bias correction on: $basename"
 
     # Create an initial brain mask for better bias correction
-    #antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
-    #    -e "$ANTSPATH/data/T_template0.nii.gz" \
-    #    -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
-    #    -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
-
-    antsBrainExtraction.sh -d 3 -a "$file" -o "${output_prefix}" \
+    antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
         -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
         -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
         -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
@@ -1054,178 +1049,6 @@ find "$COMBINED_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | \
 parallel -0 -j 8 process_n4_correction {}
 
 log_message "✅ Bias field correction complete."
-
-# Step 3: ANTs-based motion correction and registration
-log_message "==== Step 3: ANTs Motion Correction and Registration ===="
-mkdir -p "${RESULTS_DIR}/registered"
-
-# First identify a T1w reference image if available
-reference_image=""
-#t1_files=($(find "$RESULTS_DIR/bias_corrected" -name "*T1*n4.nii.gz" -o -name "*T1*n4.nii.gz"))
-t1_files=($(find "$RESULTS_DIR/standardized" -name "*T1*n4_std.nii.gz"))
-
-if [ ${#t1_files[@]} -gt 0 ]; then
-  best_t1=""
-  best_res=0
-  
-  for t1 in "${t1_files[@]}"; do
-      xdim=$(fslval "$t1" dim1)
-      ydim=$(fslval "$t1" dim2)
-      zdim=$(fslval "$t1" dim3)
-      res=$((xdim * ydim * zdim))
-  
-      if [ $res -gt $best_res ]; then
-          best_t1="$t1"
-          best_res=$res
-      fi
-  done
-  
-  reference_image="$best_t1"
-  log_message "Using ${reference_image} as reference for registration"
-else
-   # If no T1w found, use the first file
-   reference_image=$(find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" | head -1)
-   log_message "No T1w reference found. Using ${reference_image} as reference"
-fi
-
-# Process all images - register to the reference
-#find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read -r -d '' file; do
-find "$RESULTS_DIR/standardized" -name "*n4_std.nii.gz" -print0 | while IFS= read -r -d '' file; do
-
-    basename=$(basename "$file" .nii.gz)
-    output_prefix="${RESULTS_DIR}/registered/${basename}_"
-    
-    log_message "Registering: $basename to reference using ANTs"
-    
-    # For FLAIR or T2 to T1 registration, use mutual information metric
-    # This handles cross-modality registration better
-    if [[ "$file" == *"FLAIR"* || "$file" == *"T2"* ]]; then
-        # Use optimized cross-modality registration metric if available
-        if [[ -n "$REG_METRIC_CROSS_MODALITY" ]]; then
-            antsRegistrationSyN.sh -d 3 \
-                -f "$reference_image" \
-                -m "$file" \
-                -o "$output_prefix" \
-                -t $REG_TRANSFORM_TYPE \
-                -n 4 \
-                -p f \
-                -j 1 \
-                -x "$REG_METRIC_CROSS_MODALITY"
-        else
-            antsRegistrationSyN.sh -d 3 \
-                -f "$reference_image" \
-                -m "$file" \
-                -o "$output_prefix" \
-                -t r \
-                -n 4 \
-                -p f \
-                -j 1
-        fi
-    else
-        # For same modality, use cross-correlation which works better
-        antsRegistrationSyN.sh -d 3 \
-            -f "$reference_image" \
-            -m "$file" \
-            -o "$output_prefix" \
-            -t r \
-            -n 4 \
-            -p f \
-            -j 1
-    fi
-    
-    log_message "Saved registered image to: ${output_prefix}Warped.nii.gz"
-    
-    # Create a symlink with a more intuitive name
-    ln -sf "${output_prefix}Warped.nii.gz" "${RESULTS_DIR}/registered/${basename}_reg.nii.gz"
-done
-
-log_message "✅ ANTs registration complete."
-
-# Step 4: ANTs-based quality assessment 
-log_message "==== Step 4: ANTs-based Quality Assessment ===="
-mkdir -p "${RESULTS_DIR}/quality_checks"
-
-# Process each registered file
-find "${RESULTS_DIR}/registered" -name "*reg.nii.gz" -print0 | while IFS= read -r -d '' file; do
-    basename=$(basename "$file" .nii.gz)
-    output_prefix="${RESULTS_DIR}/quality_checks/${basename}_"
-    
-    log_message "Performing quality checks on: $basename"
-    
-    # Extract brain with ANTs for more accurate SNR calculation
-    antsBrainExtraction.sh -d 3 \
-        -a "$file" \
-        -o "$output_prefix" \
-    #    -e "$ANTSPATH/data/T_template0.nii.gz" \
-    #    -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
-    #    -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
-        -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
-        -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
-        -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
-
-    
-    # Calculate SNR using ANTs tools
-    # Get mean signal in brain
-    signal=$(ImageMath 3 ${output_prefix}signal.nii.gz m "$file" "${output_prefix}BrainExtractionMask.nii.gz")
-    signal_mean=$(ImageStats "$file" "${output_prefix}BrainExtractionMask.nii.gz" 2 | awk '{print $2}')
-    
-    # Create background mask (inverted brain mask with erosion)
-    ImageMath 3 "${output_prefix}background_mask.nii.gz" MC "${output_prefix}BrainExtractionMask.nii.gz" 0
-    ImageMath 3 "${output_prefix}background_mask_eroded.nii.gz" ME "${output_prefix}background_mask.nii.gz" 3
-    
-    # Get noise standard deviation in background
-    noise_sd=$(ImageStats "$file" "${output_prefix}background_mask_eroded.nii.gz" 5 | awk '{print $2}')
-    
-    # Calculate SNR
-    snr=$(echo "$signal_mean / $noise_sd" | bc -l)
-    
-    # Save to log
-    echo "$basename,$snr" >> "${RESULTS_DIR}/quality_checks/snr_values.csv"
-    log_message "SNR for $basename: $snr"
-    
-    # For qualitative assessment, generate a check image
-    CreateTiledMosaic -i "$file" -r "$reference_image" -o "${output_prefix}check.png" -a 0.3 -t -1x-1 -p mask -m "${output_prefix}BrainExtractionMask.nii.gz"
-done
-
-log_message "✅ Quality assessment complete."
-
-# Step 5: ANTs-based intensity normalization for FLAIR
-log_message "==== Step 5: ANTs-based Intensity Normalization ===="
-mkdir -p "${RESULTS_DIR}/intensity_normalized"
-
-# Find all FLAIR images after registration
-flair_files=($(find "$RESULTS_DIR/registered" -name "*FLAIR*reg.nii.gz"))
-
-if [ ${#flair_files[@]} -gt 0 ]; then
-    log_message "Found ${#flair_files[@]} FLAIR images to normalize"
-    
-    for file in "${flair_files[@]}"; do
-        basename=$(basename "$file" .nii.gz)
-        output_file="${RESULTS_DIR}/intensity_normalized/${basename}_norm.nii.gz"
-        
-        log_message "Normalizing: $basename"
-        
-        # Advanced intensity normalization using N4 and histogram matching
-        ImageMath 3 "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz" RescaleImage "$file" 0 1000
-        
-        # Use N4 again for better results on the registered data
-        N4BiasFieldCorrection -d 3 \
-            -i "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz" \
-            -o "$output_file" \
-            -b [200] \
-            -s 2 \
-            -c [50x50x50,0.000001]
-        
-        # Clean up
-        rm -f "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz"
-        
-        log_message "Saved intensity-normalized image to: $output_file"
-    done
-    
-    log_message "✅ Intensity normalization complete for FLAIR images."
-else
-    log_message "⚠️ No FLAIR images found for intensity normalization."
-fi
 
 # ==== NEW STEP 2.5: Flexible Image Dimension Standardization ====
 log_message "==== Step 2.5: Flexible Image Dimension Standardization ===="
@@ -1356,6 +1179,176 @@ find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | \
 parallel -0 -j 8 standardize_dimensions {}
 
 log_message "✅ Dimension standardization complete."
+
+
+# Step 3: ANTs-based motion correction and registration
+log_message "==== Step 3: ANTs Motion Correction and Registration ===="
+mkdir -p "${RESULTS_DIR}/registered"
+
+# First identify a T1w reference image if available
+reference_image=""
+#t1_files=($(find "$RESULTS_DIR/bias_corrected" -name "*T1*n4.nii.gz" -o -name "*T1*n4.nii.gz"))
+t1_files=($(find "$RESULTS_DIR/standardized" -name "*T1*n4_std.nii.gz"))
+
+if [ ${#t1_files[@]} -gt 0 ]; then
+  best_t1=""
+  best_res=0
+  
+  for t1 in "${t1_files[@]}"; do
+      xdim=$(fslval "$t1" dim1)
+      ydim=$(fslval "$t1" dim2)
+      zdim=$(fslval "$t1" dim3)
+      res=$((xdim * ydim * zdim))
+  
+      if [ $res -gt $best_res ]; then
+          best_t1="$t1"
+          best_res=$res
+      fi
+  done
+  
+  reference_image="$best_t1"
+  log_message "Using ${reference_image} as reference for registration"
+else
+   # If no T1w found, use the first file
+   reference_image=$(find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" | head -1)
+   log_message "No T1w reference found. Using ${reference_image} as reference"
+fi
+
+# Process all images - register to the reference
+#find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read -r -d '' file; do
+find "$RESULTS_DIR/standardized" -name "*n4_std.nii.gz" -print0 | while IFS= read -r -d '' file; do
+
+    basename=$(basename "$file" .nii.gz)
+    output_prefix="${RESULTS_DIR}/registered/${basename}_"
+    
+    log_message "Registering: $basename to reference using ANTs"
+    
+    # For FLAIR or T2 to T1 registration, use mutual information metric
+    # This handles cross-modality registration better
+    if [[ "$file" == *"FLAIR"* || "$file" == *"T2"* ]]; then
+        # Use optimized cross-modality registration metric if available
+        if [[ -n "$REG_METRIC_CROSS_MODALITY" ]]; then
+            antsRegistrationSyN.sh -d 3 \
+                -f "$reference_image" \
+                -m "$file" \
+                -o "$output_prefix" \
+                -t $REG_TRANSFORM_TYPE \
+                -n 4 \
+                -p f \
+                -j 1 \
+                -x "$REG_METRIC_CROSS_MODALITY"
+        else
+            antsRegistrationSyN.sh -d 3 \
+                -f "$reference_image" \
+                -m "$file" \
+                -o "$output_prefix" \
+                -t r \
+                -n 4 \
+                -p f \
+                -j 1
+        fi
+    else
+        # For same modality, use cross-correlation which works better
+        antsRegistrationSyN.sh -d 3 \
+            -f "$reference_image" \
+            -m "$file" \
+            -o "$output_prefix" \
+            -t r \
+            -n 4 \
+            -p f \
+            -j 1
+    fi
+    
+    log_message "Saved registered image to: ${output_prefix}Warped.nii.gz"
+    
+    # Create a symlink with a more intuitive name
+    ln -sf "${output_prefix}Warped.nii.gz" "${RESULTS_DIR}/registered/${basename}_reg.nii.gz"
+done
+
+log_message "✅ ANTs registration complete."
+
+# Step 4: ANTs-based quality assessment 
+log_message "==== Step 4: ANTs-based Quality Assessment ===="
+mkdir -p "${RESULTS_DIR}/quality_checks"
+
+# Process each registered file
+find "${RESULTS_DIR}/registered" -name "*reg.nii.gz" -print0 | while IFS= read -r -d '' file; do
+    basename=$(basename "$file" .nii.gz)
+    output_prefix="${RESULTS_DIR}/quality_checks/${basename}_"
+    
+    log_message "Performing quality checks on: $basename"
+    
+    # Extract brain with ANTs for more accurate SNR calculation
+    antsBrainExtraction.sh -d 3 \
+        -a "$file" \
+        -o "$output_prefix" \
+        -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+        -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+        -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+
+    
+    # Calculate SNR using ANTs tools
+    # Get mean signal in brain
+    signal=$(ImageMath 3 ${output_prefix}signal.nii.gz m "$file" "${output_prefix}BrainExtractionMask.nii.gz")
+    signal_mean=$(ImageStats "$file" "${output_prefix}BrainExtractionMask.nii.gz" 2 | awk '{print $2}')
+    
+    # Create background mask (inverted brain mask with erosion)
+    ImageMath 3 "${output_prefix}background_mask.nii.gz" MC "${output_prefix}BrainExtractionMask.nii.gz" 0
+    ImageMath 3 "${output_prefix}background_mask_eroded.nii.gz" ME "${output_prefix}background_mask.nii.gz" 3
+    
+    # Get noise standard deviation in background
+    noise_sd=$(ImageStats "$file" "${output_prefix}background_mask_eroded.nii.gz" 5 | awk '{print $2}')
+    
+    # Calculate SNR
+    snr=$(echo "$signal_mean / $noise_sd" | bc -l)
+    
+    # Save to log
+    echo "$basename,$snr" >> "${RESULTS_DIR}/quality_checks/snr_values.csv"
+    log_message "SNR for $basename: $snr"
+    
+    # For qualitative assessment, generate a check image
+    CreateTiledMosaic -i "$file" -r "$reference_image" -o "${output_prefix}check.png" -a 0.3 -t -1x-1 -p mask -m "${output_prefix}BrainExtractionMask.nii.gz"
+done
+
+log_message "✅ Quality assessment complete."
+
+# Step 5: ANTs-based intensity normalization for FLAIR
+log_message "==== Step 5: ANTs-based Intensity Normalization ===="
+mkdir -p "${RESULTS_DIR}/intensity_normalized"
+
+# Find all FLAIR images after registration
+flair_files=($(find "$RESULTS_DIR/registered" -name "*FLAIR*reg.nii.gz"))
+
+if [ ${#flair_files[@]} -gt 0 ]; then
+    log_message "Found ${#flair_files[@]} FLAIR images to normalize"
+    
+    for file in "${flair_files[@]}"; do
+        basename=$(basename "$file" .nii.gz)
+        output_file="${RESULTS_DIR}/intensity_normalized/${basename}_norm.nii.gz"
+        
+        log_message "Normalizing: $basename"
+        
+        # Advanced intensity normalization using N4 and histogram matching
+        ImageMath 3 "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz" RescaleImage "$file" 0 1000
+        
+        # Use N4 again for better results on the registered data
+        N4BiasFieldCorrection -d 3 \
+            -i "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz" \
+            -o "$output_file" \
+            -b [200] \
+            -s 2 \
+            -c [50x50x50,0.000001]
+        
+        # Clean up
+        rm -f "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz"
+        
+        log_message "Saved intensity-normalized image to: $output_file"
+    done
+    
+    log_message "✅ Intensity normalization complete for FLAIR images."
+else
+    log_message "⚠️ No FLAIR images found for intensity normalization."
+fi
 
 # Update reference to use standardized files for subsequent steps
 # Modify this line at the registration step
