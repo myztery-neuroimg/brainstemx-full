@@ -582,7 +582,6 @@ get_n4_parameters() {
 log_message "==== Extracting DICOM metadata for processing optimization ===="
 mkdir -p "${RESULTS_DIR}/metadata"
 
-# Create a function to extract key Siemens parameters using available tools
 extract_siemens_metadata() {
     local dicom_dir="$1"
     local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
@@ -597,13 +596,18 @@ extract_siemens_metadata() {
         return 1
     fi
     
-    # Use dcm2niix to extract DICOM header with the -ba y option (output BIDS sidecar JSON)
-    # This is much better than using dcmdump as it's already in your toolkit
-    log_message "Using dcm2niix to extract DICOM header information..."
-    dcm2niix -ba y -o "${RESULTS_DIR}/metadata" -f "dicom_metadata" -v 0 "$first_dicom"
+    # Create a temporary directory with just the single file
+    mkdir -p "${RESULTS_DIR}/metadata/temp_dicom"
+    cp "$first_dicom" "${RESULTS_DIR}/metadata/temp_dicom/single_dicom.dcm"
     
-    # Check if JSON file was created
-    if [ ! -f "${RESULTS_DIR}/metadata/dicom_metadata.json" ]; then
+    # Use dcm2niix with single file isolation and include indexing parameter
+    log_message "Using dcm2niix to extract DICOM header information..."
+    dcm2niix -ba y -o "${RESULTS_DIR}/metadata" -f "dicom_metadata_%d" -i y -v 0 "${RESULTS_DIR}/metadata/temp_dicom/"
+    
+    # Check if JSON file was created (find the first one if multiple were created)
+    local json_file=$(find "${RESULTS_DIR}/metadata" -name "dicom_metadata_*.json" | head -1)
+    
+    if [ -z "$json_file" ]; then
         log_message "⚠️ Failed to extract DICOM metadata with dcm2niix."
         
         # Create a minimal JSON with defaults
@@ -612,11 +616,18 @@ extract_siemens_metadata() {
         echo "  \"fieldStrength\": 3," >> "$metadata_file"
         echo "  \"modelName\": \"Unknown\"" >> "$metadata_file"
         echo "}" >> "$metadata_file"
+        
+        # Clean up temporary directory
+        rm -rf "${RESULTS_DIR}/metadata/temp_dicom"
         return 1
     fi
     
     # Copy the generated JSON to our target file
-    cp "${RESULTS_DIR}/metadata/dicom_metadata.json" "$metadata_file"
+    cp "$json_file" "$metadata_file"
+    
+    # Clean up temporary files
+    rm -rf "${RESULTS_DIR}/metadata/temp_dicom"
+    rm -f "${RESULTS_DIR}/metadata"/dicom_metadata_*.nii*
     
     # Check if we can use FreeSurfer's mri_info to get additional information
     if command -v mri_info &> /dev/null; then
