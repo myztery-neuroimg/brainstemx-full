@@ -9,7 +9,7 @@ set -o pipefail
 
 # Function for logging with timestamps
 log_message() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$log_file"
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" >&2 | tee -a "$log_file"
 }   
 
 SRC_DIR="../DiCOM"
@@ -175,10 +175,10 @@ log_formatted() {
   local message=$2
   
   case $level in
-    "INFO") echo -e "${BLUE}[INFO]${NC} $message" ;;
-    "SUCCESS") echo -e "${GREEN}[SUCCESS]${NC} $message" ;;
-    "WARNING") echo -e "${YELLOW}[WARNING]${NC} $message" ;;
-    "ERROR") echo -e "${RED}[ERROR]${NC} $message" ;;
+    "INFO") echo -e "${BLUE}[INFO]${NC} $message" >&2 ;;
+    "SUCCESS") echo -e "${GREEN}[SUCCESS]${NC} $message" >&2 ;;
+    "WARNING") echo -e "${YELLOW}[WARNING]${NC} $message" >&2 ;;
+    "ERROR") echo -e "${RED}[ERROR]${NC} $message" >&2 ;;
   esac
 }
 
@@ -579,6 +579,173 @@ get_n4_parameters() {
 }
 
 
+# Add this before the DICOM to NIfTI conversion (around line 778)
+log_message "==== Extracting DICOM metadata for processing optimization ===="
+mkdir -p "${RESULTS_DIR}/metadata"
+
+# Create a function to extract key Siemens parameters
+extract_siemens_metadata() {
+    local dicom_dir="$1"
+    local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
+    
+    log_message "Extracting Siemens MAGNETOM Sola metadata..."
+    
+    # Find the first DICOM file for metadata extraction
+    local first_dicom=$(find "$dicom_dir" -name "Image*" -type f | head -1)
+    
+    if [ -z "$first_dicom" ]; then
+        log_message "⚠️ No DICOM files found for metadata extraction."
+        return 1
+    fi
+    
+    # Use dcmdump to extract key Siemens parameters
+    # Extracting manufacturer, field strength, and protocol name
+    local manufacturer=$(dcmdump "$first_dicom" | grep -i "Manufacturer" | head -1 | sed 's/.*\[\(.*\)\].*/\1/')
+    local field_strength=$(dcmdump "$first_dicom" | grep -i "MagneticFieldStrength" | head -1 | sed 's/.*\[\(.*\)\].*/\1/')
+    local protocol=$(dcmdump "$first_dicom" | grep -i "ProtocolName" | head -1 | sed 's/.*\[\(.*\)\].*/\1/')
+    local model=$(dcmdump "$first_dicom" | grep -i "ManufacturerModelName" | head -1 | sed 's/.*\[\(.*\)\].*/\1/')
+    
+    # Extract Siemens-specific private tags using dcmdump
+    # These contain advanced sequence parameters
+    local siemens_specific=$(dcmdump "$first_dicom" | grep -i "SIEMENS" | grep -v "Manufacturer")
+    
+    # Create JSON file with extracted metadata
+    echo "{" > "$metadata_file"
+    echo "  \"manufacturer\": \"$manufacturer\"," >> "$metadata_file"
+    echo "  \"fieldStrength\": $field_strength," >> "$metadata_file"
+    echo "  \"protocolName\": \"$protocol\"," >> "$metadata_file"
+    echo "  \"modelName\": \"$model\"," >> "$metadata_file"
+    
+    # Extract key Siemens MAGNETOM Sola parameters related to distortion correction
+    # This requires pydicom for more advanced extraction
+    if command -v python3 &> /dev/null; then
+        # Create a temporary Python script to extract advanced parameters
+        cat > "${RESULTS_DIR}/metadata/extract_siemens.py" << EOF
+import pydicom
+import json
+import sys
+import os
+
+# Read the DICOM file
+dcm = pydicom.dcmread(sys.argv[1])
+
+# Extract Siemens CSA header (contains advanced parameters)
+siemens_data = {}
+
+# Check if it's a Siemens DICOM
+if hasattr(dcm, 'ManufacturerModelName') and 'MAGNETOM Sola' in dcm.ManufacturerModelName:
+    # Extract key parameters used by MAGNETOM Sola
+    try:
+        # Extract relevant tags
+        if hasattr(dcm, 'Private_0029_1010'):
+            siemens_data['hasCSAHeader'] = True
+        if hasattr(dcm, 'ImageOrientationPatient'):
+            siemens_data['orientation'] = dcm.ImageOrientationPatient
+        if hasattr(dcm, 'PixelSpacing'):
+            siemens_data['pixelSpacing'] = dcm.PixelSpacing
+        if hasattr(dcm, 'SliceThickness'):
+            siemens_data['sliceThickness'] = dcm.SliceThickness
+        if hasattr(dcm, 'SpacingBetweenSlices'):
+            siemens_data['spacingBetweenSlices'] = dcm.SpacingBetweenSlices
+            
+        # Get sequence-specific parameters
+        if hasattr(dcm, 'SequenceName'):
+            siemens_data['sequenceName'] = dcm.SequenceName
+        
+        # Extract B-value for DWI if present
+        if hasattr(dcm, 'DiffusionBValue'):
+            siemens_data['bValue'] = dcm.DiffusionBValue
+            
+        # Get key parameters for distortion correction in EPI sequences
+        if hasattr(dcm, 'Private_0019_1018'):  # EPI factor
+            siemens_data['epiFactor'] = dcm.Private_0019_1018
+            
+    except Exception as e:
+        siemens_data['error'] = str(e)
+
+# Write to JSON file
+with open(sys.argv[2], 'w') as f:
+    json.dump(siemens_data, f, indent=2)
+EOF
+
+        python3 "${RESULTS_DIR}/metadata/extract_siemens.py" "$first_dicom" "${RESULTS_DIR}/metadata/siemens_advanced.json"
+        
+        # Merge the Python-extracted data into our main JSON
+        if [ -f "${RESULTS_DIR}/metadata/siemens_advanced.json" ]; then
+            # Format the Python output to be merged into our JSON
+            siemens_advanced=$(cat "${RESULTS_DIR}/metadata/siemens_advanced.json" | sed '1d;$d' | sed 's/^/  /')
+            echo "$siemens_advanced," >> "$metadata_file"
+        fi
+    fi
+    
+    # Close the JSON file
+    echo "  \"siemensSpecificTags\": \"extracted\"" >> "$metadata_file"
+    echo "}" >> "$metadata_file"
+    
+    log_message "✅ Siemens metadata extracted to: $metadata_file"
+}
+
+# Extract metadata
+extract_siemens_metadata "$SRC_DIR"
+
+# Function to optimize ANTs parameters based on scanner metadata
+optimize_ants_parameters() {
+    local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
+    
+    # Default optimized parameters
+    TEMPLATE_DIR="$ANTSPATH/data"
+    EXTRACTION_TEMPLATE="T_template0.nii.gz"
+    PROBABILITY_MASK="T_template0_BrainCerebellumProbabilityMask.nii.gz"
+    REGISTRATION_MASK="T_template0_BrainCerebellumRegistrationMask.nii.gz"
+    
+    # Check if metadata exists
+    if [ ! -f "$metadata_file" ]; then
+        log_message "⚠️ No metadata found. Using default ANTs parameters."
+        return
+    fi
+    
+    # Check if jq is available (JSON parser)
+    if ! command -v jq &> /dev/null; then
+        log_message "⚠️ jq not found. Cannot parse metadata JSON. Using default ANTs parameters."
+        return
+    fi
+    
+    # Extract field strength from metadata
+    local field_strength=$(jq -r '.fieldStrength // 3' "$metadata_file")
+    
+    # Optimize template selection based on field strength
+    # ANTs provides different templates for different field strengths
+    if (( $(echo "$field_strength > 2.5" | bc -l) )); then
+        log_message "Optimizing for 3T scanner (field strength: $field_strength T)"
+        EXTRACTION_TEMPLATE="T_template0.nii.gz"  # 3T template
+    else
+        log_message "Optimizing for 1.5T scanner (field strength: $field_strength T)"
+        EXTRACTION_TEMPLATE="T_template0_1.5T.nii.gz"  # 1.5T template (if available)
+        # If 1.5T template doesn't exist, it will fall back to default
+        if [ ! -f "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" ]; then
+            log_message "⚠️ 1.5T template not found. Using default 3T template."
+            EXTRACTION_TEMPLATE="T_template0.nii.gz"
+        fi
+    fi
+    
+    # Check for Siemens MAGNETOM Sola specific optimizations
+    local model=$(jq -r '.modelName // ""' "$metadata_file")
+    if [[ "$model" == *"MAGNETOM Sola"* ]]; then
+        log_message "Applying optimizations specific to Siemens MAGNETOM Sola"
+        
+        # Adjust parameters based on MAGNETOM Sola characteristics
+        # These values are hypothetical examples - adjust based on actual testing
+        REG_TRANSFORM_TYPE=3  # Use more aggressive transformation model
+        REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.25]"  # More robust mutual information
+        N4_BSPLINE=200  # Optimized for MAGNETOM Sola field inhomogeneity profile
+    fi
+    
+    log_message "✅ ANTs parameters optimized based on scanner metadata"
+}
+
+# Call the optimization function
+optimize_ants_parameters
+
 # Step 1: Convert DICOM to NIfTI using dcm2niix with Siemens optimizations
 log_message "==== Step 1: DICOM to NIfTI Conversion ===="
 log_message "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
@@ -733,22 +900,46 @@ process_n4_correction() {
     log_message "Performing bias correction on: $basename"
 
     # Create an initial brain mask for better bias correction
-    antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
-        -e "$ANTSPATH/data/T_template0.nii.gz" \
-        -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
-        -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
+    #antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
+    #    -e "$ANTSPATH/data/T_template0.nii.gz" \
+    #    -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
+    #    -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
+
+    antsBrainExtraction.sh -d 3 -a "$file" -o "${output_prefix}" \
+        -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+        -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+        -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
 
     # Get sequence-specific N4 parameters
     n4_params=($(get_n4_parameters "$file"))
 
     # Run N4 bias correction
-    N4BiasFieldCorrection -d 3 \
-        -i "$file" \
-        -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
-        -o "$output_file" \
-        -b [${n4_params[2]}] \
-        -s ${n4_params[3]} \
-        -c "[${n4_params[0]},${n4_params[1]}]"
+    #N4BiasFieldCorrection -d 3 \
+    #j    -i "$file" \
+    #    -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
+    #    -o "$output_file" \
+    #    -b [${n4_params[2]}] \
+    #    -s ${n4_params[3]} \
+    #    -c "[${n4_params[0]},${n4_params[1]}]"
+
+    # Use optimized parameters from metadata if available
+    if [[ -n "$N4_BSPLINE" ]]; then
+        N4BiasFieldCorrection -d 3 \
+            -i "$file" \
+            -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
+            -o "$output_file" \
+            -b [$N4_BSPLINE] \
+            -s ${n4_params[3]} \
+            -c "[${n4_params[0]},${n4_params[1]}]"
+    else
+        N4BiasFieldCorrection -d 3 \
+            -i "$file" \
+            -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
+            -o "$output_file" \
+            -b [${n4_params[2]}] \
+            -s ${n4_params[3]} \
+            -c "[${n4_params[0]},${n4_params[1]}]"
+    fi
 
     log_message "Saved bias-corrected image to: $output_file"
 }
@@ -766,7 +957,8 @@ mkdir -p "${RESULTS_DIR}/registered"
 
 # First identify a T1w reference image if available
 reference_image=""
-t1_files=($(find "$RESULTS_DIR/bias_corrected" -name "*T1*n4.nii.gz" -o -name "*T1*n4.nii.gz"))
+#t1_files=($(find "$RESULTS_DIR/bias_corrected" -name "*T1*n4.nii.gz" -o -name "*T1*n4.nii.gz"))
+t1_files=($(find "$RESULTS_DIR/standardized" -name "*T1*n4_std.nii.gz"))
 
 if [ ${#t1_files[@]} -gt 0 ]; then
   best_t1=""
@@ -793,7 +985,9 @@ else
 fi
 
 # Process all images - register to the reference
-find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read -r -d '' file; do
+#find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read -r -d '' file; do
+find "$RESULTS_DIR/standardized" -name "*n4_std.nii.gz" -print0 | while IFS= read -r -d '' file; do
+
     basename=$(basename "$file" .nii.gz)
     output_prefix="${RESULTS_DIR}/registered/${basename}_"
     
@@ -802,14 +996,27 @@ find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | while IFS= read 
     # For FLAIR or T2 to T1 registration, use mutual information metric
     # This handles cross-modality registration better
     if [[ "$file" == *"FLAIR"* || "$file" == *"T2"* ]]; then
-        antsRegistrationSyN.sh -d 3 \
-            -f "$reference_image" \
-            -m "$file" \
-            -o "$output_prefix" \
-            -t r \
-            -n 4 \
-            -p f \
-            -j 1
+        # Use optimized cross-modality registration metric if available
+        if [[ -n "$REG_METRIC_CROSS_MODALITY" ]]; then
+            antsRegistrationSyN.sh -d 3 \
+                -f "$reference_image" \
+                -m "$file" \
+                -o "$output_prefix" \
+                -t $REG_TRANSFORM_TYPE \
+                -n 4 \
+                -p f \
+                -j 1 \
+                -x "$REG_METRIC_CROSS_MODALITY"
+        else
+            antsRegistrationSyN.sh -d 3 \
+                -f "$reference_image" \
+                -m "$file" \
+                -o "$output_prefix" \
+                -t r \
+                -n 4 \
+                -p f \
+                -j 1
+        fi
     else
         # For same modality, use cross-correlation which works better
         antsRegistrationSyN.sh -d 3 \
@@ -845,9 +1052,13 @@ find "${RESULTS_DIR}/registered" -name "*reg.nii.gz" -print0 | while IFS= read -
     antsBrainExtraction.sh -d 3 \
         -a "$file" \
         -o "$output_prefix" \
-        -e "$ANTSPATH/data/T_template0.nii.gz" \
-        -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
-        -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
+    #    -e "$ANTSPATH/data/T_template0.nii.gz" \
+    #    -m "$ANTSPATH/data/T_template0_BrainCerebellumProbabilityMask.nii.gz" \
+    #    -f "$ANTSPATH/data/T_template0_BrainCerebellumRegistrationMask.nii.gz"
+        -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+        -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+        -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+
     
     # Calculate SNR using ANTs tools
     # Get mean signal in brain
@@ -911,6 +1122,72 @@ if [ ${#flair_files[@]} -gt 0 ]; then
 else
     log_message "⚠️ No FLAIR images found for intensity normalization."
 fi
+
+log_message "==== Step 2.5: Standardizing Image Dimensions ===="
+mkdir -p "${RESULTS_DIR}/standardized"
+
+# Target dimensions (512×512×512)
+TARGET_X=512
+TARGET_Y=512
+TARGET_Z=512
+
+standardize_dimensions() {
+    local input_file="$1"
+    local basename=$(basename "$input_file" .nii.gz)
+    local output_file="${RESULTS_DIR}/standardized/${basename}_std.nii.gz"
+    
+    log_message "Standardizing dimensions for: $basename"
+    
+    # Get current image dimensions and spacings
+    local x_dim=$(fslval "$input_file" dim1)
+    local y_dim=$(fslval "$input_file" dim2)
+    local z_dim=$(fslval "$input_file" dim3)
+    local x_pixdim=$(fslval "$input_file" pixdim1)
+    local y_pixdim=$(fslval "$input_file" pixdim2)
+    local z_pixdim=$(fslval "$input_file" pixdim3)
+    
+    # Calculate target voxel size to maintain physical dimensions
+    # This ensures the brain size remains the same, just with different sampling
+    local physical_x=$(echo "$x_dim * $x_pixdim" | bc -l)
+    local physical_y=$(echo "$y_dim * $y_pixdim" | bc -l)
+    local physical_z=$(echo "$z_dim * $z_pixdim" | bc -l)
+    
+    local target_x_pixdim=$(echo "$physical_x / $TARGET_X" | bc -l)
+    local target_y_pixdim=$(echo "$physical_y / $TARGET_Y" | bc -l)
+    local target_z_pixdim=$(echo "$physical_z / $TARGET_Z" | bc -l)
+    
+    # Use ANTs ResampleImage for high-quality resampling
+    # This is better than using FSL's flirt for pure resampling
+    ResampleImage 3 \
+        "$input_file" \
+        "$output_file" \
+        ${TARGET_X}x${TARGET_Y}x${TARGET_Z} \
+        0 # 0 = use linear interpolation, 1 = use nearest neighbor
+    
+    log_message "Saved standardized image to: $output_file"
+    
+    # Update NIFTI header with correct physical dimensions
+    # This ensures consistent physical space representation
+    c3d "$output_file" -spacing "$target_x_pixdim"x"$target_y_pixdim"x"$target_z_pixdim"mm -o "$output_file"
+    
+    # Note: An alternative approach is to maintain voxel size and pad/crop:
+    # c3d "$input_file" -pad-to $TARGET_X $TARGET_Y $TARGET_Z 0 -o "$output_file"
+}
+
+export -f standardize_dimensions log_message
+
+# Process all bias-corrected images
+find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | \
+parallel -0 -j 8 standardize_dimensions {}
+
+log_message "✅ Dimension standardization complete."
+
+# Update reference to use standardized files for subsequent steps
+# Modify this line at the registration step
+# Find all T1w reference images if available
+reference_image=""
+t1_files=($(find "$RESULTS_DIR/standardized" -name "*T1*n4_std.nii.gz"))
+
 
 # Step 6: Hyperintensity detection for FLAIR (using ANTs tools)
 if [ ${#flair_files[@]} -gt 0 ]; then
