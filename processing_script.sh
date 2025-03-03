@@ -1227,16 +1227,19 @@ else
     log_message "⚠️ No FLAIR images found for intensity normalization."
 fi
 
-log_message "==== Step 2.5: Standardizing Image Dimensions ===="
+# ==== NEW STEP 2.5: Flexible Image Dimension Standardization ====
+log_message "==== Step 2.5: Flexible Image Dimension Standardization ===="
 mkdir -p "${RESULTS_DIR}/standardized"
 
-log_message "==== Step 2.5: Standardizing Image Dimensions ===="
-mkdir -p "${RESULTS_DIR}/standardized"
-
-# Target dimensions (512×512×512)
-TARGET_X=512
-TARGET_Y=512
-TARGET_Z=512
+# Define sequence-specific target dimensions
+# Format: x,y,z dimensions or "isotropic:N" for isotropic voxels of size N mm
+declare -A SEQUENCE_DIMENSIONS=(
+  ["T1_MPRAGE"]="isotropic:1"  # 1mm isotropic resolution
+  ["FLAIR"]="512,512,keep"      # Standardize xy, preserve z
+  ["SWI"]="256,256,keep"        # Lower resolution for SWI
+  ["DWI"]="keep,keep,keep"      # Preserve original dimensions for diffusion
+  ["DEFAULT"]="512,512,keep"    # Default handling
+)
 
 standardize_dimensions() {
     local input_file="$1"
@@ -1253,27 +1256,97 @@ standardize_dimensions() {
     local y_pixdim=$(fslval "$input_file" pixdim2)
     local z_pixdim=$(fslval "$input_file" pixdim3)
     
-    # Calculate target voxel size to maintain physical dimensions
-    # This ensures the brain size remains the same, just with different sampling
-    local physical_x=$(echo "$x_dim * $x_pixdim" | bc -l)
-    local physical_y=$(echo "$y_dim * $y_pixdim" | bc -l)
-    local physical_z=$(echo "$z_dim * $z_pixdim" | bc -l)
+    # Determine sequence type from filename
+    local sequence_type="DEFAULT"
+    if [[ "$basename" == *"T1"* && "$basename" == *"MPRAGE"* ]]; then
+        sequence_type="T1_MPRAGE"
+    elif [[ "$basename" == *"FLAIR"* ]]; then
+        sequence_type="FLAIR"
+    elif [[ "$basename" == *"SWI"* ]]; then
+        sequence_type="SWI"
+    elif [[ "$basename" == *"DWI"* ]]; then
+        sequence_type="DWI"
+    fi
     
-    local target_x_pixdim=$(echo "$physical_x / $TARGET_X" | bc -l)
-    local target_y_pixdim=$(echo "$physical_y / $TARGET_Y" | bc -l)
-    local target_z_pixdim=$(echo "$physical_z / $TARGET_Z" | bc -l)
+    log_message "Identified sequence type: $sequence_type"
+    
+    # Get target dimensions for this sequence type
+    local target_dims=${SEQUENCE_DIMENSIONS[$sequence_type]}
+    local target_x=""
+    local target_y=""
+    local target_z=""
+    local isotropic_size=""
+    
+    # Parse the target dimensions
+    if [[ "$target_dims" == isotropic:* ]]; then
+        # Handle isotropic case
+        isotropic_size=$(echo "$target_dims" | cut -d':' -f2)
+        log_message "Using isotropic voxel size of ${isotropic_size}mm"
+        
+        # Calculate dimensions based on physical size
+        local physical_x=$(echo "$x_dim * $x_pixdim" | bc -l)
+        local physical_y=$(echo "$y_dim * $y_pixdim" | bc -l)
+        local physical_z=$(echo "$z_dim * $z_pixdim" | bc -l)
+        
+        target_x=$(echo "($physical_x / $isotropic_size + 0.5) / 1" | bc)
+        target_y=$(echo "($physical_y / $isotropic_size + 0.5) / 1" | bc)
+        target_z=$(echo "($physical_z / $isotropic_size + 0.5) / 1" | bc)
+        
+        # Ensure we have even dimensions (better for some algorithms)
+        target_x=$(echo "($target_x + 1) / 2 * 2" | bc)
+        target_y=$(echo "($target_y + 1) / 2 * 2" | bc)
+        target_z=$(echo "($target_z + 1) / 2 * 2" | bc)
+        
+        # Set voxel dimensions
+        x_pixdim=$isotropic_size
+        y_pixdim=$isotropic_size
+        z_pixdim=$isotropic_size
+    else
+        # Handle specified dimensions
+        target_x=$(echo "$target_dims" | cut -d',' -f1)
+        target_y=$(echo "$target_dims" | cut -d',' -f2)
+        target_z=$(echo "$target_dims" | cut -d',' -f3)
+        
+        # Handle "keep" keyword
+        if [ "$target_x" = "keep" ]; then target_x=$x_dim; fi
+        if [ "$target_y" = "keep" ]; then target_y=$y_dim; fi
+        if [ "$target_z" = "keep" ]; then target_z=$z_dim; fi
+        
+        # Recalculate voxel sizes to maintain physical dimensions
+        if [ "$target_x" != "$x_dim" ]; then
+            local physical_x=$(echo "$x_dim * $x_pixdim" | bc -l)
+            x_pixdim=$(echo "$physical_x / $target_x" | bc -l)
+        fi
+        if [ "$target_y" != "$y_dim" ]; then
+            local physical_y=$(echo "$y_dim * $y_pixdim" | bc -l)
+            y_pixdim=$(echo "$physical_y / $target_y" | bc -l)
+        fi
+        if [ "$target_z" != "$z_dim" ]; then
+            local physical_z=$(echo "$z_dim * $z_pixdim" | bc -l)
+            z_pixdim=$(echo "$physical_z / $target_z" | bc -l)
+        fi
+    fi
+    
+    log_message "Original dimensions: ${x_dim}x${y_dim}x${z_dim} with voxel size ${x_pixdim}x${y_pixdim}x${z_pixdim}mm"
+    log_message "Target dimensions: ${target_x}x${target_y}x${target_z} with voxel size ${x_pixdim}x${y_pixdim}x${z_pixdim}mm"
     
     # Use ANTs ResampleImage for high-quality resampling
     ResampleImage 3 \
         "$input_file" \
         "$output_file" \
-        ${TARGET_X}x${TARGET_Y}x${TARGET_Z} \
-        0 # 0 = use linear interpolation
+        ${target_x}x${target_y}x${target_z} \
+        0 \
+        0 # 0 = use linear interpolation (better for intensity images)
     
     log_message "Saved standardized image to: $output_file"
     
     # Update NIFTI header with correct physical dimensions
-    c3d "$output_file" -spacing "$target_x_pixdim"x"$target_y_pixdim"x"$target_z_pixdim"mm -o "$output_file"
+    c3d "$output_file" -spacing "$x_pixdim"x"$y_pixdim"x"$z_pixdim"mm -o "$output_file"
+    
+    # Calculate and report the size change
+    local orig_size=$(du -h "$input_file" | cut -f1)
+    local new_size=$(du -h "$output_file" | cut -f1)
+    log_message "Size change: $orig_size → $new_size"
 }
 
 export -f standardize_dimensions log_message
@@ -1283,7 +1356,6 @@ find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | \
 parallel -0 -j 8 standardize_dimensions {}
 
 log_message "✅ Dimension standardization complete."
-
 
 # Update reference to use standardized files for subsequent steps
 # Modify this line at the registration step
