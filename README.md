@@ -160,7 +160,7 @@ The sequence-specific bias correction parameters (especially the FLAIR-specific 
 * These approaches typically achieve Dice coefficients of 0.75-0.85
 * They handle heterogeneous lesion appearances more robustly
 
-#q Acknowledgments
+# Acknowledgments
 
 This framework integrates tools developed by the neuroimaging community:
 
