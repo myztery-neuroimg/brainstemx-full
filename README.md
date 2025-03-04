@@ -15,22 +15,22 @@ White matter hyperintensity detection: Implements robust, tissue-aware algorithm
 # Requirements
 The pipeline requires the following neuroimaging tools:
 
-ANTs (Advanced Normalization Tools)
-FSL (FMRIB Software Library)
-FreeSurfer
-Convert3D (c3d)
-dcm2niix
-Python with pydicom (for metadata extraction)
+* ANTs (Advanced Normalization Tools)
+* FSL (FMRIB Software Library)
+* FreeSurfer
+* Convert3D (c3d)
+* dcm2niix
+* Python with pydicom (for metadata extraction)
 
 # Optional but recommended:
 
-GNU Parallel
-ImageMagick
+* GNU Parallel
+* ImageMagick
 
 # Installation
 Clone this repository
 ```
-git clone https://github.com/yourusername/mri-processing-framework.git
+git clone https://github.com/davidj-brewster/mri-processing-framework.git
 cd mri-processing-framework
 ```
 # Ensure dependencies are installed
@@ -49,24 +49,27 @@ mkdir -p DiCOM extracted mri_results
 ```
 cp /path/to/your/dicom/files/* DiCOM/
 ```
+
 # Run the processing pipeline
 ```
 ./processing_script.sh
 ```
 
-Advanced Configuration
+# Advanced Configuration
+
 The framework supports customization through configuration parameters at the top of the script:
 
-Set quality preset
+* Set quality preset
 ```
 QUALITY_PRESET="HIGH"  # Options: LOW, MEDIUM, HIGH
 ```
 
-# Configure threading
+* Configure threading
 ```
 ANTS_THREADS=8
 ```
-# Set hyperintensity detection parameters
+
+* Set hyperintensity detection parameters
 ```
 THRESHOLD_WM_SD_MULTIPLIER=2.5
 MIN_HYPERINTENSITY_SIZE=5
@@ -75,49 +78,56 @@ MIN_HYPERINTENSITY_SIZE=5
 # Processing Pipeline
 The framework implements a sequential processing workflow:
 
-DICOM to NIfTI conversion: Transforms DICOM files to the NIfTI format using dcm2niix
-Scanner metadata extraction: Analyzes DICOM headers to optimize processing parameters
-Multi-axial integration: Combines images from different acquisition planes
-N4 bias field correction: Removes intensity non-uniformities with sequence-specific parameters
-Dimension standardization: Ensures consistent spatial resolution across images
-Registration: Aligns all images to a common reference space
-Quality assessment: Calculates SNR and generates visualization outputs
-Intensity normalization: Standardizes intensity profiles for consistent analysis
-Hyperintensity detection: Identifies white matter abnormalities through adaptive thresholding and morphological operations
-Statistical analysis: Quantifies detected abnormalities and generates reports
+* DICOM to NIfTI conversion: Transforms DICOM files to the NIfTI format using dcm2niix
+* Scanner metadata extraction: Analyzes DICOM headers to optimize processing parameters
+* Multi-axial integration: Combines images from different acquisition planes
+* N4 bias field correction: Removes intensity non-uniformities with sequence-specific parameters
+* Dimension standardization: Ensures consistent spatial resolution across images
+* Registration: Aligns all images to a common reference space
+* Quality assessment: Calculates SNR and generates visualization outputs
+* Intensity normalization: Standardizes intensity profiles for consistent analysis
+* Hyperintensity detection: Identifies white matter abnormalities through adaptive thresholding and morphological operations
+* Statistical analysis: Quantifies detected abnormalities and generates reports
 
 # Outputs
+
 The pipeline generates structured outputs in the mri_results directory:
 
-combined/: High-resolution volumes from multi-axial integration
-bias_corrected/: N4-corrected images
-standardized/: Dimension-standardized images
-registered/: Images aligned to common space
-quality_checks/: SNR measurements and quality visualizations
-intensity_normalized/: Intensity-standardized images
-hyperintensities/: Detected white matter abnormalities
-cropped/: Brain-extracted images
-hyperintensity_report.txt: Statistical summary of findings
+* combined/: High-resolution volumes from multi-axial integration
+* bias_corrected/: N4-corrected images
+* standardized/: Dimension-standardized images
+* registered/: Images aligned to common space
+* quality_checks/: SNR measurements and quality visualizations
+* intensity_normalized/: Intensity-standardized images
+* hyperintensities/: Detected white matter abnormalities
+* cropped/: Brain-extracted images
+* hyperintensity_report.txt: Statistical summary of findings
 
 # Visualization
 The framework includes scripts for visualizing results in FreeSurfer's Freeview:
-bashCopy# Launch comprehensive visualization
+
+```
 ./mri_results/view_all_results.sh
+```
 
 # View specific hyperintensity results
+
+```
 ./mri_results/hyperintensities/FLAIR_*_view_in_freeview.sh
+```
+
 Technical Notes
 
-The hyperintensity detection uses an adaptive threshold based on white matter statistics: WM_mean + (WM_SD * THRESHOLD_WM_SD_MULTIPLIER)
-Registration employs different similarity metrics for same-modality (correlation) and cross-modality (mutual information) alignment
-Tissue segmentation incorporates data from T1 when available, with fallback to intensity-based segmentation
-The N4 bias field correction parameters are optimized separately for each sequence type
+* The hyperintensity detection uses an adaptive threshold based on white matter statistics: WM_mean + (WM_SD * THRESHOLD_WM_SD_MULTIPLIER)
+* Registration employs different similarity metrics for same-modality (correlation) and cross-modality (mutual information) alignment
+* Tissue segmentation incorporates data from T1 when available, with fallback to intensity-based segmentation
+* The N4 bias field correction parameters are optimized separately for each sequence type
 
 # Acknowledgments
 This framework integrates tools developed by the neuroimaging community:
 
-ANTs: http://stnava.github.io/ANTs/
-FSL: https://fsl.fmrib.ox.ac.uk/fsl/
-FreeSurfer: https://surfer.nmr.mgh.harvard.edu/
-Convert3D: http://www.itksnap.org/pmwiki/pmwiki.php?n=Convert3D
-dcm2niix: https://github.com/rordenlab/dcm2niix
+* ANTs: http://stnava.github.io/ANTs/
+* FSL: https://fsl.fmrib.ox.ac.uk/fsl/
+* FreeSurfer: https://surfer.nmr.mgh.harvard.edu/
+* Convert3D: http://www.itksnap.org/pmwiki/pmwiki.php?n=Convert3D
+* dcm2niix: https://github.com/rordenlab/dcm2niix
