@@ -3,14 +3,15 @@ A comprehensive neuroimaging pipeline for automated analysis of brain MRI scans,
 
 # Overview
 This framework integrates multiple neuroimaging tools (ANTs, FSL, FreeSurfer, Convert3D) into a streamlined workflow for processing MRI data. It handles conversion from DICOM to NIfTI, applies bias field correction, registers multiple acquisition planes, and performs hyperintensity detection with robust statistical analysis.
-Key Features
 
-Multi-axial integration: Combines sagittal, coronal, and axial acquisitions to enhance resolution and signal quality
-Adaptive parameterization: Automatically optimizes processing parameters based on sequence type and scanner metadata
-Customizable quality presets: Supports configurable processing quality levels (LOW, MEDIUM, HIGH)
-Parallel processing: Leverages multi-core architectures for improved performance
-Comprehensive quality control: Generates visualization outputs and quantitative metrics at each processing stage
-White matter hyperintensity detection: Implements robust, tissue-aware algorithm for identifying and quantifying abnormalities
+# Key Features
+
+* Multi-axial integration: Combines sagittal, coronal, and axial acquisitions to enhance resolution and signal quality
+* Adaptive parameterization: Automatically optimizes processing parameters based on sequence type and scanner metadata
+* Customizable quality presets: Supports configurable processing quality levels (LOW, MEDIUM, HIGH)
+* Parallel processing: Leverages multi-core architectures for improved performance
+* Comprehensive quality control: Generates visualization outputs and quantitative metrics at each processing stage
+* White matter hyperintensity detection: Implements robust, tissue-aware algorithm for identifying and quantifying abnormalities
 
 # Requirements
 The pipeline requires the following neuroimaging tools:
