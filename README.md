@@ -3,6 +3,7 @@ A comprehensive neuroimaging pipeline for automated analysis of brain MRI scans,
 
 # Overview
 This framework integrates multiple neuroimaging tools (ANTs, FSL, FreeSurfer, Convert3D) into a streamlined workflow for processing MRI data. It handles conversion from DICOM to NIfTI, applies bias field correction, registers multiple acquisition planes, and performs hyperintensity detection with robust statistical analysis.
+It's specifically optimised for Siemens scanners but will also work independently of that.
 
 # Key Features
 
@@ -29,29 +30,32 @@ The pipeline requires the following neuroimaging tools:
 * ImageMagick
 
 # Installation
+
 Clone this repository
+
 ```
-git clone https://github.com/davidj-brewster/mri-processing-framework.git
+git clone https://github.com/davidj-brewster/brainMRI-clustering.git
 cd mri-processing-framework
 ```
+
 # Ensure dependencies are installed
+
+```
 ./processing_script.sh check_dependencies
+```
 
 #Usage
 
 ## Basic Usage
 
-Set up directory structure
-
-```
-mkdir -p DiCOM extracted mri_results
-```
 # Place DICOM files in the DiCOM directory
+
 ```
 cp /path/to/your/dicom/files/* DiCOM/
 ```
 
 # Run the processing pipeline
+
 ```
 ./processing_script.sh
 ```
@@ -61,22 +65,26 @@ cp /path/to/your/dicom/files/* DiCOM/
 The framework supports customization through configuration parameters at the top of the script:
 
 * Set quality preset
+* 
 ```
 QUALITY_PRESET="HIGH"  # Options: LOW, MEDIUM, HIGH
 ```
 
 * Configure threading
+* 
 ```
 ANTS_THREADS=8
 ```
 
 * Set hyperintensity detection parameters
+* 
 ```
 THRESHOLD_WM_SD_MULTIPLIER=2.5
 MIN_HYPERINTENSITY_SIZE=5
 ```
 
 # Processing Pipeline
+
 The framework implements a sequential processing workflow:
 
 * DICOM to NIfTI conversion: Transforms DICOM files to the NIfTI format using dcm2niix
@@ -105,6 +113,7 @@ The pipeline generates structured outputs in the mri_results directory:
 * hyperintensity_report.txt: Statistical summary of findings
 
 # Visualization
+
 The framework includes scripts for visualizing results in FreeSurfer's Freeview:
 
 ```
@@ -125,6 +134,7 @@ Technical Notes
 * The N4 bias field correction parameters are optimized separately for each sequence type
 
 # Acknowledgments
+
 This framework integrates tools developed by the neuroimaging community:
 
 * ANTs: http://stnava.github.io/ANTs/
