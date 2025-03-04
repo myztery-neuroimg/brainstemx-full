@@ -65,19 +65,16 @@ cp /path/to/your/dicom/files/* DiCOM/
 The framework supports customization through configuration parameters at the top of the script:
 
 * Set quality preset
-* 
 ```
 QUALITY_PRESET="HIGH"  # Options: LOW, MEDIUM, HIGH
 ```
 
 * Configure threading
-* 
 ```
 ANTS_THREADS=8
 ```
 
 * Set hyperintensity detection parameters
-* 
 ```
 THRESHOLD_WM_SD_MULTIPLIER=2.5
 MIN_HYPERINTENSITY_SIZE=5
