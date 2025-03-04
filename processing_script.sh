@@ -596,183 +596,79 @@ extract_siemens_metadata() {
         return 1
     fi
     
-    # Create a temporary directory with just the single file
-    mkdir -p "${RESULTS_DIR}/metadata/temp_dicom"
-    cp "$first_dicom" "${RESULTS_DIR}/metadata/temp_dicom/single_dicom.dcm"
+    # Create metadata directory if it doesn't exist
+    mkdir -p "$(dirname "$metadata_file")"
     
-    # Use dcm2niix with single file isolation and include indexing parameter
-    log_message "Using dcm2niix to extract DICOM header information..."
-    dcm2niix -ba y -o "${RESULTS_DIR}/metadata" -f "dicom_metadata_%d" -i y -v 0 "${RESULTS_DIR}/metadata/temp_dicom/"
+    # Create default metadata file in case the Python script fails
+    echo "{\"manufacturer\":\"Unknown\",\"fieldStrength\":3,\"modelName\":\"Unknown\"}" > "$metadata_file"
     
-    # Check if JSON file was created (find the first one if multiple were created)
-    local json_file=$(find "${RESULTS_DIR}/metadata" -name "dicom_metadata_*.json" | head -1)
+    # Path to the external Python script
+    local python_script="./extract_dicom_metadata.py"
     
-    if [ -z "$json_file" ]; then
-        log_message "⚠️ Failed to extract DICOM metadata with dcm2niix."
-        
-        # Create a minimal JSON with defaults
-        echo "{" > "$metadata_file"
-        echo "  \"manufacturer\": \"Unknown\"," >> "$metadata_file"
-        echo "  \"fieldStrength\": 3," >> "$metadata_file"
-        echo "  \"modelName\": \"Unknown\"" >> "$metadata_file"
-        echo "}" >> "$metadata_file"
-        
-        # Clean up temporary directory
-        rm -rf "${RESULTS_DIR}/metadata/temp_dicom"
+    # Check if the Python script exists
+    if [ ! -f "$python_script" ]; then
+        log_message "⚠️ Python script not found at: $python_script"
         return 1
     fi
     
-    # Copy the generated JSON to our target file
-    cp "$json_file" "$metadata_file"
+    # Make sure the script is executable
+    chmod +x "$python_script"
     
-    # Clean up temporary files
-    rm -rf "${RESULTS_DIR}/metadata/temp_dicom"
-    rm -f "${RESULTS_DIR}/metadata"/dicom_metadata_*.nii*
+    # Run the Python script with a timeout
+    log_message "Extracting metadata with Python script..."
     
-    # Check if we can use FreeSurfer's mri_info to get additional information
-    if command -v mri_info &> /dev/null; then
-        log_message "Using FreeSurfer's mri_info to extract additional DICOM information..."
+    # Try to use timeout command if available
+    if command -v timeout &> /dev/null; then
+        timeout 30s python3 "$python_script" "$first_dicom" "$metadata_file".tmp 2>"${RESULTS_DIR}/metadata/python_error.log"
+        exit_code=$?
         
-        # Create a temporary NIfTI file from the DICOM
-        dcm2niix -z n -o "${RESULTS_DIR}/metadata" -f "temp_for_info" -v 0 "$first_dicom"
-        
-        if [ -f "${RESULTS_DIR}/metadata/temp_for_info.nii" ]; then
-            # Extract TE, TR, and flip angle information
-            local te=$(mri_info --tr "${RESULTS_DIR}/metadata/temp_for_info.nii" 2>/dev/null || echo "Unknown")
-            local tr=$(mri_info --te "${RESULTS_DIR}/metadata/temp_for_info.nii" 2>/dev/null || echo "Unknown")
-            local flip_angle=$(mri_info --flip_angle "${RESULTS_DIR}/metadata/temp_for_info.nii" 2>/dev/null || echo "Unknown")
-            
-            # Append to the JSON file (crude but functional approach)
-            # Remove the closing brace
-            sed -i '' -e '$ d' "$metadata_file" 2>/dev/null || sed -i '$ d' "$metadata_file"
-            
-            # Add the new fields
-            echo "  ,\"TE\": \"$te\"," >> "$metadata_file"
-            echo "  \"TR\": \"$tr\"," >> "$metadata_file"
-            echo "  \"FlipAngle\": \"$flip_angle\"" >> "$metadata_file"
-            
-            # Close the JSON
-            echo "}" >> "$metadata_file"
-            
-            # Clean up
-            rm -f "${RESULTS_DIR}/metadata/temp_for_info.nii"
-        fi
-    fi
-    
-    # Try to extract additional information with Python if available
-    if command -v python3 &> /dev/null; then
-        log_message "Checking if pydicom is available for advanced extraction..."
-        
-        # Check if pydicom is installed
-        if python3 -c "import pydicom" 2>/dev/null; then
-            log_message "Using pydicom for advanced DICOM parameter extraction..."
-            
-            # Create a temporary Python script to extract advanced parameters
-            cat > "${RESULTS_DIR}/metadata/extract_siemens.py" << EOF
-import pydicom
-import json
-import sys
-import os
-
-try:
-    # Read the DICOM file
-    dcm = pydicom.dcmread(sys.argv[1])
-    
-    # Extract Siemens CSA header (contains advanced parameters)
-    siemens_data = {}
-    
-    # Get basic information
-    try:
-        if hasattr(dcm, 'Manufacturer'):
-            siemens_data['manufacturer'] = dcm.Manufacturer
-        if hasattr(dcm, 'ManufacturerModelName'):
-            siemens_data['modelName'] = dcm.ManufacturerModelName
-        if hasattr(dcm, 'MagneticFieldStrength'):
-            siemens_data['fieldStrength'] = float(dcm.MagneticFieldStrength)
-        if hasattr(dcm, 'ProtocolName'):
-            siemens_data['protocolName'] = dcm.ProtocolName
-        if hasattr(dcm, 'SeriesDescription'):
-            siemens_data['seriesDescription'] = dcm.SeriesDescription
-            
-        # Get sequence information
-        if hasattr(dcm, 'SequenceName'):
-            siemens_data['sequenceName'] = dcm.SequenceName
-        if hasattr(dcm, 'ScanningSequence'):
-            siemens_data['scanningSequence'] = dcm.ScanningSequence
-        if hasattr(dcm, 'SequenceVariant'):
-            siemens_data['sequenceVariant'] = dcm.SequenceVariant
-            
-        # Get geometric information
-        if hasattr(dcm, 'SliceThickness'):
-            siemens_data['sliceThickness'] = float(dcm.SliceThickness)
-        if hasattr(dcm, 'SpacingBetweenSlices'):
-            siemens_data['spacingBetweenSlices'] = float(dcm.SpacingBetweenSlices)
-        if hasattr(dcm, 'PixelSpacing'):
-            siemens_data['pixelSpacing'] = [float(x) for x in dcm.PixelSpacing]
-    except Exception as e:
-        siemens_data['error'] = str(e)
-
-    # Now, check if it's a Siemens MAGNETOM Sola scanner specifically
-    is_sola = False
-    if hasattr(dcm, 'ManufacturerModelName') and 'MAGNETOM Sola' in dcm.ManufacturerModelName:
-        is_sola = True
-        siemens_data['isMagnetomSola'] = True
-    
-    # Write to JSON file
-    with open(sys.argv[2], 'w') as f:
-        json.dump(siemens_data, f, indent=2)
-
-except Exception as e:
-    # Create a simple error JSON
-    with open(sys.argv[2], 'w') as f:
-        json.dump({"error": str(e)}, f, indent=2)
-EOF
-
-            python3 "${RESULTS_DIR}/metadata/extract_siemens.py" "$first_dicom" "${RESULTS_DIR}/metadata/siemens_advanced.json"
-            
-            # Merge the Python-extracted data with our existing data if successful
-            if [ -f "${RESULTS_DIR}/metadata/siemens_advanced.json" ]; then
-                # Generate a merged JSON file using Python
-                cat > "${RESULTS_DIR}/metadata/merge_json.py" << EOF
-import json
-import sys
-
-try:
-    # Load both JSON files
-    with open(sys.argv[1], 'r') as f1:
-        json1 = json.load(f1)
-    
-    with open(sys.argv[2], 'r') as f2:
-        json2 = json.load(f2)
-    
-    # Merge them
-    merged = {**json1, **json2}
-    
-    # Write the merged JSON
-    with open(sys.argv[3], 'w') as f_out:
-        json.dump(merged, f_out, indent=2)
-except Exception as e:
-    # In case of error, just copy the first file
-    print(f"Error merging JSON: {e}")
-    with open(sys.argv[1], 'r') as f1:
-        content = f1.read()
-    
-    with open(sys.argv[3], 'w') as f_out:
-        f_out.write(content)
-EOF
-
-                python3 "${RESULTS_DIR}/metadata/merge_json.py" "$metadata_file" "${RESULTS_DIR}/metadata/siemens_advanced.json" "${RESULTS_DIR}/metadata/merged.json"
-                
-                # Replace the original file with the merged one
-                mv "${RESULTS_DIR}/metadata/merged.json" "$metadata_file"
-            fi
+        if [ $exit_code -eq 124 ] || [ $exit_code -eq 143 ]; then
+            log_message "⚠️ Python script timed out. Using default values."
+        elif [ $exit_code -ne 0 ]; then
+            log_message "⚠️ Python script failed with exit code $exit_code. See ${RESULTS_DIR}/metadata/python_error.log for details."
         else
-            log_message "pydicom is not installed. Limited metadata extraction only."
+            # Only use the output if the script succeeded
+            mv "$metadata_file".tmp "$metadata_file"
+            log_message "✅ Metadata extracted successfully using Python"
         fi
+    else
+        # If timeout command is not available, run with background process and kill if it takes too long
+        python3 "$python_script" "$first_dicom" "$metadata_file".tmp 2>"${RESULTS_DIR}/metadata/python_error.log" &
+        python_pid=$!
+        
+        # Wait for up to 30 seconds
+        for i in {1..30}; do
+            # Check if process is still running
+            if ! kill -0 $python_pid 2>/dev/null; then
+                # Process finished
+                wait $python_pid
+                exit_code=$?
+                
+                if [ $exit_code -eq 0 ]; then
+                    # Only use the output if the script succeeded
+                    mv "$metadata_file".tmp "$metadata_file"
+                    log_message "✅ Metadata extracted successfully using Python"
+                else
+                    log_message "⚠️ Python script failed with exit code $exit_code. See ${RESULTS_DIR}/metadata/python_error.log for details."
+                fi
+                break
+            fi
+            
+            # Wait 1 second
+            sleep 1
+            
+            # If this is the last iteration, kill the process
+            if [ $i -eq 30 ]; then
+                kill $python_pid 2>/dev/null || true
+                log_message "⚠️ Python script took too long and was terminated. Using default values."
+            fi
+        done
     fi
     
-    log_message "✅ Siemens metadata extracted to: $metadata_file"
+    log_message "Metadata extraction complete"
+    return 0
 }
+
 
 # Function to optimize ANTs parameters based on scanner metadata
 optimize_ants_parameters() {
@@ -783,6 +679,7 @@ optimize_ants_parameters() {
     EXTRACTION_TEMPLATE="T_template0.nii.gz"
     PROBABILITY_MASK="T_template0_BrainCerebellumProbabilityMask.nii.gz"
     REGISTRATION_MASK="T_template0_BrainCerebellumRegistrationMask.nii.gz"
+    log_message "optimize_ants_parameters: start"
     
     # Check if metadata exists
     if [ ! -f "$metadata_file" ]; then
@@ -793,7 +690,7 @@ optimize_ants_parameters() {
     # Try using Python to parse the JSON if available
     if command -v python3 &> /dev/null; then
         # Create a simple Python script to extract key values
-        cat > "${RESULTS_DIR}/metadata/parse_json.py" << EOF
+cat > "${RESULTS_DIR}/metadata/parse_json.py" << EOF
 import json
 import sys
 
@@ -807,18 +704,17 @@ try:
     
     # Get the model name
     model = data.get('modelName', '')
-    print(f"MODEL_NAME={model}")
+    print(f"MODEL_NAME=""{model}""")
     
-    # Check if it's a MAGNETOM Sola
+    # Check if it's a MAGNETOM Sola - convert Python boolean to shell boolean
     is_sola = 'MAGNETOM Sola' in model
-    print(f"IS_SOLA={is_sola}")
+    print(f"IS_SOLA={'1' if is_sola else '0'}")
     
 except Exception as e:
     print(f"FIELD_STRENGTH=3")
     print(f"MODEL_NAME=Unknown")
-    print(f"IS_SOLA=false")
+    print(f"IS_SOLA=0")
 EOF
-
         # Execute the script and capture its output
         eval "$(python3 "${RESULTS_DIR}/metadata/parse_json.py" "$metadata_file")"
     else
@@ -1163,15 +1059,24 @@ standardize_dimensions() {
     
     log_message "Original dimensions: ${x_dim}x${y_dim}x${z_dim} with voxel size ${x_pixdim}x${y_pixdim}x${z_pixdim}mm"
     log_message "Target dimensions: ${target_x}x${target_y}x${target_z} with voxel size ${x_pixdim}x${y_pixdim}x${z_pixdim}mm"
+    # Check if resampling is truly necessary
+# Skip if dimensions are very close to target (within 5% difference)
+if [ $(echo "($x_dim - $target_x)^2 + ($y_dim - $target_y)^2 + ($z_dim - $target_z)^2 < (0.05 * ($x_dim + $y_dim + $z_dim))^2" | bc -l) -eq 1 ]; then
+    log_message "Original dimensions (${x_dim}x${y_dim}x${z_dim}) already close to target - skipping resampling"
+    cp "$input_file" "$output_file"
     
+    # Ensure the header still has the correct spacing values
+    c3d "$output_file" -spacing "$x_pixdim"x"$y_pixdim"x"$z_pixdim"mm -o "$output_file"
+else
     # Use ANTs ResampleImage for high-quality resampling
+    log_message "Resampling from ${x_dim}x${y_dim}x${z_dim} to ${target_x}x${target_y}x${target_z}"
     ResampleImage 3 \
         "$input_file" \
         "$output_file" \
         ${target_x}x${target_y}x${target_z} \
         0 \
-        0 # 0 = use linear interpolation (better for intensity images)
-    
+        3 # 3 = use cubic B-spline interpolation
+fi
     log_message "Saved standardized image to: $output_file"
     
     # Update NIFTI header with correct physical dimensions
