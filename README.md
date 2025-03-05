@@ -23,10 +23,7 @@ The pipeline requires the following neuroimaging tools:
 * Convert3D (c3d)
 * dcm2niix
 * Python with pydicom (for metadata extraction)
-
-# Optional but recommended:
-
-* GNU Parallel
+* GNU parallel
 * ImageMagick
 
 # Installation
@@ -169,3 +166,4 @@ This framework integrates tools developed by the neuroimaging community:
 * FreeSurfer: https://surfer.nmr.mgh.harvard.edu/
 * Convert3D: http://www.itksnap.org/pmwiki/pmwiki.php?n=Convert3D
 * dcm2niix: https://github.com/rordenlab/dcm2niix
+As well as GNU parallel, imagemagick, Claude, Gemini and ChatGPT ;) 
