@@ -40,12 +40,12 @@ PROCESSING_DATATYPE="float"
 OUTPUT_DATATYPE="int"
 
 # Quality settings (LOW, MEDIUM, HIGH)
-QUALITY_PRESET="HIGH"
+QUALITY_PRESET="MEDIUM"
 
 # Template creation options
 
 # Number of iterations for template creation
-TEMPLATE_ITERATIONS=4
+TEMPLATE_ITERATIONS=2
 # Gradient step size
 TEMPLATE_GRADIENT_STEP=0.2
 # Transformation model: Rigid, Affine, SyN
