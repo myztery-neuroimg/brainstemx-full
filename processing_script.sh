@@ -31,7 +31,7 @@ export LOG_DIR="${RESULTS_DIR}/logs"
 export LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
 
 # Data type for processing (float32 for processing, int16 for storage)
-PROCESSING_DATATYPE="int" #set back to float
+PROCESSING_DATATYPE="float" #set back to float
 OUTPUT_DATATYPE="int"
 
 # Quality settings (LOW, MEDIUM, HIGH)
@@ -52,7 +52,7 @@ TEMPLATE_SHRINK_FACTORS="6x4x2x1"
 # Smoothing sigmas
 TEMPLATE_SMOOTHING_SIGMAS="3x2x1x0"
 # Similarity metric weights
-TEMPLATE_WEIGHTS="100x70x50x10"
+TEMPLATE_WEIGHTS="100x50x50x10"
 
 
 
@@ -62,18 +62,19 @@ TEMPLATE_WEIGHTS="100x70x50x10"
 
 # Presets for different quality levels
 # Format: iterations, convergence, b-spline grid resolution, shrink factor
-N4_PRESET_LOW="25x25x25,0.0001,150,4"
-N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
-N4_PRESET_HIGH="100x100x100x50,0.0000001,300,2"
-N4_PRESET_FLAIR="75x75x75x75,0.0000001,250,2"
+export N4_PRESET_LOW="20x20x25,0.0001,150,4"
+export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
+export N4_PRESET_HIGH="100x100x100x50,0.0000001,300,2"
+#N4_PRESET_FLAIR="75x75x75x75,0.0000001,250,2"
+export N4_PRESET_FLAIR="$N4_PRESET_LOW"  #"75x75x75x75,0.0000001,250,2"
 
 # Parse preset into individual parameters
 if [ "$QUALITY_PRESET" = "HIGH" ]; then
-    N4_PARAMS=$N4_PRESET_HIGH
+    export N4_PARAMS="$N4_PRESET_HIGH"
 elif [ "$QUALITY_PRESET" = "MEDIUM" ]; then
-    N4_PARAMS=$N4_PRESET_MEDIUM
+    export N4_PARAMS="$N4_PRESET_MEDIUM"
 else
-    N4_PARAMS=$N4_PRESET_LOW
+    export N4_PARAMS="$N4_PRESET_LOW"
 fi
 
 # Parse N4 parameters
@@ -626,7 +627,7 @@ get_n4_parameters() {
         shrink=$N4_SHRINK_FLAIR
     fi
     
-    #log_message "$iterations" "$convergence" "$bspline" "$shrink"
+    echo "$iterations" "$convergence" "$bspline" "$shrink"
 }
 
 
@@ -724,6 +725,8 @@ extract_siemens_metadata() {
     return 0
 }
 
+#export TEMPLATE_DIR="${ANTSPATH}/data"
+export TEMPLATE_DIR="${FSLDIR}/data/standard"
 
 # Function to optimize ANTs parameters based on scanner metadata
 optimize_ants_parameters() {
@@ -731,12 +734,17 @@ optimize_ants_parameters() {
     mkdir -p "${RESULTS_DIR}/metadata"
     log_message "metadata_file ${metadata_file}"
     # Default optimized parameters
-    TEMPLATE_DIR="${ANTSPATH}/data"
-    mkdir -p ${TEMPLATE_DIR}
     log_message "template_dir: ${TEMPLATE_DIR}"
-    EXTRACTION_TEMPLATE="T_template0.nii.gz"
-    PROBABILITY_MASK="T_template0_BrainCerebellumProbabilityMask.nii.gz"
-    REGISTRATION_MASK="T_template0_BrainCerebellumRegistrationMask.nii.gz"
+
+    # MAGNETOM Sola appropriate values 
+    EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
+    PROBABILITY_MASK="MNI152_T1_1mm_brain_mask.nii.gz"
+    REGISTRATION_MASK="MNI152_T1_1mm_brain_mask_dil.nii.gz"
+    if [[ ! -f "${TEMPLATE_DIR}/${PROBABILITY_MASK}.prob" ]]; then
+       fslmaths "${TEMPLATE_DIR}/${PROBABILITY_MASK}" -div 1 "${TEMPLATE_DIR}/${PROBABILITY_MASK}.prob"
+       PROBABILITY_MASK="${PROBABILITY_MASK}.prob"
+   fi
+
     log_message "optimize_ants_parameters: start"
     
     # Check if metadata exists
@@ -785,7 +793,7 @@ EOF
     # Optimize template selection based on field strength
     if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
         log_message "Optimizing for 3T scanner field strength $FIELD_STRENGTH T"
-        EXTRACTION_TEMPLATE="T_template0.nii.gz"
+        EXTRACTION_TEMPLATE="MNI152_T1_2mm.nii.gz"
         # Standard 3T parameters
         N4_CONVERGENCE="0.000001"
         REG_METRIC_CROSS_MODALITY="MI"
@@ -793,18 +801,18 @@ EOF
         log_message "Optimizing for 1.5T scanner field strength: $FIELD_STRENGTH T"
         
         # Check if a specific 1.5T template exists
-        if [ -f "$TEMPLATE_DIR/T_template0_1.5T.nii.gz" ]; then
-            EXTRACTION_TEMPLATE="T_template0_1.5T.nii.gz"
+        if [ -f "$TEMPLATE_DIR/MNI152_T1_1mm.nii.gz" ]; then
+            EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
             log_message "Using dedicated 1.5T template"
         else
             # Use standard template with optimized 1.5T parameters
-            EXTRACTION_TEMPLATE="T_template0.nii.gz"
-            log_message "Using standard template with 1.5T-optimized parameters"
+            EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
+            log_message "Using standard MNI152_T1_1mm.nii.gz template with 1.5T-optimized parameters"
             
             # Adjust parameters specifically for 1.5T data using standard template
             # These adjustments compensate for different contrast characteristics
             N4_CONVERGENCE="0.0000005"  # More stringent convergence for typically noisier 1.5T data
-            N4_BSPLINE=250              # Increased B-spline resolution for potentially more heterogeneous bias fields
+            N4_BSPLINE=200              # Increased B-spline resolution for potentially more heterogeneous bias fields
             REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.3]"  # Adjusted mutual information parameters
             ATROPOS_MRF="[0.15,1x1x1]"  # Stronger regularization for segmentation
         fi
@@ -820,6 +828,8 @@ EOF
         REG_TRANSFORM_TYPE=3  # Use more aggressive transformation model
         REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.25]"  # More robust mutual information
         N4_BSPLINE=200  # Optimized for MAGNETOM Sola field inhomogeneity profile
+        REG_TRANSFORM_TYPE=3  # More aggressive transformation model
+
     fi
     
     log_message "✅ ANTs parameters optimized based on scanner metadata"
@@ -849,11 +859,12 @@ sleep 5
 find "${EXTRACT_DIR}" -name "*.nii.gz" -print0 | while IFS= read -r -d '' file; do
   log_message "Checking ${file}..:"
   fslinfo "${file}" >> ${EXTRACT_DIR}/tmp_fslinfo.log
-  fslstats "${file}" -R -M -S >> ${EXTRACT_DIR}/tmp_fslinfo.log
+  fslstats "${file}" -R -M -S >> "${EXTRACT_DIR}/tmp_fslinfo.log"
 done
 
 log_message "==== Combining multi-axis images for high-resolution volumes ===="
 export COMBINED_DIR="${RESULTS_DIR}/combined"
+mkdir -p "${COMBINED_DIR}"
 combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
 log_message "Combined FLAIR"
 combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
@@ -982,15 +993,19 @@ mkdir -p "${RESULTS_DIR}/bias_corrected"
 ###Controls smoothness of the B-spline interpolation
 ###Range: 0-5 (higher = smoother but more computation)
 
+mkdir -p "${RESULTS_DIR}/bias_corrected"
+
+
 process_n4_correction() {
     local file="$1"
     local basename=$(basename "$file" .nii.gz)
     local dir=$(dirname "${file}")
     local output_dir = "${dir}/bias_corrected"
-    mkdir -p ${output_dir}
+    mkdir -p "${output_dir}"
+    mkdir -p "${RESULTS_DIR}/bias_corrected"
     local output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
 
-    log_message "Performing bias correction on: $basename"
+    log_message "Performing bias correction on: $basename - ${dir} ${output_dir} ${output_file}"
 
     # Create an initial brain mask for better bias correction
     antsBrainExtraction.sh -d 3 -a "$file" -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
@@ -998,6 +1013,7 @@ process_n4_correction() {
         -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
         -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
 
+    log_message "${RESULTS_DIR}/bias_corrected/${basename}_"
     # Get sequence-specific N4 parameters
     n4_params=($(get_n4_parameters "$file"))
 
@@ -1018,7 +1034,7 @@ process_n4_correction() {
             -o "$output_file" \
             -b [$N4_BSPLINE] \
             -s ${n4_params[3]} \
-            -c "[${n4_params[0]},${n4_params[1]}]"
+            -c [${n4_params[0]},${n4_params[1]}]
     else
         N4BiasFieldCorrection -d 3 \
             -i "$file" \
@@ -1026,7 +1042,7 @@ process_n4_correction() {
             -o "$output_file" \
             -b [${n4_params[2]}] \
             -s ${n4_params[3]} \
-            -c "[${n4_params[0]},${n4_params[1]}]"
+            -c [${n4_params[0]},${n4_params[1]}]
     fi
 
     log_message "Saved bias-corrected image to: $output_file"
@@ -1035,7 +1051,7 @@ process_n4_correction() {
 export -f process_n4_correction get_n4_parameters log_message  # Export functions
 
 find "$COMBINED_DIR" -name "*.nii.gz" -maxdepth 1 -type f -print0 | \
-parallel -0 -j 8 process_n4_correction {}
+parallel -0 -j 11 process_n4_correction {}
 
 log_message "✅ Bias field correction complete."
 
@@ -1071,7 +1087,7 @@ standardize_dimensions() {
     # Determine sequence type from filename
     local sequence_type="DEFAULT"
     if [[ "$basename" == *"T1"* && "$basename" == *"MPRAGE"* ]]; then
-        sequence_type="T1_MPRAGE"
+        sequence_type="T1"
     elif [[ "$basename" == *"FLAIR"* ]]; then
         sequence_type="FLAIR"
     elif [[ "$basename" == *"SWI"* ]]; then
@@ -1333,9 +1349,10 @@ if [ ${#flair_files[@]} -gt 0 ]; then
         N4BiasFieldCorrection -d 3 \
             -i "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz" \
             -o "$output_file" \
-            -b [200] \
+            -b "[200]" \
             -s 2 \
-            -c [50x50x50,0.000001]
+            -c "[50x50x50,0.000001]" \
+            -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" 
         
         # Clean up
         rm -f "${RESULTS_DIR}/intensity_normalized/${basename}_temp.nii.gz"
