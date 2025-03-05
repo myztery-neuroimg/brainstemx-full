@@ -12,12 +12,12 @@ log_message() {
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" >&2 | tee -a "$log_file"
 }   
 
-SRC_DIR="../DiCOM"
-EXTRACT_DIR="../extracted"
-RESULTS_DIR="../mri_results"
+export SRC_DIR="../DiCOM"
+export EXTRACT_DIR="../extracted"
+export RESULTS_DIR="../mri_results"
 # N4 Bias Field Correction parameters
-N4_ITERATIONS="50x50x50x50"
-N4_CONVERGENCE="0.000001"
+export N4_ITERATIONS="50x50x50x50"
+export N4_CONVERGENCE="0.0001"
 
 # Configuration parameters for MRI processing pipeline
 # Optimized for high-quality processing (512x512 resolution)
@@ -26,21 +26,16 @@ N4_CONVERGENCE="0.000001"
 # General processing parameters
 #############################################
 
-# Data directories
-SRC_DIR="../DiCOM"
-EXTRACT_DIR="../extracted"
-RESULTS_DIR="../mri_results"
-
 # Logging
-LOG_DIR="${RESULTS_DIR}/logs"
-LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
+export LOG_DIR="${RESULTS_DIR}/logs"
+export LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
 
 # Data type for processing (float32 for processing, int16 for storage)
-PROCESSING_DATATYPE="float"
+PROCESSING_DATATYPE="int" #set back to float
 OUTPUT_DATATYPE="int"
 
 # Quality settings (LOW, MEDIUM, HIGH)
-QUALITY_PRESET="MEDIUM"
+QUALITY_PRESET="LOW"
 
 # Template creation options
 
@@ -109,7 +104,7 @@ REG_METRIC_CROSS_MODALITY="MI"
 REG_METRIC_SAME_MODALITY="CC"
 
 # Number of threads for ANTs tools
-ANTS_THREADS=8
+ANTS_THREADS=11
 
 # Registration precision (0=float, 1=double)
 REG_PRECISION=1
@@ -123,7 +118,7 @@ REG_PRECISION=1
 THRESHOLD_WM_SD_MULTIPLIER=2.5
 
 # Minimum hyperintensity cluster size (in voxels)
-MIN_HYPERINTENSITY_SIZE=5
+MIN_HYPERINTENSITY_SIZE=10
 
 # Atropos segmentation parameters
 # Number of tissue classes for T1 segmentation
@@ -195,6 +190,7 @@ standardize_datatype() {
 set_sequence_params() {
     local file="$1"
     log_message "Checkign $file" 
+    [ -e "$file" ] || return 0
     # Base parameters
     local params=()
     
@@ -428,13 +424,16 @@ fi
 
 NUM_SRC_DICOM_FILES=`find ${SRC_DIR} -name Image"*"  | wc -l`
 
-log_message "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to cancel the script if that's wrong. Going to extract to ${EXTRACT_DIR}"
-sleep 5 
+log_message "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. Going to extract to ${EXTRACT_DIR}"
+export EXTRACT_DIR
+export RESULTS_DIR
+export LOG_DIR
 
 # Function to deduplicate identical NIfTI files
 deduplicate_identical_files() {
     local dir="$1"
     log_message "==== Deduplicating identical files in ${dir} ===="
+    [ -e "$dir" ] || return 0
     
     # Create temporary directory for checksums
     mkdir -p "${dir}/tmp_checksums"
@@ -486,6 +485,8 @@ combine_multiaxis_images() {
         sequence_type="T1"
     fi
     local output_dir="$2"
+    [ -e "$output_dir" ] || return 0
+    log_message "output_dir: ${output_dir}"
     
     # Create output directory
     mkdir -p "$output_dir"
@@ -609,6 +610,8 @@ combine_multiaxis_images() {
 # Get sequence-specific N4 parameters
 get_n4_parameters() {
     local file="$1"
+    [ -e "$file" ] || return 0
+    log_message "Get sequence-specific N4 parameters"
     params=($(set_sequence_params "$file")) 
     local iterations=$N4_ITERATIONS
     local convergence=$N4_CONVERGENCE
@@ -628,11 +631,15 @@ get_n4_parameters() {
 
 
 log_message "==== Extracting DICOM metadata for processing optimization ===="
-mkdir -p "${RESULTS_DIR}/metadata"
+#mkdir -p "${RESULTS_DIR}/metadata"
+
 
 extract_siemens_metadata() {
     local dicom_dir="$1"
+    log_message "dicom_dir: ${dicom_dir}"
+    [ -e "$dicom_dir" ] || return 0
     local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
+    mkdir -p "${RESULTS_DIR}/metadata"
     
     log_message "Extracting Siemens MAGNETOM Sola metadata..."
     
@@ -645,7 +652,7 @@ extract_siemens_metadata() {
     fi
     
     # Create metadata directory if it doesn't exist
-    mkdir -p "$(dirname "$metadata_file")"
+    mkdir -p "$(dirname \"$metadata_file\")"
     
     # Create default metadata file in case the Python script fails
     echo "{\"manufacturer\":\"Unknown\",\"fieldStrength\":3,\"modelName\":\"Unknown\"}" > "$metadata_file"
@@ -703,7 +710,7 @@ extract_siemens_metadata() {
             fi
             
             # Wait 1 second
-            sleep 1
+            sleep 2
             
             # If this is the last iteration, kill the process
             if [ $i -eq 30 ]; then
@@ -721,9 +728,12 @@ extract_siemens_metadata() {
 # Function to optimize ANTs parameters based on scanner metadata
 optimize_ants_parameters() {
     local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
-    
+    mkdir -p "${RESULTS_DIR}/metadata"
+    log_message "metadata_file ${metadata_file}"
     # Default optimized parameters
-    TEMPLATE_DIR="$ANTSPATH/data"
+    TEMPLATE_DIR="${ANTSPATH}/data"
+    mkdir -p ${TEMPLATE_DIR}
+    log_message "template_dir: ${TEMPLATE_DIR}"
     EXTRACTION_TEMPLATE="T_template0.nii.gz"
     PROBABILITY_MASK="T_template0_BrainCerebellumProbabilityMask.nii.gz"
     REGISTRATION_MASK="T_template0_BrainCerebellumRegistrationMask.nii.gz"
@@ -774,13 +784,13 @@ EOF
     
     # Optimize template selection based on field strength
     if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
-        log_message "Optimizing for 3T scanner (field strength: $FIELD_STRENGTH T)"
+        log_message "Optimizing for 3T scanner field strength $FIELD_STRENGTH T"
         EXTRACTION_TEMPLATE="T_template0.nii.gz"
         # Standard 3T parameters
         N4_CONVERGENCE="0.000001"
         REG_METRIC_CROSS_MODALITY="MI"
     else
-        log_message "Optimizing for 1.5T scanner (field strength: $FIELD_STRENGTH T)"
+        log_message "Optimizing for 1.5T scanner field strength: $FIELD_STRENGTH T"
         
         # Check if a specific 1.5T template exists
         if [ -f "$TEMPLATE_DIR/T_template0_1.5T.nii.gz" ]; then
@@ -865,7 +875,7 @@ process_all_nifti_files_in_dir(){
     # Skip if no files are found
     [ -e "$file" ] || continue
 
-    echo "Processing: $file"
+    log_message "Processing: $file"
 
     # Get the base filename (without path)
     base=$(basename "${file}" .nii.gz)
@@ -880,10 +890,11 @@ process_all_nifti_files_in_dir(){
     zmin=${bbox[4]}
     zsize=${bbox[5]}
 
-    echo "Cropping region: X=($xmin, $xsize) Y=($ymin, $ysize) Z=($zmin, $zsize)"
+    log_message "Cropping region: X=\($xmin, $xsize\) Y=\($ymin, $ysize\) Z=\($zmin, $zsize\)"
+    dir=$(dirname "${file}")
 
     # Output filename
-    output_file="${EXTRACT_DIR}/${base}${TRIMMED_OUTPUT_SUFFIX}.nii.gz"
+    output_file="${dir}/${base}${TRIMMED_OUTPUT_SUFFIX}.nii.gz"
 
     # Add padding to avoid cutting too close
     xpad=$PADDING_X
@@ -919,7 +930,7 @@ process_all_nifti_files_in_dir(){
     # Apply the cropping with safe boundaries
     fslroi "$file" "$output_file" $safe_xmin $safe_xsize $safe_ymin $safe_ysize $safe_zmin $safe_zsize
 
-    echo "Saved trimmed file: ${output_file}"
+    log_message "Saved trimmed file: ${output_file}"
     fslinfo "${output_file}"
 }
 
@@ -974,6 +985,9 @@ mkdir -p "${RESULTS_DIR}/bias_corrected"
 process_n4_correction() {
     local file="$1"
     local basename=$(basename "$file" .nii.gz)
+    local dir=$(dirname "${file}")
+    local output_dir = "${dir}/bias_corrected"
+    mkdir -p ${output_dir}
     local output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
 
     log_message "Performing bias correction on: $basename"
@@ -1130,7 +1144,7 @@ standardize_dimensions() {
     # Check if resampling is truly necessary
 # Skip if dimensions are very close to target (within 5% difference)
 if [ $(echo "($x_dim - $target_x)^2 + ($y_dim - $target_y)^2 + ($z_dim - $target_z)^2 < (0.05 * ($x_dim + $y_dim + $z_dim))^2" | bc -l) -eq 1 ]; then
-    log_message "Original dimensions (${x_dim}x${y_dim}x${z_dim}) already close to target - skipping resampling"
+    log_message "Original dimensions \(${x_dim}x${y_dim}x${z_dim}\) already close to target - skipping resampling"
     cp "$input_file" "$output_file"
     
     # Ensure the header still has the correct spacing values
@@ -1340,7 +1354,6 @@ fi
 reference_image=""
 t1_files=($(find "$RESULTS_DIR/standardized" -name "*T1*n4_std.nii.gz"))
 
-
 # Step 6: Hyperintensity detection for FLAIR (using ANTs tools)
 if [ ${#flair_files[@]} -gt 0 ]; then
     log_message "==== Step 6: Hyperintensity Detection on FLAIR ===="
@@ -1381,7 +1394,7 @@ if [ ${#flair_files[@]} -gt 0 ]; then
                  -x "${output_prefix}brain_mask.nii.gz" \
                  -o [${output_prefix}atropos_segmentation.nii.gz,${output_prefix}atropos_prob%d.nii.gz] \
                  -c [${ATROPOS_CONVERGENCE}] \
-                 -m ${ATROPOS_MRF} \
+                 -m "${ATROPOS_MRF}" \
                  -i ${ATROPOS_INIT_METHOD}[${ATROPOS_FLAIR_CLASSES}] \
                  -k Gaussian
             ln -sf "${output_prefix}atropos_segmentation.nii.gz" "${output_prefix}segmentation.nii.gz"
@@ -1519,7 +1532,7 @@ hyperintensity_files=($(find "${RESULTS_DIR}/hyperintensities" -name "*hyperinte
 # Calculate volume statistics
 echo "Hyperintensity Volumetric Results:" > "${RESULTS_DIR}/hyperintensity_report.txt"
 echo "-----------------------------------" >> "${RESULTS_DIR}/hyperintensity_report.txt"
-echo "Filename, Volume (mm³), % of Brain Volume" >> "${RESULTS_DIR}/hyperintensity_report.txt"
+echo "Filename, Volume mm³, % of Brain Volume" >> "${RESULTS_DIR}/hyperintensity_report.txt"
 
 for file in "${hyperintensity_files[@]}"; do
     basename=$(basename "$file" _hyperintensities_clean.nii.gz)

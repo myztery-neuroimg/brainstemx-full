@@ -130,32 +130,17 @@ The framework includes scripts for visualizing results in FreeSurfer's Freeview:
 # Comparative notes vs industry leading approaches
 
 * Multi-axial Integration
-This pipeline combines sagittal, coronal, and axial acquisitions to enhance resolution. This is an advanced approach similar to high-end research pipelines but less common in standard clinical tools. The implementation using antsMultivariateTemplateConstruction2.sh for combining multiple views is particularly sophisticated.
+This pipeline combines sagittal, coronal, and axial acquisitions to enhance resolution. This is an advanced approach similar to high-end research pipelines but less common in standard clinical tools. The implementation using antsMultivariateTemplateConstruction2.sh for combining multiple views is quite nice
 
 * Adaptive Parameterization
-This framework's ability to optimize processing parameters based on sequence type and scanner metadata is a significant strength. This approach is comparable to sophisticated platforms like:
-** MRIQC (MRI Quality Control)
-** The Human Connectome Project pipelines
+This framework's ability to optimize processing parameters based on sequence type and scanner metadata is a strength. 
 
 * The Siemens MAGNETOM Sola-specific optimizations demonstrate excellent vendor-specific tuning that many general packages lack.
 
 * N4 Bias Field Correction Implementation
 The sequence-specific bias correction parameters (especially the FLAIR-specific settings) show advanced understanding of how different pulse sequences require customized preprocessing. This level of sequence-specific tuning is found in high-end research implementations but less commonly in standard packages.
 
-# Lack of machine learning / CNN model integration - simply due to lack of appropriate datasets:
-
-## Machine Learning Approaches:
-
-* FSL-BIANCA uses k-nearest neighbor classification with spatial features
-* LST (Lesion Segmentation Tool) employs a lesion growth algorithm with tissue probability maps
-* These methods typically achieve Dice coefficients of 0.7-0.8 on challenging datasets
-
-## Deep Learning Methods:
-
-*  nicMSlesions uses a cascade of convolutional neural networks
-* DeepMedic employs 3D CNN architectures with multi-scale processing
-* These approaches typically achieve Dice coefficients of 0.75-0.85
-* They handle heterogeneous lesion appearances more robustly
+* Future improvements can be machine learning and deep learning integrations which the most advanced tools use
 
 # Acknowledgments
 
