@@ -20,7 +20,7 @@ N4_ITERATIONS="50x50x50x50"
 N4_CONVERGENCE="0.000001"
 
 # Configuration parameters for MRI processing pipeline
-# Optimized for high-quality processing (512x512x512 resolution)
+# Optimized for high-quality processing (512x512 resolution)
 
 #############################################
 # General processing parameters
@@ -194,7 +194,7 @@ standardize_datatype() {
 # Function to set sequence-specific parameters
 set_sequence_params() {
     local file="$1"
-    
+    log_message "Checkign $file" 
     # Base parameters
     local params=()
     
@@ -431,6 +431,54 @@ NUM_SRC_DICOM_FILES=`find ${SRC_DIR} -name Image"*"  | wc -l`
 log_message "There are ${NUM_SRC_DICOM_FILES} in ${SRC_DIR}. You have 5 seconds to cancel the script if that's wrong. Going to extract to ${EXTRACT_DIR}"
 sleep 5 
 
+# Function to deduplicate identical NIfTI files
+deduplicate_identical_files() {
+    local dir="$1"
+    log_message "==== Deduplicating identical files in ${dir} ===="
+    
+    # Create temporary directory for checksums
+    mkdir -p "${dir}/tmp_checksums"
+    
+    # Calculate checksums and organize files
+    find "${dir}" -name "*.nii.gz" -type f | while read file; do
+        # Get base filename without suffix letters
+        base=$(echo $(basename "$file" .nii.gz) | sed -E 's/([^_]+)([a-zA-Z]+)$/\1/g')
+        
+        # Calculate checksum
+        checksum=$(md5 -q "$file")
+        
+        # Create symlink named by checksum for grouping
+        ln -sf "$file" "${dir}/tmp_checksums/${checksum}_${base}.link"
+    done
+    
+    # Process each unique checksum
+    find "${dir}/tmp_checksums" -name "*.link" | sort | \
+    awk -F'_' '{print $1}' | uniq | while read checksum; do
+        # Find all files with this checksum
+        files=($(find "${dir}/tmp_checksums" -name "${checksum}_*.link" | xargs -I{} readlink {}))
+        
+        if [ ${#files[@]} -gt 1 ]; then
+            # Keep the first file (shortest name usually)
+            kept="${files[0]}"
+            log_message "Keeping representative file: $(basename "$kept")"
+            
+            # Create hardlinks to replace duplicates
+            for ((i=1; i<${#files[@]}; i++)); do
+                if [ -f "${files[$i]}" ]; then
+                    log_message "Replacing duplicate: $(basename "${files[$i]}") → $(basename "$kept")"
+                    rm "${files[$i]}"
+                    ln "$kept" "${files[$i]}"
+                fi
+            done
+        fi
+    done
+    
+    # Clean up
+    rm -rf "${dir}/tmp_checksums"
+    log_message "Deduplication complete"
+}
+
+
 combine_multiaxis_images() {
     local sequence_type="$1"
     # Handle different naming conventions
@@ -443,9 +491,9 @@ combine_multiaxis_images() {
     mkdir -p "$output_dir"
     
     # Find all matching sequence files
-    sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "SAG" | egrep -v "^[0-9]" || true))
-    cor_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "COR" | egrep -v "^[0-9]" || true))
-    ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | fgrep "AX" | egrep -v "^[0-9]" || true))
+    sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | egrep -i "SAG" | egrep -v "^[0-9]" || true))
+    cor_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | egrep -i "COR" | egrep -v "^[0-9]" || true))
+    ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | egrep -i "AX" | egrep -v "^[0-9]" || true))
     
     log_formatted "INFO" "Found ${#sag_files[@]} sagittal, ${#cor_files[@]} coronal, and ${#ax_files[@]} axial ${sequence_type} files"
     
@@ -727,16 +775,31 @@ EOF
     # Optimize template selection based on field strength
     if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
         log_message "Optimizing for 3T scanner (field strength: $FIELD_STRENGTH T)"
-        EXTRACTION_TEMPLATE="T_template0.nii.gz"  # 3T template
+        EXTRACTION_TEMPLATE="T_template0.nii.gz"
+        # Standard 3T parameters
+        N4_CONVERGENCE="0.000001"
+        REG_METRIC_CROSS_MODALITY="MI"
     else
         log_message "Optimizing for 1.5T scanner (field strength: $FIELD_STRENGTH T)"
-        EXTRACTION_TEMPLATE="T_template0_1.5T.nii.gz"  # 1.5T template (if available)
-        # If 1.5T template doesn't exist, it will fall back to default
-        if [ ! -f "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" ]; then
-            log_message "⚠️ 1.5T template not found. Using default 3T template."
+        
+        # Check if a specific 1.5T template exists
+        if [ -f "$TEMPLATE_DIR/T_template0_1.5T.nii.gz" ]; then
+            EXTRACTION_TEMPLATE="T_template0_1.5T.nii.gz"
+            log_message "Using dedicated 1.5T template"
+        else
+            # Use standard template with optimized 1.5T parameters
             EXTRACTION_TEMPLATE="T_template0.nii.gz"
+            log_message "Using standard template with 1.5T-optimized parameters"
+            
+            # Adjust parameters specifically for 1.5T data using standard template
+            # These adjustments compensate for different contrast characteristics
+            N4_CONVERGENCE="0.0000005"  # More stringent convergence for typically noisier 1.5T data
+            N4_BSPLINE=250              # Increased B-spline resolution for potentially more heterogeneous bias fields
+            REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.3]"  # Adjusted mutual information parameters
+            ATROPOS_MRF="[0.15,1x1x1]"  # Stronger regularization for segmentation
         fi
     fi
+
     
     # Check for Siemens MAGNETOM Sola specific optimizations
     if [ "$IS_SOLA" = true ]; then
@@ -762,6 +825,9 @@ log_message "==== Step 1: DICOM to NIfTI Conversion ===="
 log_message "convert DICOM files from ${SRC_DIR} to ${EXTRACT_DIR} in NiFTi .nii.gz format using dcm2niix"
 dcm2niix -b y -z y -f "%p_%s" -o "$EXTRACT_DIR" -m y -p y -s y "${SRC_DIR}"
 
+# Call deduplication after DICOM conversion
+deduplicate_identical_files "$EXTRACT_DIR"
+
 # Check conversion success
 if [ $(find "$EXTRACT_DIR" -name "*.nii.gz" | wc -l) -eq 0 ]; then
     log_message "⚠️ No NIfTI files created. DICOM conversion may have failed."
@@ -783,6 +849,8 @@ log_message "Combined FLAIR"
 combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
 log_message "Combined T1"
 combine_multiaxis_images "SWI" "${RESULTS_DIR}/combined"
+log_message "Combined DWI"
+combine_multiaxis_images "DWI" "${RESULTS_DIR}/combined"
 log_message "Combined SWI"
 
 
@@ -1141,7 +1209,7 @@ find "$RESULTS_DIR/standardized" -name "*n4_std.nii.gz" -print0 | while IFS= rea
     
     # For FLAIR or T2 to T1 registration, use mutual information metric
     # This handles cross-modality registration better
-    if [[ "$file" == *"FLAIR"* || "$file" == *"T2"* ]]; then
+    if [[ "$file" == *"FLAIR"*  ]]; then
         # Use optimized cross-modality registration metric if available
         if [[ -n "$REG_METRIC_CROSS_MODALITY" ]]; then
             antsRegistrationSyN.sh -d 3 \
