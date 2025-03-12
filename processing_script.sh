@@ -621,10 +621,10 @@ get_n4_parameters() {
     
     # Use FLAIR-specific parameters if it's a FLAIR sequence
     if [[ "$file" == *"FLAIR"* ]]; then
-        iterations=$N4_ITERATIONS_FLAIR
-        convergence=$N4_CONVERGENCE_FLAIR
-        bspline=$N4_BSPLINE_FLAIR
-        shrink=$N4_SHRINK_FLAIR
+        export iterations="$N4_ITERATIONS_FLAIR"
+        export convergence="$N4_CONVERGENCE_FLAIR"
+        export bspline="$N4_BSPLINE_FLAIR"
+        export shrink="$N4_SHRINK_FLAIR"
     fi
     
     echo "$iterations" "$convergence" "$bspline" "$shrink"
@@ -632,7 +632,7 @@ get_n4_parameters() {
 
 
 log_message "==== Extracting DICOM metadata for processing optimization ===="
-#mkdir -p "${RESULTS_DIR}/metadata"
+mkdir -p "${RESULTS_DIR}/metadata"
 
 
 extract_siemens_metadata() {
@@ -737,12 +737,12 @@ optimize_ants_parameters() {
     log_message "template_dir: ${TEMPLATE_DIR}"
 
     # MAGNETOM Sola appropriate values 
-    EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
-    PROBABILITY_MASK="MNI152_T1_1mm_brain_mask.nii.gz"
-    REGISTRATION_MASK="MNI152_T1_1mm_brain_mask_dil.nii.gz"
+    export EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
+    export PROBABILITY_MASK="MNI152_T1_1mm_brain_mask.nii.gz"
+    export REGISTRATION_MASK="MNI152_T1_1mm_brain_mask_dil.nii.gz"
     if [[ ! -f "${TEMPLATE_DIR}/${PROBABILITY_MASK}.prob" ]]; then
        fslmaths "${TEMPLATE_DIR}/${PROBABILITY_MASK}" -div 1 "${TEMPLATE_DIR}/${PROBABILITY_MASK}.prob"
-       PROBABILITY_MASK="${PROBABILITY_MASK}.prob"
+       export PROBABILITY_MASK="${PROBABILITY_MASK}.prob"
    fi
 
     log_message "optimize_ants_parameters: start"
@@ -947,7 +947,7 @@ process_all_nifti_files_in_dir(){
 
 export -f process_all_nifti_files_in_dir  # Ensure function is available in subshells
 
-find "${RESULTS_DIR}/combined" -name "*.nii.gz" -print0 | parallel -0 -j 8 process_all_nifti_files_in_dir {}
+find "${RESULTS_DIR}/combined" -name "*.nii.gz" -print0 | parallel -0 -j 11 process_all_nifti_files_in_dir {}
 
 echo "✅ All files processed to trim missing slices."
 
@@ -1062,7 +1062,7 @@ mkdir -p "${RESULTS_DIR}/standardized"
 # Define sequence-specific target dimensions
 # Format: x,y,z dimensions or "isotropic:N" for isotropic voxels of size N mm
 declare -A SEQUENCE_DIMENSIONS=(
-  ["T1_MPRAGE"]="isotropic:1"  # 1mm isotropic resolution
+  ["T1"]="isotropic:1"  # 1mm isotropic resolution
   ["FLAIR"]="512,512,keep"      # Standardize xy, preserve z
   ["SWI"]="256,256,keep"        # Lower resolution for SWI
   ["DWI"]="keep,keep,keep"      # Preserve original dimensions for diffusion
@@ -1073,7 +1073,7 @@ standardize_dimensions() {
     local input_file="$1"
     local basename=$(basename "$input_file" .nii.gz)
     local output_file="${RESULTS_DIR}/standardized/${basename}_std.nii.gz"
-    
+   
     log_message "Standardizing dimensions for: $basename"
     
     # Get current image dimensions and spacings
@@ -1086,7 +1086,7 @@ standardize_dimensions() {
     
     # Determine sequence type from filename
     local sequence_type="DEFAULT"
-    if [[ "$basename" == *"T1"* && "$basename" == *"MPRAGE"* ]]; then
+    if [[ "$basename" == *"T1"* ]]; then
         sequence_type="T1"
     elif [[ "$basename" == *"FLAIR"* ]]; then
         sequence_type="FLAIR"
@@ -1190,7 +1190,7 @@ export -f standardize_dimensions log_message
 
 # Process all bias-corrected images
 find "$RESULTS_DIR/bias_corrected" -name "*n4.nii.gz" -print0 | \
-parallel -0 -j 8 standardize_dimensions {}
+parallel -0 -j 11 standardize_dimensions {}
 
 log_message "✅ Dimension standardization complete."
 
