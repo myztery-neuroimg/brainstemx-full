@@ -1219,3 +1219,133 @@ extract_brainstem_ants() {
     return 0
 }
 
+combine_multiaxis_images_highres() {
+  local sequence_type="$1"
+  local output_dir="$2"
+
+  # *** Input Validation ***
+
+  # 1. Check if sequence_type is provided
+  if [ -z "$sequence_type" ]; then
+    log_formatted "ERROR" "Sequence type not provided."
+    return 1
+  fi
+
+  # 2. Check if output_dir is provided
+  if [ -z "$output_dir" ]; then
+    log_formatted "ERROR" "Output directory not provided."
+    return 1
+  fi
+
+  # 3. Validate output_dir and create it if necessary
+  if [ ! -d "$output_dir" ]; then
+    log_message "Output directory '$output_dir' does not exist. Creating it..."
+    if ! mkdir -p "$output_dir"; then
+      log_formatted "ERROR" "Failed to create output directory: $output_dir"
+      return 1
+    fi
+  fi
+
+  # 4. Check write permissions for output_dir
+  if [ ! -w "$output_dir" ]; then
+    log_formatted "ERROR" "Output directory '$output_dir' is not writable."
+    return 1
+  fi
+
+  log_message "Combining multi-axis images for $sequence_type"
+
+  # *** Path Handling ***
+  # Use absolute paths to avoid ambiguity
+  local EXTRACT_DIR_ABS=$(realpath "$EXTRACT_DIR")
+  local output_dir_abs=$(realpath "$output_dir")
+
+
+  # Find SAG, COR, AX files using absolute path
+  local sag_files=($(find "$EXTRACT_DIR_ABS" -name "*${sequence_type}*.nii.gz" | egrep -i "SAG" || true))
+  local cor_files=($(find "$EXTRACT_DIR_ABS" -name "*${sequence_type}*.nii.gz" | egrep -i "COR" || true))
+  local ax_files=($(find "$EXTRACT_DIR_ABS" -name "*${sequence_type}*.nii.gz"  | egrep -i "AX"  || true))
+
+  # pick best resolution from each orientation
+  local best_sag="" best_cor="" best_ax=""
+  local best_sag_res=0 best_cor_res=0 best_ax_res=0
+
+  # Helper function to calculate in-plane resolution
+  calculate_inplane_resolution() {
+    local file="$1"
+    local pixdim1=$(fslval "$file" pixdim1)
+    local pixdim2=$(fslval "$file" pixdim2)
+    local inplane_res=$(echo "scale=10; sqrt($pixdim1 * $pixdim1 + $pixdim2 * $pixdim2)" | bc -l)
+    echo "$inplane_res"
+  }
+
+  for file in "${sag_files[@]}"; do
+    local inplane_res=$(calculate_inplane_resolution "$file")
+    # Lower resolution value means higher resolution image
+    if [ -z "$best_sag" ] || (( $(echo "$inplane_res < $best_sag_res" | bc -l) )); then
+      best_sag="$file"
+      best_sag_res="$inplane_res"
+    fi
+  done
+
+  for file in "${cor_files[@]}"; do
+    local inplane_res=$(calculate_inplane_resolution "$file")
+    if [ -z "$best_cor" ] || (( $(echo "$inplane_res < $best_cor_res" | bc -l) )); then
+      best_cor="$file"
+      best_cor_res="$inplane_res"
+    fi
+  done
+
+  for file in "${ax_files[@]}"; do
+    local inplane_res=$(calculate_inplane_resolution "$file")
+    if [ -z "$best_ax" ] || (( $(echo "$inplane_res < $best_ax_res" | bc -l) )); then
+      best_ax="$file"
+      best_ax_res="$inplane_res"
+    fi
+  done
+
+  local out_file="${output_dir_abs}/${sequence_type}_combined_highres.nii.gz"
+
+  if [ -n "$best_sag" ] && [ -n "$best_cor" ] && [ -n "$best_ax" ]; then
+    log_message "Combining SAG, COR, AX with antsMultivariateTemplateConstruction2.sh"
+    antsMultivariateTemplateConstruction2.sh \
+      -d 3 \
+      -o "${output_dir_abs}/${sequence_type}_template_" \
+      -i $TEMPLATE_ITERATIONS \
+      -g $TEMPLATE_GRADIENT_STEP \
+      -j $ANTS_THREADS \
+      -f $TEMPLATE_SHRINK_FACTORS \
+      -s $TEMPLATE_SMOOTHING_SIGMAS \
+      -q $TEMPLATE_WEIGHTS \
+      -t $TEMPLATE_TRANSFORM_MODEL \
+      -m $TEMPLATE_SIMILARITY_METRIC \
+      -c 0 \
+      "$best_sag" "$best_cor" "$best_ax"
+
+    # Ensure the template file is moved to the correct output directory
+    local template_file="${output_dir_abs}/${sequence_type}_template_template0.nii.gz"
+    if [ -f "$template_file" ]; then
+      mv "$template_file" "$out_file"
+      standardize_datatype "$out_file" "$out_file" "$OUTPUT_DATATYPE"
+      log_formatted "SUCCESS" "Created high-res combined: $out_file"
+    else
+      log_formatted "ERROR" "Template file not found: $template_file"
+      return 1
+    fi
+
+
+  else
+    log_message "At least one orientation is missing for $sequence_type. Attempting fallback..."
+    local best_file=""
+    if [ -n "$best_sag" ]; then best_file="$best_sag"
+    elif [ -n "$best_cor" ]; then best_file="$best_cor"
+    elif [ -n "$best_ax" ]; then best_file="$best_ax"
+    fi
+    if [ -n "$best_file" ]; then
+      cp "$best_file" "$out_file"
+      standardize_datatype "$out_file" "$out_file" "$OUTPUT_DATATYPE"
+      log_message "Used single orientation: $best_file"
+    else
+      log_formatted "ERROR" "No $sequence_type files found"
+    fi
+  fi
+}
