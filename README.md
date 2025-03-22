@@ -1,5 +1,5 @@
-# MRI Processing Framework
-A comprehensive neuroimaging pipeline for automated analysis of brain MRI scans, focusing on white matter hyperintensity detection and quantification.
+# e2e MRI Processing Framework for hyperintensity detection
+A comprehensive neuroimaging pipeline for automated analysis of brain MRI scans, focusing on white matter hyperintensity detection and quantification/clustering.
 
 # Overview
 This framework integrates multiple neuroimaging tools (ANTs, FSL, FreeSurfer, Convert3D) into a streamlined workflow for processing MRI data. It handles conversion from DICOM to NIfTI, applies bias field correction, registers multiple acquisition planes, and performs hyperintensity detection with robust statistical analysis.
@@ -15,24 +15,24 @@ It's specifically optimised for Siemens scanners but will also work independentl
 * White matter hyperintensity detection: Implements robust, tissue-aware algorithm for identifying and quantifying abnormalities
 
 # Requirements
-The pipeline requires the following neuroimaging tools:
+The pipeline requires the following neuroimaging tools and owes all of its usefulness to them:
 
-* ANTs (Advanced Normalization Tools)
-* FSL (FMRIB Software Library)
-* FreeSurfer
-* Convert3D (c3d)
-* dcm2niix
+* ANTs (Advanced Normalization Tools) https://github.com/ANTsX/ANTs
+* FSL (FMRIB Software Library) https://fsl.fmrib.ox.ac.uk/fsl/docs/
+* FreeSurfer https://surfer.nmr.mgh.harvard.edu
+* Convert3D (c3d) http://www.itksnap.org/pmwiki/pmwiki.php?n=Convert3D.Convert3D
+* dcm2niix https://github.com/rordenlab/dcm2niix
 * Python with pydicom (for metadata extraction)
-* GNU parallel
-* ImageMagick
+* GNU parallel (brew install parallel / apt-get install parallel)
+* ImageMagick (can generally be installed with homebrew or apt-get)
 
 # Installation
 
 Clone this repository
 
 ```
-git clone https://github.com/davidj-brewster/brainMRI-clustering.git
-cd mri-processing-framework
+git clone https://github.com/davidj-brewster/e2e-brain-MRI-lesion-segment.git
+cd e2e-brain-MRI-lesion-segment
 ```
 
 # Ensure dependencies are installed
@@ -61,20 +61,20 @@ cp /path/to/your/dicom/files/* DiCOM/
 
 The framework supports customization through configuration parameters at the top of the script:
 
-* Set quality preset
+* Set quality preset, suggest to start with LOW
 ```
 QUALITY_PRESET="HIGH"  # Options: LOW, MEDIUM, HIGH
 ```
 
-* Configure threading
+* Configure threading based on the number of CPU cores. If you have NVIDIA CUDA hardware, ANTS may be able to use that, I didn't check
 ```
 ANTS_THREADS=8
 ```
 
 * Set hyperintensity detection parameters
 ```
-THRESHOLD_WM_SD_MULTIPLIER=2.5
-MIN_HYPERINTENSITY_SIZE=5
+THRESHOLD_WM_SD_MULTIPLIER=2.5  #Standard deviations from region-local intensity median to identify as outliers
+MIN_HYPERINTENSITY_SIZE=5  #Minimum number of voxels, increase if there is noise, decrease potentially for very high quality (3T/etc) and 3D-FLAIR scans
 ```
 
 # Processing Pipeline
@@ -82,7 +82,7 @@ MIN_HYPERINTENSITY_SIZE=5
 The framework implements a sequential processing workflow:
 
 * DICOM to NIfTI conversion: Transforms DICOM files to the NIfTI format using dcm2niix
-* Scanner metadata extraction: Analyzes DICOM headers to optimize processing parameters
+* Scanner metadata extraction: Analyzes DICOM headers to optimize processing parameters, this is tuned for Siemens scanners currently but has defaults in place otherwise
 * Multi-axial integration: Combines images from different acquisition planes
 * N4 bias field correction: Removes intensity non-uniformities with sequence-specific parameters
 * Dimension standardization: Ensures consistent spatial resolution across images
@@ -140,7 +140,7 @@ This framework's ability to optimize processing parameters based on sequence typ
 * N4 Bias Field Correction Implementation
 The sequence-specific bias correction parameters (especially the FLAIR-specific settings) show advanced understanding of how different pulse sequences require customized preprocessing. This level of sequence-specific tuning is found in high-end research implementations but less commonly in standard packages.
 
-* Future improvements can be machine learning and deep learning integrations which the most advanced tools use
+* Future improvements can be machine learning and deep learning integrations which the most advanced tools use. However, these require manually labelled data which introduces another potential failure domain.
 
 # Acknowledgments
 
@@ -151,4 +151,4 @@ This framework integrates tools developed by the neuroimaging community:
 * FreeSurfer: https://surfer.nmr.mgh.harvard.edu/
 * Convert3D: http://www.itksnap.org/pmwiki/pmwiki.php?n=Convert3D
 * dcm2niix: https://github.com/rordenlab/dcm2niix
-As well as GNU parallel, imagemagick, Claude, Gemini and ChatGPT ;) 
+As well as GNU parallel, imagemagick, Claude, Gemini and ChatGPT who did more than a little of the heavy lifting and teaching., ;) 
