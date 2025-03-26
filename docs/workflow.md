@@ -1,242 +1,191 @@
 # Brain MRI Processing Pipeline: End-to-End Workflow
 
-This document outlines the complete end-to-end workflow for the brain MRI processing pipeline, with integrated QA/validation steps at each stage.
+This document outlines the complete end-to-end workflow of the brain MRI processing pipeline, including all QA/validation steps.
 
 ## Overview
 
-The pipeline processes brain MRI data through the following main stages:
+The pipeline processes T1-weighted and T2-FLAIR MRI images to extract and segment the brainstem and pons, detect hyperintensities in the dorsal pons, and generate comprehensive QA visualizations and reports.
 
-1. Environment Setup and Configuration
-2. Data Import and Conversion
-3. Preprocessing
-4. Registration
-5. Segmentation
-6. Hyperintensity Detection and Analysis
-7. Visualization and Reporting
+## Workflow Diagram
 
-Each stage includes integrated QA/validation steps to ensure data quality and processing accuracy.
+```mermaid
+graph TD
+    A[Import DICOM Data] --> B[Preprocess Images]
+    B --> C[Register T2-FLAIR to T1]
+    C --> D[Segment Brainstem & Pons]
+    D --> E[Detect Hyperintensities]
+    E --> F[Generate Visualizations & Reports]
+    
+    QA1[QA: Validate DICOM/NIfTI] --> A
+    QA2[QA: Validate Preprocessing] --> B
+    QA3[QA: Validate Registration] --> C
+    QA4[QA: Validate Segmentation] --> D
+    QA5[QA: Validate Hyperintensities] --> E
+    QA6[QA: Final Report] --> F
+```
 
 ## Detailed Workflow
 
-### 1. Environment Setup and Configuration
+### 1. Import DICOM Data
 
-```mermaid
-graph TD
-    A[Start] --> B[Load Configuration]
-    B --> C[Set Environment Variables]
-    C --> D[Check Dependencies]
-    D --> E[Create Directories]
-    E --> F[Initialize Logging]
-    F --> G[End]
-```
-
-**Key Steps:**
-- Load configuration parameters from config files
-- Set environment variables (paths, directories)
-- Check for required dependencies (ANTs, FSL, FreeSurfer, etc.)
-- Create necessary directories
-- Initialize logging system
+**Steps:**
+1. Import DICOM files from source directory
+2. Extract metadata using Python script
+3. Convert DICOM to NIfTI using dcm2niix
+4. Deduplicate identical files
 
 **QA/Validation:**
-- Verify all required tools are available
-- Validate configuration parameters
-- Check directory permissions
+- Validate DICOM files (check headers, count files)
+- Validate NIfTI files (check dimensions, data type)
+- Verify metadata extraction
 
-### 2. Data Import and Conversion
+**Outputs:**
+- NIfTI files (.nii.gz)
+- Metadata JSON files
+- Validation reports
 
-```mermaid
-graph TD
-    A[Start] --> B[Import DICOM Files]
-    B --> C[Extract DICOM Metadata]
-    C --> D[QA: Validate DICOM Files]
-    D --> E[Convert to NIfTI]
-    E --> F[QA: Validate NIfTI Files]
-    F --> G[Deduplicate Files]
-    G --> H[End]
-```
+### 2. Preprocess Images
 
-**Key Steps:**
-- Import DICOM files from source directory
-- Extract metadata from DICOM headers
-- Convert DICOM to NIfTI format using dcm2niix
-- Deduplicate identical files
+**Steps:**
+1. Combine multi-axial images if available
+2. Apply N4 bias field correction
+3. Extract brain
+4. Standardize dimensions
+5. Crop with padding
 
 **QA/Validation:**
-- Verify DICOM files contain expected sequences
-- Check DICOM metadata for completeness
-- Validate NIfTI conversion success
-- Verify image dimensions and orientation
+- Check image quality (dimensions, intensity range)
+- Validate brain extraction
+- Verify bias correction
 
-### 3. Preprocessing
+**Outputs:**
+- Combined high-resolution images
+- Bias-corrected images
+- Brain-extracted images
+- Standardized images
 
-```mermaid
-graph TD
-    A[Start] --> B[Multi-axial Integration]
-    B --> C[QA: Check Combined Images]
-    C --> D[N4 Bias Field Correction]
-    D --> E[QA: Check Bias Correction]
-    E --> F[Brain Extraction]
-    F --> G[QA: Check Brain Extraction]
-    G --> H[Dimension Standardization]
-    H --> I[QA: Check Standardization]
-    I --> J[End]
-```
+### 3. Register T2-FLAIR to T1
 
-**Key Steps:**
-- Combine multi-axial images (sagittal, coronal, axial) for enhanced resolution
-- Apply N4 bias field correction to all modalities
-- Extract brain using ANTs brain extraction
-- Standardize image dimensions
+**Steps:**
+1. Register T2-FLAIR to T1-MPRAGE using ANTs
+2. Create registration visualizations
+3. Validate registration quality
 
 **QA/Validation:**
-- Verify multi-axial integration quality
-- Check bias field correction effectiveness
-- Validate brain extraction accuracy
-- Ensure dimension standardization preserves anatomical features
+- Calculate registration metrics (cross-correlation, mutual information)
+- Create checkerboard visualization
+- Create difference map
+- Assess registration quality (EXCELLENT, GOOD, ACCEPTABLE, POOR)
 
-### 4. Registration
+**Outputs:**
+- Registered T2-FLAIR image
+- Registration transforms
+- Registration QC visualizations
+- Registration validation report
 
-```mermaid
-graph TD
-    A[Start] --> B[T2-SPACE-FLAIR to T1MPRAGE Registration]
-    B --> C[QA: Validate Registration]
-    C --> D[Create Registration Visualizations]
-    D --> E[QA: Visual Inspection]
-    E --> F[End]
-```
+### 4. Segment Brainstem & Pons
 
-**Key Steps:**
-- Register T2-SPACE-FLAIR to T1MPRAGE using ANTs exclusively
-- Generate transformation matrices
-- Create registration visualizations (checkerboard, edge overlays)
+**Steps:**
+1. Extract brainstem using ANTs
+2. Extract pons from brainstem
+3. Divide pons into dorsal and ventral regions
+4. Validate segmentation
 
 **QA/Validation:**
-- Calculate registration quality metrics (cross-correlation, mutual information)
-- Validate transformation parameters
-- Visual inspection of registration results
-- Check for alignment errors
+- Calculate volumes (brainstem, pons, dorsal pons, ventral pons)
+- Check volume ratios (pons/brainstem, dorsal/pons, ventral/pons)
+- Create edge overlays for visual inspection
+- Validate against expected ranges
 
-### 5. Segmentation
+**Outputs:**
+- Brainstem mask
+- Pons mask
+- Dorsal pons mask
+- Ventral pons mask
+- Segmentation validation report
 
-```mermaid
-graph TD
-    A[Start] --> B[Tissue Segmentation]
-    B --> C[QA: Validate Tissue Segmentation]
-    C --> D[Brainstem Segmentation]
-    D --> E[QA: Validate Brainstem Segmentation]
-    E --> F[Pons Segmentation]
-    F --> G[QA: Validate Pons Segmentation]
-    G --> H[Dorsal/Ventral Pons Division]
-    H --> I[QA: Validate Pons Division]
-    I --> J[End]
-```
+### 5. Detect Hyperintensities
 
-**Key Steps:**
-- Perform tissue segmentation (GM, WM, CSF)
-- Extract brainstem using ANTs
-- Segment pons from brainstem
-- Divide pons into dorsal and ventral regions
+**Steps:**
+1. Register FLAIR to dorsal pons
+2. Segment tissue classes (WM, GM, CSF)
+3. Calculate WM statistics
+4. Apply multiple thresholds (1.5, 2.0, 2.5, 3.0 × SD)
+5. Perform morphological operations
+6. Remove small clusters
+7. Analyze clusters
 
 **QA/Validation:**
-- Verify tissue segmentation accuracy
-- Validate brainstem extraction
-- Check pons segmentation
-- Ensure proper dorsal/ventral division
+- Validate tissue segmentation
+- Check hyperintensity volumes at different thresholds
+- Analyze cluster sizes and distributions
+- Create multi-threshold comparison
+- Validate against expected ranges
 
-### 6. Hyperintensity Detection and Analysis
+**Outputs:**
+- Hyperintensity masks at multiple thresholds
+- Cluster analysis results
+- Hyperintensity validation report
 
-```mermaid
-graph TD
-    A[Start] --> B[Calculate WM Statistics]
-    B --> C[Apply Multiple Thresholds]
-    C --> D[QA: Validate Thresholds]
-    D --> E[Morphological Operations]
-    E --> F[QA: Check Morphology]
-    F --> G[Cluster Analysis]
-    G --> H[QA: Validate Clusters]
-    H --> I[Volume Quantification]
-    I --> J[QA: Validate Volumes]
-    J --> K[End]
-```
+### 6. Generate Visualizations & Reports
 
-**Key Steps:**
-- Calculate white matter statistics in normal-appearing tissue
-- Apply multiple thresholds (1.5, 2.0, 2.5, 3.0 SD)
-- Perform morphological operations to clean up hyperintensity masks
-- Conduct cluster analysis
-- Quantify hyperintensity volumes
+**Steps:**
+1. Generate QC visualizations
+2. Create multi-threshold overlays
+3. Create 3D renderings (if FreeSurfer available)
+4. Generate HTML report
+5. Track pipeline progress
 
 **QA/Validation:**
-- Verify threshold selection
-- Validate morphological operations
-- Check cluster size distribution
-- Compare volumes across thresholds
+- Verify all visualizations are created
+- Check HTML report completeness
+- Validate final outputs against expected files
 
-### 7. Visualization and Reporting
+**Outputs:**
+- QC visualizations
+- Multi-threshold overlays
+- 3D renderings
+- HTML report
+- Pipeline progress log
 
-```mermaid
-graph TD
-    A[Start] --> B[Generate QC Visualizations]
-    B --> C[Create Multi-threshold Overlays]
-    C --> D[Generate 3D Renderings]
-    D --> E[Create HTML Report]
-    E --> F[Generate Summary Statistics]
-    F --> G[End]
-```
+## QA/Validation Integration
 
-**Key Steps:**
-- Generate quality control visualizations
-- Create multi-threshold overlays
-- Generate 3D renderings of hyperintensities
-- Create comprehensive HTML report
-- Generate summary statistics
+QA/validation is integrated throughout the pipeline as mandatory steps:
 
-**QA/Validation:**
-- Verify visualization quality
-- Check overlay accuracy
-- Validate HTML report completeness
-- Ensure summary statistics accuracy
-
-## Integration of QA/Validation Functions
-
-QA/validation functions are integrated throughout the pipeline as mandatory steps. Each processing stage includes specific QA checks:
-
-### Image Quality Checks
+### 1. After DICOM Import and Conversion
 
 ```bash
-# After each image processing step
-qa_check_image "$output_file"
+validate_dicom_files "$SRC_DIR"
+validate_nifti_files "$EXTRACT_DIR"
+```
 
-# After registration
+### 2. After Each Image Processing Step
+
+```bash
+qa_check_image "$output_file"
+```
+
+### 3. After Registration
+
+```bash
 qa_check_registration_dims "$warped_file" "$reference_file"
 qa_check_image_correlation "$warped_file" "$reference_file"
-
-# After segmentation
-qa_check_mask "$mask_file"
-```
-
-### Registration Validation
-
-```bash
-# After T2-SPACE-FLAIR to T1MPRAGE registration
 validate_transformation "$t1_file" "$flair_file" "$transform" \
                        "$t1_mask" "$flair_mask" \
                        "$validation_dir" "$threshold"
 ```
 
-### Segmentation Validation
+### 4. After Segmentation
 
 ```bash
-# After segmentation
+qa_check_mask "$mask_file"
 calculate_dice "$reference_mask" "$segmented_mask"
 calculate_jaccard "$reference_mask" "$segmented_mask"
-calculate_hausdorff "$reference_mask" "$segmented_mask"
 ```
 
-### Hyperintensity Validation
+### 5. After Hyperintensity Detection
 
 ```bash
-# After hyperintensity detection
 # Validate using multiple thresholds
 for mult in 1.5 2.0 2.5 3.0; do
     # Check hyperintensity volume
@@ -251,42 +200,21 @@ for mult in 1.5 2.0 2.5 3.0; do
 done
 ```
 
-### Pipeline Progress Tracking
+### 6. At the End of Each Major Step
 
 ```bash
-# At the end of each major step
 track_pipeline_progress "$subject_id" "$output_dir"
 ```
 
-## Output Structure
+## Error Handling
 
-The pipeline generates a structured output directory:
+The pipeline includes comprehensive error handling:
 
-```
-mri_results/
-├── logs/                         # Log files
-├── metadata/                     # Extracted metadata
-├── combined/                     # Multi-axial combined images
-├── bias_corrected/               # N4 bias-corrected images
-├── brain_extraction/             # Brain-extracted images
-├── standardized/                 # Dimension-standardized images
-├── registered/                   # Registered images
-├── segmentation/                 # Segmentation results
-│   ├── tissue/                   # Tissue segmentation
-│   ├── brainstem/                # Brainstem segmentation
-│   └── pons/                     # Pons segmentation
-├── hyperintensities/             # Hyperintensity detection results
-│   ├── thresholds/               # Multiple threshold results
-│   └── clusters/                 # Cluster analysis results
-├── validation/                   # Validation results
-│   ├── registration/             # Registration validation
-│   ├── segmentation/             # Segmentation validation
-│   └── hyperintensities/         # Hyperintensity validation
-├── qc_visualizations/            # Quality control visualizations
-├── reports/                      # HTML reports
-└── summary/                      # Summary statistics
-```
+1. **Early Detection**: QA checks are performed early in each step to detect issues before proceeding
+2. **Graceful Degradation**: If a step fails, the pipeline attempts to continue with fallback options
+3. **Detailed Logging**: All errors are logged with detailed information
+4. **Progress Tracking**: Pipeline progress is tracked and reported
 
 ## Conclusion
 
-This end-to-end workflow provides a comprehensive approach to brain MRI processing, with integrated QA/validation at each stage. The modular design allows for flexibility while maintaining a consistent and reliable processing pipeline.
+This end-to-end workflow provides a comprehensive approach to brain MRI processing, with a focus on brainstem segmentation and hyperintensity detection. The integrated QA/validation steps ensure data quality and processing accuracy throughout the pipeline.
