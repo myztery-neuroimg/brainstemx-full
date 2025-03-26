@@ -1,14 +1,14 @@
 # Brain MRI ANTs E2E Pipeline
 
-A comprehensive end-to-end pipeline for processing brain MRI images, with a focus on brainstem segmentation and hyperintensity detection.
+End-to-end pipeline for processing brain MRI images, with a focus on brainstem segmentation and hyperintensity detection.
 
 ## Overview
 
 This pipeline processes T1-weighted and T2-FLAIR MRI images to:
 
-1. Extract and segment the brainstem and pons
-2. Detect hyperintensities in the dorsal pons
-3. Generate comprehensive QA visualizations and reports
+1. Extract and segment the brainstem and pons via Atlas based segmentation (though easily extensible to other regions)
+2. Detect hyperintensities within those regions
+3. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
 The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing framework, with some additional tools from FSL and Convert3D.
 
@@ -18,7 +18,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - Multi-axial image integration
 - N4 bias field correction
 - Brain extraction
-- T1 to FLAIR registration
+- Registration of modalities such as FLAIR/SPACE-FLAIR/DWI/SWI against T1MPRAGE
 - Brainstem and pons segmentation
 - Hyperintensity detection with multiple thresholds
 - Comprehensive QA/validation
@@ -32,12 +32,14 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - dcm2niix
 - FreeSurfer (optional, for 3D visualization)
 - Python 3 (for metadata extraction)
+- GNU Parallel
+- MacOS or (untested) Linux OS
 
 ## Installation
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/brainMRI-ants-e2e-pipeline.git
+   git clone https://github.com/davidj-brewster/brainMRI-ants-e2e-pipeline.git
    cd brainMRI-ants-e2e-pipeline
    ```
 
@@ -139,3 +141,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Convert3D
 - dcm2niix
 - FreeSurfer
+- GNU Parallel
+- Roo Code/Claude 3.7 :D 

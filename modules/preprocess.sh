@@ -14,12 +14,22 @@
 combine_multiaxis_images() {
   local sequence_type="$1"
   local output_dir="$2"
-  mkdir -p "$output_dir"
+  
+  # Create output directory
+  output_dir=$(create_module_dir "combined")
+  
   log_message "Combining multi-axis images for $sequence_type"
+  
+  # Validate input directory
+  if ! validate_directory "$EXTRACT_DIR" "DICOM extracted directory"; then
+    log_error "DICOM extraction directory not found: $EXTRACT_DIR" $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
 
   # Find SAG, COR, AX
   local sag_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | egrep -i "SAG" || true))
   local cor_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz" | egrep -i "COR" || true))
+  
   local ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz"  | egrep -i "AX"  || true))
 
   # pick best resolution from each orientation
@@ -54,7 +64,7 @@ combine_multiaxis_images() {
     fi
   done
 
-  local out_file="${output_dir}/${sequence_type}_combined_highres.nii.gz"
+  local out_file=$(get_output_path "combined" "${sequence_type}" "_combined_highres")
 
   if [ -n "$best_sag" ] && [ -n "$best_cor" ] && [ -n "$best_ax" ]; then
     log_message "Combining SAG, COR, AX with antsMultivariateTemplateConstruction2.sh"
@@ -74,6 +84,7 @@ combine_multiaxis_images() {
 
     mv "${output_dir}/${sequence_type}_template_template0.nii.gz" "$out_file"
     standardize_datatype "$out_file" "$out_file" "$OUTPUT_DATATYPE"
+    validate_nifti "$out_file" "Combined high-res image"
     log_formatted "SUCCESS" "Created high-res combined: $out_file"
 
   else
@@ -86,9 +97,12 @@ combine_multiaxis_images() {
     if [ -n "$best_file" ]; then
       cp "$best_file" "$out_file"
       standardize_datatype "$out_file" "$out_file" "$OUTPUT_DATATYPE"
+      validate_nifti "$out_file" "Combined fallback image"
       log_message "Used single orientation: $best_file"
+      return 0
     else
-      log_formatted "ERROR" "No $sequence_type files found"
+      log_error "No $sequence_type files found" $ERR_DATA_MISSING
+      return $ERR_DATA_MISSING
     fi
   fi
 }
@@ -98,25 +112,37 @@ combine_multiaxis_images_highres() {
   local sequence_type="$1"
   local output_dir="$2"
   local resolution="${3:-1}"  # Default to 1mm isotropic
+
+  # Create output directory
+  output_dir=$(create_module_dir "combined")
   
   log_message "Combining multi-axis images for $sequence_type with high resolution"
   
   # First combine using the standard function
   combine_multiaxis_images "$sequence_type" "$output_dir"
+  local combine_status=$?
+  if [ $combine_status -ne 0 ]; then
+    log_error "Failed to combine multi-axial images" $combine_status
+    return $combine_status
+  fi
   
   # Get the combined file
-  local combined_file="${output_dir}/${sequence_type}_combined_highres.nii.gz"
+  local combined_file=$(get_output_path "combined" "${sequence_type}" "_combined_highres")
   
-  if [ ! -f "$combined_file" ]; then
-    log_formatted "ERROR" "Combined file not found: $combined_file"
-    return 1
+  # Validate combined file
+  if ! validate_nifti "$combined_file" "Combined file"; then
+    log_error "Combined file validation failed: $combined_file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
   fi
   
   # Resample to high resolution
-  local highres_file="${output_dir}/${sequence_type}_combined_highres_${resolution}mm.nii.gz"
+  local highres_file=$(get_output_path "combined" "${sequence_type}" "_combined_highres_${resolution}mm")
   
   log_message "Resampling to ${resolution}mm isotropic resolution"
   ResampleImage 3 "$combined_file" "$highres_file" ${resolution}x${resolution}x${resolution} 0 4
+  
+  # Validate highres file
+  validate_nifti "$highres_file" "High-resolution image"
   
   log_message "High-resolution combined image created: $highres_file"
   return 0
@@ -125,6 +151,11 @@ combine_multiaxis_images_highres() {
 # Function to calculate in-plane resolution
 calculate_inplane_resolution() {
   local file="$1"
+
+  # Validate input file
+  if ! validate_file "$file" "Input file"; then
+    return $ERR_FILE_NOT_FOUND
+  fi
   
   # Get pixel dimensions
   local pixdim1=$(fslval "$file" pixdim1)
@@ -139,6 +170,11 @@ calculate_inplane_resolution() {
 # Function to get N4 parameters
 get_n4_parameters() {
   local file="$1"
+  
+  # Validate input file exists but don't stop on error
+  if [ ! -f "$file" ]; then
+    log_formatted "WARNING" "File not found for parameter determination: $file - using defaults"
+  fi
   local iters="$N4_ITERATIONS"
   local conv="$N4_CONVERGENCE"
   local bspl="$N4_BSPLINE"
@@ -156,9 +192,10 @@ get_n4_parameters() {
 # Function to optimize ANTs parameters
 optimize_ants_parameters() {
   local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
-  mkdir -p "${RESULTS_DIR}/metadata"
+  
+  create_module_dir "metadata"
+  
   if [ ! -f "$metadata_file" ]; then
-    log_message "No metadata found. Using default ANTs parameters."
     return
   fi
 
@@ -214,35 +251,59 @@ EOF
 # Function to process N4 bias field correction
 process_n4_correction() {
   local file="$1"
+  
+  # Validate input file
+  if ! validate_nifti "$file" "Input file for N4 correction"; then
+    log_error "Invalid input file for N4 correction: $file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
   local basename=$(basename "$file" .nii.gz)
-  local output_file="${RESULTS_DIR}/bias_corrected/${basename}_n4.nii.gz"
+  local output_file=$(get_output_path "bias_corrected" "$basename" "_n4")
+  local output_dir=$(get_module_dir "bias_corrected")
+  
+  # Ensure output directory exists
+  mkdir -p "$output_dir"
 
   log_message "N4 bias correction: $file"
-  mkdir -p "${RESULTS_DIR}/bias_corrected"
+  
+  # Generate brain mask output paths
+  local brain_prefix="${output_dir}/${basename}_"
+  local brain_mask="${brain_prefix}BrainExtractionMask.nii.gz"
   
   # Brain extraction for a better mask
   antsBrainExtraction.sh -d 3 \
     -a "$file" \
     -k 1 \
-    -o "${RESULTS_DIR}/bias_corrected/${basename}_" \
+    -o "$brain_prefix" \
     -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
     -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
     -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+  
+  # Check if brain mask was created
+  if [ ! -f "$brain_mask" ]; then
+    log_error "Brain extraction failed to create mask: $brain_mask" $ERR_PREPROC
+    return $ERR_PREPROC
+  fi
 
+  # Get sequence-specific parameters
   local params=($(get_n4_parameters "$file"))
   local iters=${params[0]}
   local conv=${params[1]}
   local bspl=${params[2]}
   local shrk=${params[3]}
 
+  # Run N4 bias correction
   N4BiasFieldCorrection -d 3 \
     -i "$file" \
-    -x "${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz" \
+    -x "$brain_mask" \
     -o "$output_file" \
     -b "[$bspl]" \
     -s "$shrk" \
     -c "[$iters,$conv]"
 
+  # Validate output file
+  validate_nifti "$output_file" "N4 bias-corrected image"
   log_message "Saved bias-corrected image: $output_file"
   return 0
 }
@@ -250,11 +311,19 @@ process_n4_correction() {
 # Function to standardize dimensions
 standardize_dimensions() {
   local input_file="$1"
+  
+  # Validate input file
+  if ! validate_nifti "$input_file" "Input file for standardization"; then
+    log_error "Invalid input file for standardization: $input_file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
   local basename=$(basename "$input_file" .nii.gz)
-  local output_file="${RESULTS_DIR}/standardized/${basename}_std.nii.gz"
+  local output_dir=$(create_module_dir "standardized")
+  local output_file=$(get_output_path "standardized" "$basename" "_std")
 
   log_message "Standardizing dimensions for $basename"
-  mkdir -p "${RESULTS_DIR}/standardized"
+  
 
   # Get current dimensions and pixel sizes
   local x_dim=$(fslval "$input_file" dim1)
@@ -280,29 +349,137 @@ standardize_dimensions() {
   log_message "Resampling to $target_dims mm resolution"
   ResampleImage 3 "$input_file" "$output_file" "$target_dims" 0 4
 
+  # Validate output file
+  validate_nifti "$output_file" "Standardized image"
+  
   log_message "Saved standardized image: $output_file"
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# Parallel processing functions
+# ------------------------------------------------------------------------------
+
+# Function to run N4 bias field correction in parallel
+run_parallel_n4_correction() {
+  local input_dir="${1:-$EXTRACT_DIR}"
+  local pattern="${2:-*.nii.gz}"
+  local jobs="${3:-$PARALLEL_JOBS}"
+  local max_depth="${4:-1}"
+  
+  log_message "Running N4 bias correction in parallel on files matching '$pattern' in $input_dir"
+  
+  # Ensure output directory exists
+  create_module_dir "bias_corrected"
+  
+  # Export required functions for parallel execution
+  export -f process_n4_correction get_n4_parameters log_message log_formatted
+  export -f log_error validate_nifti validate_file
+  export -f get_output_path get_module_dir create_module_dir
+  
+  # Run in parallel using the common function
+  run_parallel "process_n4_correction" "$pattern" "$input_dir" "$jobs" "$max_depth"
+  local status=$?
+  
+  if [ $status -ne 0 ]; then
+    log_error "Parallel N4 bias correction failed with status $status" $ERR_PREPROC
+    return $status
+  fi
+  
+  log_formatted "SUCCESS" "Completed parallel N4 bias correction"
+  return 0
+}
+
+# Function to run dimension standardization in parallel
+run_parallel_standardize_dimensions() {
+  local input_dir="${1:-$RESULTS_DIR/bias_corrected}"
+  local pattern="${2:-*_n4.nii.gz}"
+  local jobs="${3:-$PARALLEL_JOBS}"
+  local max_depth="${4:-1}"
+  
+  log_message "Running standardize dimensions in parallel on files matching '$pattern' in $input_dir"
+  
+  # Ensure output directory exists
+  create_module_dir "standardized"
+  
+  # Export required functions for parallel execution
+  export -f standardize_dimensions log_message log_formatted
+  export -f log_error validate_nifti validate_file
+  export -f get_output_path get_module_dir create_module_dir
+  
+  # Run in parallel using the common function
+  run_parallel "standardize_dimensions" "$pattern" "$input_dir" "$jobs" "$max_depth"
+  local status=$?
+  
+  if [ $status -ne 0 ]; then
+    log_error "Parallel dimension standardization failed with status $status" $ERR_PREPROC
+    return $status
+  fi
+  
+  log_formatted "SUCCESS" "Completed parallel dimension standardization"
+  return 0
+}
+
+# Function to run brain extraction in parallel
+run_parallel_brain_extraction() {
+  local input_dir="${1:-$RESULTS_DIR/bias_corrected}"
+  local pattern="${2:-*_n4.nii.gz}"
+  local jobs="${3:-$MAX_CPU_INTENSIVE_JOBS}"  # Use MAX_CPU_INTENSIVE_JOBS since this is CPU-intensive
+  local max_depth="${4:-1}"
+  
+  log_message "Running brain extraction in parallel on files matching '$pattern' in $input_dir"
+  
+  # Ensure output directory exists
+  create_module_dir "brain_extraction"
+  
+  # Export required functions for parallel execution
+  export -f extract_brain log_message log_formatted
+  export -f log_error validate_nifti validate_file
+  export -f get_output_path get_module_dir create_module_dir
+  
+  # Run in parallel using the common function
+  run_parallel "extract_brain" "$pattern" "$input_dir" "$jobs" "$max_depth"
+  local status=$?
+  
+  if [ $status -ne 0 ]; then
+    log_error "Parallel brain extraction failed with status $status" $ERR_PREPROC
+    return $status
+  fi
+  
+  log_formatted "SUCCESS" "Completed parallel brain extraction"
   return 0
 }
 
 # Function to process cropping with padding
 process_cropping_with_padding() {
   local file="$1"
+  
+  # Validate input file
+  if ! validate_nifti "$file" "Input file for cropping"; then
+    log_error "Invalid input file for cropping: $file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
   local basename=$(basename "$file" .nii.gz)
-  local output_file="${RESULTS_DIR}/cropped/${basename}_cropped.nii.gz"
+  local output_dir=$(create_module_dir "cropped")
+  local output_file=$(get_output_path "cropped" "$basename" "_cropped")
 
-  mkdir -p "${RESULTS_DIR}/cropped"
   log_message "Cropping w/ padding: $file"
 
   # Check if brain extraction mask exists
-  local mask_file="${RESULTS_DIR}/bias_corrected/${basename}_BrainExtractionMask.nii.gz"
+  local bias_dir=$(get_module_dir "bias_corrected")
+  local mask_file="${bias_dir}/${basename}_BrainExtractionMask.nii.gz"
+  
   if [ ! -f "$mask_file" ]; then
     log_formatted "WARNING" "Brain extraction mask not found: $mask_file"
     log_message "Running brain extraction first..."
     
     # Create temporary directory for brain extraction
-    local temp_dir="${RESULTS_DIR}/temp_brain_extraction"
-    mkdir -p "$temp_dir"
+    local temp_dir=$(create_module_dir "temp_brain_extraction")
     
+    # Generate brain mask output paths
+    local brain_prefix="${temp_dir}/${basename}_"
+
     # Run brain extraction
     antsBrainExtraction.sh -d 3 \
       -a "$file" \
@@ -324,6 +501,9 @@ process_cropping_with_padding() {
     -trim ${C3D_PADDING_MM}mm \
     -o "$output_file"
 
+  # Validate output file
+  validate_nifti "$output_file" "Cropped image"
+  
   log_message "Saved cropped file: $output_file"
   return 0
 }
@@ -331,25 +511,48 @@ process_cropping_with_padding() {
 # Function to extract brain
 extract_brain() {
   local input_file="$1"
+  
+  # Validate input file
+  if ! validate_nifti "$input_file" "Input file for brain extraction"; then
+    log_error "Invalid input file for brain extraction: $input_file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
   local basename=$(basename "$input_file" .nii.gz)
-  local output_file="${RESULTS_DIR}/brain_extraction/${basename}_brain.nii.gz"
-  local mask_file="${RESULTS_DIR}/brain_extraction/${basename}_brain_mask.nii.gz"
+  local output_dir=$(create_module_dir "brain_extraction")
+  local output_file=$(get_output_path "brain_extraction" "$basename" "_brain")
+  local mask_file=$(get_output_path "brain_extraction" "$basename" "_brain_mask")
+  
+  # Generate brain mask output paths
+  local brain_prefix="${output_dir}/${basename}_"
 
-  mkdir -p "${RESULTS_DIR}/brain_extraction"
   log_message "Extracting brain from $basename"
 
   # Run ANTs brain extraction
   antsBrainExtraction.sh -d 3 \
     -a "$input_file" \
     -k 1 \
-    -o "${RESULTS_DIR}/brain_extraction/${basename}_" \
+    -o "$brain_prefix" \
     -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
     -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
     -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
 
+  # Source files from ANTs brain extraction
+  local source_brain="${brain_prefix}BrainExtractionBrain.nii.gz"
+  local source_mask="${brain_prefix}BrainExtractionMask.nii.gz"
+  
+  # Check if brain extraction was successful
+  if [ ! -f "$source_brain" ] || [ ! -f "$source_mask" ]; then
+    log_error "Brain extraction failed for $basename" $ERR_PREPROC
+    return $ERR_PREPROC
+  fi
+  
   # Rename output files to standard names
-  mv "${RESULTS_DIR}/brain_extraction/${basename}_BrainExtractionBrain.nii.gz" "$output_file"
-  mv "${RESULTS_DIR}/brain_extraction/${basename}_BrainExtractionMask.nii.gz" "$mask_file"
+  mv "$source_brain" "$output_file"
+  mv "$source_mask" "$mask_file"
+  
+  # Validate output files
+  validate_nifti "$output_file" "Brain extraction output" && validate_nifti "$mask_file" "Brain mask"
 
   log_message "Saved brain extraction: $output_file"
   log_message "Saved brain mask: $mask_file"
@@ -363,6 +566,9 @@ export -f calculate_inplane_resolution
 export -f get_n4_parameters
 export -f optimize_ants_parameters
 export -f process_n4_correction
+export -f run_parallel_n4_correction
+export -f run_parallel_standardize_dimensions
+export -f run_parallel_brain_extraction
 export -f standardize_dimensions
 export -f process_cropping_with_padding
 export -f extract_brain
