@@ -29,25 +29,27 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - ANTs (Advanced Normalization Tools)
 - FSL (FMRIB Software Library)
 - Convert3D (c3d)
-- dcm2niix
+- dcm2niix (distributed with FreeSurfer)
 - FreeSurfer (optional, for 3D visualization)
 - Python 3 (for metadata extraction)
-- GNU Parallel
+- GNU Parallel (via homebrew)
 - MacOS or (untested) Linux OS
 
 ## Installation
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/davidj-brewster/brainMRI-ants-e2e-pipeline.git
-   cd brainMRI-ants-e2e-pipeline
+   git clone https://github.com/davidj-brewster/e2e-brain-MRI-lesion-segment.git
+   cd e2e-brain-MRI-lesion-segment
    ```
 
-2. Ensure all dependencies are installed and in your PATH.
+2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
 
 3. Make the pipeline script executable:
    ```bash
    chmod +x pipeline.sh
+   chmod +x tests/integration.sh
+   chmod +x tests/test_parallel.sh
    ```
 
 ## Usage
