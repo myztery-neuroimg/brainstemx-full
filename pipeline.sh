@@ -43,6 +43,20 @@ show_help() {
   echo "  -h, --help           Show this help message and exit"
 }
 
+# Load configuration file
+load_config() {
+  local config_file="$1"
+  
+  if [ -f "$config_file" ]; then
+    log_message "Loading configuration from $config_file"
+    source "$config_file"
+    return 0
+  else
+    log_formatted "WARNING" "Configuration file not found: $config_file"
+    return 1
+  fi
+}
+
 # Parse command line arguments
 parse_arguments() {
   # Default values
@@ -85,7 +99,7 @@ parse_arguments() {
         exit 0
         ;;
       *)
-        log_formatted "ERROR" "Unknown option: $1"
+        log_error "Unknown option: $1" $ERR_INVALID_ARGS
         show_help
         exit 1
         ;;
@@ -107,11 +121,36 @@ parse_arguments() {
   log_message "Arguments parsed: SRC_DIR=$SRC_DIR, RESULTS_DIR=$RESULTS_DIR, SUBJECT_ID=$SUBJECT_ID, QUALITY_PRESET=$QUALITY_PRESET, PIPELINE_TYPE=$PIPELINE_TYPE"
 }
 
+# Function to validate a processing step
+validate_step() {
+  local step_name="$1"
+  local output_files="$2"
+  local module="$3"
+  
+  log_message "Validating step: $step_name"
+  
+  # Use our new validation function
+  if ! validate_module_execution "$module" "$output_files"; then
+    log_error "Validation failed for step: $step_name" $ERR_VALIDATION
+    return $ERR_VALIDATION
+  fi
+  
+  log_formatted "SUCCESS" "Step validated: $step_name"
+  return 0
+}
+
+
 # Run the pipeline
 run_pipeline() {
   local subject_id="$SUBJECT_ID"
   local input_dir="$SRC_DIR"
   local output_dir="$RESULTS_DIR"
+
+  # Load parallel configuration if available
+  load_parallel_config "config/parallel_config.sh"
+  
+  # Check for GNU parallel
+  check_parallel
   
   log_message "Running pipeline for subject $subject_id"
   log_message "Input directory: $input_dir"
@@ -122,11 +161,16 @@ run_pipeline() {
   
   # Step 1: Import and convert data
   log_message "Step 1: Importing and converting data"
+  
   import_dicom_data "$input_dir" "$EXTRACT_DIR"
-  validate_dicom_files "$input_dir"
+  validate_dicom_files "$input_dir" 
   extract_siemens_metadata "$input_dir"
   validate_nifti_files "$EXTRACT_DIR"
   deduplicate_identical_files "$EXTRACT_DIR"
+  
+  # Validate import step
+  validate_step "Import data" "*.nii.gz" "import"
+  
   
   # Step 2: Preprocessing
   log_message "Step 2: Preprocessing"
@@ -136,14 +180,14 @@ run_pipeline() {
   local flair_file=$(find "$EXTRACT_DIR" -name "*FLAIR*.nii.gz" | head -1)
   
   if [ -z "$t1_file" ]; then
-    log_formatted "ERROR" "T1 file not found in $EXTRACT_DIR"
-    return 1
+    log_error "T1 file not found in $EXTRACT_DIR" $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
   fi
   
   if [ -z "$flair_file" ]; then
-    log_formatted "ERROR" "FLAIR file not found in $EXTRACT_DIR"
-    return 1
-  }
+    log_error "FLAIR file not found in $EXTRACT_DIR" $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
   
   log_message "T1 file: $t1_file"
   log_message "FLAIR file: $flair_file"
@@ -152,75 +196,163 @@ run_pipeline() {
   combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
   combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
   
+  # Validate combining step
+  validate_step "Combine multi-axial images" "T1_combined_highres.nii.gz,FLAIR_combined_highres.nii.gz" "combined"
+  
   # Update file paths if combined images were created
-  if [ -f "${RESULTS_DIR}/combined/T1_combined_highres.nii.gz" ]; then
-    t1_file="${RESULTS_DIR}/combined/T1_combined_highres.nii.gz"
+  local combined_t1=$(get_output_path "combined" "T1" "_combined_highres")
+  local combined_flair=$(get_output_path "combined" "FLAIR" "_combined_highres")
+  
+  if [ -f "$combined_t1" ]; then
+    t1_file="$combined_t1"
   fi
   
-  if [ -f "${RESULTS_DIR}/combined/FLAIR_combined_highres.nii.gz" ]; then
-    flair_file="${RESULTS_DIR}/combined/FLAIR_combined_highres.nii.gz"
+  if [ -f "$combined_flair" ]; then
+    flair_file="$combined_flair"
   fi
   
-  # N4 bias field correction
-  process_n4_correction "$t1_file"
-  process_n4_correction "$flair_file"
+  # Validate input files before processing
+  validate_nifti "$t1_file" "T1 input file"
+  validate_nifti "$flair_file" "FLAIR input file"
+  
+  # N4 bias field correction (run in parallel if available)
+  if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
+    log_message "Running N4 bias field correction with parallel processing"
+    # Copy the files to a temporary directory for parallel processing
+    local temp_dir=$(create_module_dir "temp_parallel")
+    cp "$t1_file" "$temp_dir/$(basename "$t1_file")"
+    cp "$flair_file" "$temp_dir/$(basename "$flair_file")"
+    run_parallel_n4_correction "$temp_dir" "*.nii.gz"
+  else
+    log_message "Running N4 bias field correction sequentially"
+    process_n4_correction "$t1_file"
+    process_n4_correction "$flair_file"
+  fi
   
   # Update file paths
-  t1_file="${RESULTS_DIR}/bias_corrected/$(basename "$t1_file" .nii.gz)_n4.nii.gz"
-  flair_file="${RESULTS_DIR}/bias_corrected/$(basename "$flair_file" .nii.gz)_n4.nii.gz"
+  local t1_basename=$(basename "$t1_file" .nii.gz)
+  local flair_basename=$(basename "$flair_file" .nii.gz)
+  t1_file=$(get_output_path "bias_corrected" "$t1_basename" "_n4")
+  flair_file=$(get_output_path "bias_corrected" "$flair_basename" "_n4")
   
-  # Brain extraction
-  extract_brain "$t1_file"
-  extract_brain "$flair_file"
+  # Validate bias correction step
+  validate_step "N4 bias correction" "$(basename "$t1_file"),$(basename "$flair_file")" "bias_corrected"
+  
+  # Brain extraction (run in parallel if available)
+  if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
+    log_message "Running brain extraction with parallel processing"
+    run_parallel_brain_extraction "$(get_module_dir "bias_corrected")" "*.nii.gz" "$MAX_CPU_INTENSIVE_JOBS"
+  else
+    log_message "Running brain extraction sequentially"
+    extract_brain "$t1_file"
+    extract_brain "$flair_file"
+  fi
   
   # Update file paths
-  t1_brain="${RESULTS_DIR}/brain_extraction/$(basename "$t1_file" .nii.gz)_brain.nii.gz"
-  flair_brain="${RESULTS_DIR}/brain_extraction/$(basename "$flair_file" .nii.gz)_brain.nii.gz"
+  local t1_n4_basename=$(basename "$t1_file" .nii.gz)
+  local flair_n4_basename=$(basename "$flair_file" .nii.gz)
   
-  # Standardize dimensions
-  standardize_dimensions "$t1_brain"
-  standardize_dimensions "$flair_brain"
+  t1_brain=$(get_output_path "brain_extraction" "$t1_n4_basename" "_brain")
+  flair_brain=$(get_output_path "brain_extraction" "$flair_n4_basename" "_brain")
+  
+  # Validate brain extraction step
+  validate_step "Brain extraction" "$(basename "$t1_brain"),$(basename "$flair_brain")" "brain_extraction"
+  
+  # Standardize dimensions (run in parallel if available)
+  if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
+    log_message "Running dimension standardization with parallel processing"
+    run_parallel_standardize_dimensions "$(get_module_dir "brain_extraction")" "*_brain.nii.gz"
+  else
+    log_message "Running dimension standardization sequentially"
+    standardize_dimensions "$t1_brain"
+    standardize_dimensions "$flair_brain"
+  fi
+  
   
   # Update file paths
-  t1_std="${RESULTS_DIR}/standardized/$(basename "$t1_brain" .nii.gz)_std.nii.gz"
-  flair_std="${RESULTS_DIR}/standardized/$(basename "$flair_brain" .nii.gz)_std.nii.gz"
+  local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
+  local flair_brain_basename=$(basename "$flair_brain" .nii.gz)
+  
+  t1_std=$(get_output_path "standardized" "$t1_brain_basename" "_std")
+  flair_std=$(get_output_path "standardized" "$flair_brain_basename" "_std")
+  
+  # Validate standardization step
+  validate_step "Standardize dimensions" "$(basename "$t1_std"),$(basename "$flair_std")" "standardized"
   
   # Step 3: Registration
   log_message "Step 3: Registration"
-  register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "${RESULTS_DIR}/registered/t1_to_flair"
+  
+  # Create output directory for registration
+  local reg_dir=$(create_module_dir "registered")
+  local reg_prefix="${reg_dir}/t1_to_flair"
+  
+  register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
   
   # Update file paths
-  flair_registered="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
+  flair_registered="${reg_prefix}Warped.nii.gz"
+  
+  # Validate registration step
+  validate_step "Registration" "t1_to_flairWarped.nii.gz" "registered"
   
   # Create registration visualizations
-  create_registration_visualizations "$t1_std" "$flair_std" "$flair_registered" "${RESULTS_DIR}/validation/registration"
+  local validation_dir=$(create_module_dir "validation/registration")
+  create_registration_visualizations "$t1_std" "$flair_std" "$flair_registered" "$validation_dir"
+  
+  # Validate visualization step
+  validate_step "Registration visualizations" "*.png,quality.txt" "validation/registration"
   
   # Step 4: Segmentation
   log_message "Step 4: Segmentation"
   
+  # Create output directories for segmentation
+  local brainstem_dir=$(create_module_dir "segmentation/brainstem")
+  local pons_dir=$(create_module_dir "segmentation/pons")
+  
   # Extract brainstem
-  extract_brainstem_ants "$t1_std" "${RESULTS_DIR}/segmentation/brainstem/${subject_id}_brainstem.nii.gz"
+  local brainstem_output=$(get_output_path "segmentation/brainstem" "${subject_id}" "_brainstem")
+  extract_brainstem_ants "$t1_std" "$brainstem_output"
+  
+  # Validate brainstem extraction
+  validate_step "Brainstem extraction" "${subject_id}_brainstem.nii.gz" "segmentation/brainstem"
   
   # Extract pons from brainstem
-  extract_pons_from_brainstem "${RESULTS_DIR}/segmentation/brainstem/${subject_id}_brainstem.nii.gz" "${RESULTS_DIR}/segmentation/pons/${subject_id}_pons.nii.gz"
+  local pons_output=$(get_output_path "segmentation/pons" "${subject_id}" "_pons")
+  extract_pons_from_brainstem "$brainstem_output" "$pons_output"
+  
+  # Validate pons extraction
+  validate_step "Pons extraction" "${subject_id}_pons.nii.gz" "segmentation/pons"
   
   # Divide pons into dorsal and ventral regions
-  divide_pons "${RESULTS_DIR}/segmentation/pons/${subject_id}_pons.nii.gz" "${RESULTS_DIR}/segmentation/pons/${subject_id}_dorsal_pons.nii.gz" "${RESULTS_DIR}/segmentation/pons/${subject_id}_ventral_pons.nii.gz"
+  local dorsal_pons=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
+  local ventral_pons=$(get_output_path "segmentation/pons" "${subject_id}" "_ventral_pons")
+  divide_pons "$pons_output" "$dorsal_pons" "$ventral_pons"
+  
+  # Validate dorsal/ventral division
+  validate_step "Pons division" "${subject_id}_dorsal_pons.nii.gz,${subject_id}_ventral_pons.nii.gz" "segmentation/pons"
   
   # Validate segmentation
-  validate_segmentation "$t1_std" "${RESULTS_DIR}/segmentation/brainstem/${subject_id}_brainstem.nii.gz" "${RESULTS_DIR}/segmentation/pons/${subject_id}_pons.nii.gz" "${RESULTS_DIR}/segmentation/pons/${subject_id}_dorsal_pons.nii.gz" "${RESULTS_DIR}/segmentation/pons/${subject_id}_ventral_pons.nii.gz"
+  validate_segmentation "$t1_std" "$brainstem_output" "$pons_output" "$dorsal_pons" "$ventral_pons"
   
   # Step 5: Analysis
   log_message "Step 5: Analysis"
   
   # Register FLAIR to dorsal pons
-  register_t2_flair_to_t1mprage "${RESULTS_DIR}/segmentation/pons/${subject_id}_dorsal_pons.nii.gz" "$flair_registered" "${RESULTS_DIR}/registered/${subject_id}_dorsal_pons"
+  local dorsal_pons_reg_prefix="${reg_dir}/${subject_id}_dorsal_pons"
+  register_t2_flair_to_t1mprage "$dorsal_pons" "$flair_registered" "$dorsal_pons_reg_prefix"
   
   # Update file paths
-  flair_dorsal_pons="${RESULTS_DIR}/registered/${subject_id}_dorsal_ponsWarped.nii.gz"
+  flair_dorsal_pons="${dorsal_pons_reg_prefix}Warped.nii.gz"
+  
+  # Validate registration
+  validate_step "FLAIR to dorsal pons registration" "${subject_id}_dorsal_ponsWarped.nii.gz" "registered"
   
   # Detect hyperintensities
-  detect_hyperintensities "$flair_dorsal_pons" "${RESULTS_DIR}/hyperintensities/${subject_id}_dorsal_pons" "$t1_std"
+  local hyperintensities_dir=$(create_module_dir "hyperintensities")
+  local hyperintensities_prefix="${hyperintensities_dir}/${subject_id}_dorsal_pons"
+  detect_hyperintensities "$flair_dorsal_pons" "$hyperintensities_prefix" "$t1_std"
+  
+  # Validate hyperintensities detection
+  validate_step "Hyperintensity detection" "${subject_id}_dorsal_pons*.nii.gz" "hyperintensities"
   
   # Step 6: Visualization
   log_message "Step 6: Visualization"
@@ -230,6 +362,7 @@ run_pipeline() {
   
   # Create multi-threshold overlays
   create_multi_threshold_overlays "$subject_id" "$RESULTS_DIR"
+  
   
   # Generate HTML report
   generate_html_report "$subject_id" "$RESULTS_DIR"
@@ -242,13 +375,21 @@ run_pipeline() {
   return 0
 }
 
+
 # Run pipeline in batch mode
 run_pipeline_batch() {
   local subject_list="$1"
   local base_dir="$2"
   local output_base="$3"
+
+  # Validate inputs
+  validate_file "$subject_list" "Subject list file" || return $ERR_FILE_NOT_FOUND
+  validate_directory "$base_dir" "Base directory" || return $ERR_FILE_NOT_FOUND
+  validate_directory "$output_base" "Output base directory" "true" || return $ERR_PERMISSION
   
+  # Prepare batch processing
   echo "Running brainstem analysis pipeline on subject list: $subject_list"
+  local parallel_batch_processing="${PARALLEL_BATCH:-false}"
   
   # Create summary directory
   local summary_dir="${output_base}/summary"
@@ -257,20 +398,89 @@ run_pipeline_batch() {
   # Initialize summary report
   local summary_file="${summary_dir}/batch_summary.csv"
   echo "Subject,Status,BrainstemVolume,PonsVolume,DorsalPonsVolume,HyperintensityVolume,LargestClusterVolume,RegistrationQuality" > "$summary_file"
-  
-  # Process each subject
-  while read -r subject_id t2_flair t1; do
+
+  # Function to process a single subject (for parallel batch processing)
+  process_single_subject() {
+    local line="$1"
+    
+    # Parse subject info
+    read -r subject_id t2_flair t1 <<< "$line"
+    
+    # Skip empty or commented lines
+    [[ -z "$subject_id" || "$subject_id" == \#* ]] && return 0
+    
     echo "Processing subject: $subject_id"
     
     # Create subject output directory
     local subject_dir="${output_base}/${subject_id}"
+    mkdir -p "$subject_dir"
+    
+    # Run the pipeline for this subject
+    (
+      # Set variables for this subject in a subshell to avoid conflicts
+      export SUBJECT_ID="$subject_id"
+      export SRC_DIR="$base_dir/$subject_id"
+      export RESULTS_DIR="$subject_dir"
+      export PIPELINE_SUCCESS=true
+      export PIPELINE_ERROR_COUNT=0
+      
+      run_pipeline
+      
+      # Return pipeline status
+      return $?
+    )
+    
+    return $?
+  }
+  
+  # Export the function for parallel use
+  export -f process_single_subject
+  
+  # Process subjects in parallel if GNU parallel is available and parallel batch processing is enabled
+  if [ "$parallel_batch_processing" = "true" ] && [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel; then
+    log_message "Processing subjects in parallel with $PARALLEL_JOBS jobs"
+    
+    # Use parallel to process multiple subjects simultaneously
+    # Create a temporary file with the subject list
+    local temp_subject_list=$(mktemp)
+    grep -v "^#" "$subject_list" > "$temp_subject_list"
+    
+    # Process subjects in parallel
+    cat "$temp_subject_list" | parallel -j "$PARALLEL_JOBS" --halt "$PARALLEL_HALT_MODE",fail=1 process_single_subject
+    local parallel_status=$?
+    
+    # Clean up
+    rm "$temp_subject_list"
+    
+    if [ $parallel_status -ne 0 ]; then
+      log_error "Parallel batch processing failed with status $parallel_status" $parallel_status
+      return $parallel_status
+    fi
+  else
+    # Process subjects sequentially
+    log_message "Processing subjects sequentially"
+  
+  # Traditional sequential processing
+  while read -r subject_id t2_flair t1; do
+    echo "Processing subject: $subject_id"
+    
+    # Skip empty or commented lines
+    [[ -z "$subject_id" || "$subject_id" == \#* ]] && continue
+    
+    # Create subject output directory
+    local subject_dir="${output_base}/${subject_id}"
+    mkdir -p "$subject_dir"
     
     # Set global variables for this subject
     export SUBJECT_ID="$subject_id"
     export SRC_DIR="$base_dir/$subject_id"
     export RESULTS_DIR="$subject_dir"
     
-    # Run processing
+    # Reset error tracking for this subject
+    PIPELINE_SUCCESS=true
+    PIPELINE_ERROR_COUNT=0
+    
+    # Run processing with proper error handling
     run_pipeline
     local status=$?
     
@@ -290,29 +500,30 @@ run_pipeline_batch() {
     local largest_cluster_vol="N/A"
     local reg_quality="N/A"
     
-    if [ -f "${subject_dir}/segmentation/brainstem/${subject_id}_brainstem.nii.gz" ]; then
-      brainstem_vol=$(fslstats "${subject_dir}/segmentation/brainstem/${subject_id}_brainstem.nii.gz" -V | awk '{print $1}')
+    local brainstem_file=$(get_output_path "segmentation/brainstem" "${subject_id}" "_brainstem")
+    if [ -f "$brainstem_file" ]; then
+      brainstem_vol=$(fslstats "$brainstem_file" -V | awk '{print $1}')
     fi
     
-    if [ -f "${subject_dir}/segmentation/pons/${subject_id}_pons.nii.gz" ]; then
-      pons_vol=$(fslstats "${subject_dir}/segmentation/pons/${subject_id}_pons.nii.gz" -V | awk '{print $1}')
+    local pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_pons")
+    if [ -f "$pons_file" ]; then
+      pons_vol=$(fslstats "$pons_file" -V | awk '{print $1}')
     fi
     
-    if [ -f "${subject_dir}/segmentation/pons/${subject_id}_dorsal_pons.nii.gz" ]; then
-      dorsal_pons_vol=$(fslstats "${subject_dir}/segmentation/pons/${subject_id}_dorsal_pons.nii.gz" -V | awk '{print $1}')
+    local dorsal_pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
+    if [ -f "$dorsal_pons_file" ]; then
+      dorsal_pons_vol=$(fslstats "$dorsal_pons_file" -V | awk '{print $1}')
     fi
     
-    if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.0.nii.gz" ]; then
-      hyperintensity_vol=$(fslstats "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.0.nii.gz" -V | awk '{print $1}')
+    local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_dorsal_pons_thresh2.0")
+    if [ -f "$hyperintensity_file" ]; then
+      hyperintensity_vol=$(fslstats "$hyperintensity_file" -V | awk '{print $1}')
       
       # Get largest cluster size if clusters file exists
-      if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_clusters_sorted.txt" ]; then
-        largest_cluster_vol=$(head -1 "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_clusters_sorted.txt" | awk '{print $2}')
+      local clusters_file="${hyperintensities_dir}/${subject_id}_dorsal_pons_clusters_sorted.txt"
+      if [ -f "$clusters_file" ]; then
+        largest_cluster_vol=$(head -1 "$clusters_file" | awk '{print $2}')
       fi
-    fi
-    
-    if [ -f "${subject_dir}/validation/registration/quality.txt" ]; then
-      reg_quality=$(cat "${subject_dir}/validation/registration/quality.txt")
     fi
     
     # Add to summary
@@ -332,6 +543,9 @@ main() {
   # Initialize environment
   initialize_environment
   
+  # Load parallel configuration if available
+  load_parallel_config "config/parallel_config.sh"
+  
   # Check dependencies
   check_dependencies
   
@@ -345,13 +559,20 @@ main() {
   if [ "$PIPELINE_TYPE" = "BATCH" ]; then
     # Check if subject list file is provided
     if [ -z "${SUBJECT_LIST:-}" ]; then
-      log_formatted "ERROR" "Subject list file not provided for batch processing"
-      exit 1
+      log_error "Subject list file not provided for batch processing" $ERR_INVALID_ARGS
+      exit $ERR_INVALID_ARGS
     fi
     
     run_pipeline_batch "$SUBJECT_LIST" "$SRC_DIR" "$RESULTS_DIR"
+    status=$?
   else
     run_pipeline
+    status=$?
+  fi
+  
+  if [ $status -ne 0 ]; then
+    log_error "Pipeline failed with $PIPELINE_ERROR_COUNT errors" $status
+    exit $status
   fi
   
   log_message "Pipeline completed successfully"

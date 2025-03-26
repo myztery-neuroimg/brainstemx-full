@@ -20,7 +20,16 @@ set -o pipefail
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
 export SRC_DIR="../DiCOM"          # DICOM input directory
+export PIPELINE_SUCCESS=true       # Track overall pipeline success
+export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
+
+# Parallelization configuration (defaults, can be overridden by config file)
+export PARALLEL_JOBS=4             # Number of parallel jobs to use
+export MAX_CPU_INTENSIVE_JOBS=2    # Number of jobs for CPU-intensive operations
+export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
+export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
+
 export RESULTS_DIR="../mri_results"
 mkdir -p "$RESULTS_DIR"
 export ANTS_PATH="~/ants"
@@ -59,7 +68,20 @@ log_formatted() {
   esac
 }
 
-export log_message
+# Log error and increment error counter
+log_error() {
+  local message="$1"
+  local error_code="${2:-1}"  # Default error code is 1
+  
+  log_formatted "ERROR" "$message"
+  
+  # Update pipeline status
+  PIPELINE_SUCCESS=false
+  PIPELINE_ERROR_COUNT=$((PIPELINE_ERROR_COUNT + 1))
+  return $error_code
+}
+
+export log_message log_error
 export log_formatted
 
 # ------------------------------------------------------------------------------
@@ -134,7 +156,8 @@ C3D_PADDING_MM=5
 
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
-  log_formatted "WARNING" "FSLDIR not set. Template references may fail."
+  log_formatted "ERROR" "FSLDIR not set. Exiting..."
+  return 1
 else
   export TEMPLATE_DIR="${FSLDIR}/data/standard"
 fi
@@ -154,7 +177,9 @@ check_command() {
     log_formatted "SUCCESS" "✓ $package is installed ($(command -v "$cmd"))"
     return 0
   else
-    log_formatted "ERROR" "✗ $package is not installed or not in PATH"
+    # Use log_error instead of log_formatted for consistent error tracking
+    log_error "✗ $package is not installed or not in PATH" 127
+    
     [ -n "$hint" ] && log_formatted "INFO" "$hint"
     return 1
   fi
@@ -248,7 +273,7 @@ check_dependencies() {
   check_command "convert" "ImageMagick" "Install with: brew install imagemagick" || log_formatted "WARNING" "ImageMagick is recommended for image conversions"
   
   # Check for parallel (useful for parallel processing)
-  check_command "parallel" "GNU Parallel" "Install with: brew install parallel" || log_formatted "WARNING" "GNU Parallel is recommended for faster processing"
+  check_command "parallel" "GNU Parallel" "Install with: brew install parallel" || log_formatted "ERROR" "GNU Parallel is required for faster processing"
   
   # Summary
   log_formatted "INFO" "==== Dependency Check Summary ===="
@@ -257,8 +282,9 @@ check_dependencies() {
     log_formatted "SUCCESS" "All required dependencies are installed!"
     return 0
   else
-    log_formatted "ERROR" "$error_count required dependencies are missing."
+    log_error "$error_count required dependencies are missing." 127
     log_formatted "INFO" "Please install the missing dependencies before running the processing pipeline."
+    
     return 1
   fi
 }
@@ -266,6 +292,176 @@ check_dependencies() {
 # ------------------------------------------------------------------------------
 # Utility Functions
 # ------------------------------------------------------------------------------
+
+# Get the directory path for a specific module
+get_module_dir() {
+  local module="$1"
+  
+  # Standard module directories
+  case "$module" in
+    "metadata")
+      echo "${RESULTS_DIR}/metadata"
+      ;;
+    "combined")
+      echo "${RESULTS_DIR}/combined"
+      ;;
+    "bias_corrected")
+      echo "${RESULTS_DIR}/bias_corrected"
+      ;;
+    "brain_extraction")
+      echo "${RESULTS_DIR}/brain_extraction"
+      ;;
+    "standardized")
+      echo "${RESULTS_DIR}/standardized"
+      ;;
+    "registered")
+      echo "${RESULTS_DIR}/registered"
+      ;;
+    "segmentation")
+      echo "${RESULTS_DIR}/segmentation"
+      ;;
+    "hyperintensities")
+      echo "${RESULTS_DIR}/hyperintensities"
+      ;;
+    "validation")
+      echo "${RESULTS_DIR}/validation"
+      ;;
+    "qc")
+      echo "${RESULTS_DIR}/qc_visualizations"
+      ;;
+    *)
+      echo "${RESULTS_DIR}/${module}"
+      ;;
+  esac
+}
+
+# Create directory for a module if it doesn't exist
+create_module_dir() {
+  local module="$1"
+  local dir=$(get_module_dir "$module")
+  
+  if [ ! -d "$dir" ]; then
+    log_formatted "INFO" "Creating directory for module '$module': $dir"
+    mkdir -p "$dir"
+  fi
+  
+  echo "$dir"
+}
+
+# Generate standardized output file path
+get_output_path() {
+  local module="$1"       # Module name (e.g., "bias_corrected")
+  local basename="$2"     # Base filename
+  local suffix="$3"       # Suffix to add (e.g., "_n4")
+  
+  echo "$(get_module_dir "$module")/${basename}${suffix}.nii.gz"
+}
+
+# ------------------------------------------------------------------------------
+# Error Codes
+# ------------------------------------------------------------------------------
+# 1-9: General errors
+export ERR_GENERAL=1          # General error
+export ERR_INVALID_ARGS=2     # Invalid arguments
+export ERR_FILE_NOT_FOUND=3   # File not found
+export ERR_PERMISSION=4       # Permission denied
+export ERR_IO_ERROR=5         # I/O error
+export ERR_TIMEOUT=6          # Operation timed out
+export ERR_VALIDATION=7       # Validation failed
+
+# 10-19: Module-specific errors
+export ERR_IMPORT=10          # Import module error
+export ERR_PREPROC=11         # Preprocessing module error
+export ERR_REGISTRATION=12    # Registration module error
+export ERR_SEGMENTATION=13    # Segmentation module error
+export ERR_ANALYSIS=14        # Analysis module error
+export ERR_VISUALIZATION=15   # Visualization module error
+export ERR_QA=16              # QA module error
+
+# 20-29: External tool errors
+export ERR_ANTS=20            # ANTs tool error
+export ERR_FSL=21             # FSL tool error
+export ERR_FREESURFER=22      # FreeSurfer tool error
+export ERR_C3D=23             # Convert3D error
+export ERR_DCM2NIIX=24        # dcm2niix error
+
+# 30-39: Data errors
+export ERR_DATA_CORRUPT=30    # Data corruption
+export ERR_DATA_MISSING=31    # Missing data
+export ERR_DATA_INCOMPATIBLE=32 # Incompatible data
+
+# 127: Environment/dependency errors
+export ERR_DEPENDENCY=127     # Missing dependency
+
+# ------------------------------------------------------------------------------
+# Validation Functions
+# ------------------------------------------------------------------------------
+
+# Validate that a file exists and is readable
+validate_file() {
+  local file="$1"
+  local description="${2:-file}"
+  
+  if [ ! -f "$file" ]; then
+    log_error "$description not found: $file" $ERR_FILE_NOT_FOUND
+    return $ERR_FILE_NOT_FOUND
+  fi
+  
+  if [ ! -r "$file" ]; then
+    log_error "$description is not readable: $file" $ERR_PERMISSION
+    return $ERR_PERMISSION
+  fi
+  
+  return 0
+}
+
+# Validate NIfTI file with additional checks
+validate_nifti() {
+  local file="$1"
+  local description="${2:-NIfTI file}"
+  local min_size="${3:-10240}"  # Minimum file size in bytes (10KB default)
+  
+  # First check if file exists and is readable
+  validate_file "$file" "$description" || return $?
+  
+  # Check file size
+  local file_size=$(stat -f "%z" "$file" 2>/dev/null || stat --format="%s" "$file" 2>/dev/null)
+  if [ -z "$file_size" ] || [ "$file_size" -lt "$min_size" ]; then
+    log_error "$description has suspicious size ($file_size bytes): $file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
+  # Check if file can be read by FSL
+  if ! fslinfo "$file" &>/dev/null; then
+    log_error "$description appears to be corrupt or invalid: $file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
+  return 0
+}
+
+# Validate that a directory exists and is writable
+validate_directory() {
+  local dir="$1"
+  local description="${2:-directory}"
+  local create="${3:-false}"
+  
+  if [ ! -d "$dir" ]; then
+    if [ "$create" = "true" ]; then
+      log_formatted "INFO" "Creating $description: $dir"
+      mkdir -p "$dir" || {
+        log_error "Failed to create $description: $dir" $ERR_PERMISSION
+        return $ERR_PERMISSION
+      }
+    else
+      log_error "$description not found: $dir" $ERR_FILE_NOT_FOUND
+      return $ERR_FILE_NOT_FOUND
+    fi
+  fi
+  
+  return 0
+}
+
 standardize_datatype() {
   local input_file="$1"
   local output_file="$2"
@@ -328,6 +524,151 @@ create_directories() {
   log_message "Created directory structure"
 }
 
+# Validate an entire module execution
+validate_module_execution() {
+  local module="$1"
+  local expected_outputs="$2"  # Comma-separated list of expected output files
+  local module_dir="${3:-$(get_module_dir "$module")}"
+  
+  log_formatted "INFO" "Validating $module module execution..."
+  
+  # Check if directory exists
+  validate_directory "$module_dir" "$module directory" || return $?
+  
+  # Track validation status
+  local validation_status=0
+  local missing_files=()
+  local invalid_files=()
+  
+  # Check each expected output
+  IFS=',' read -ra files <<< "$expected_outputs"
+  for file in "${files[@]}"; do
+    # Trim whitespace
+    file="$(echo "$file" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    
+    # Skip empty entries
+    [ -z "$file" ] && continue
+    
+    # Add module_dir if path is not absolute
+    [[ "$file" != /* ]] && file="${module_dir}/${file}"
+    
+    if [ ! -f "$file" ]; then
+      missing_files+=("$file")
+      validation_status=$ERR_VALIDATION
+      continue
+    fi
+    
+    # Validate file contents if it's a NIfTI file
+    if [[ "$file" == *.nii || "$file" == *.nii.gz ]]; then
+      if ! validate_nifti "$file" >/dev/null; then
+        invalid_files+=("$file")
+        validation_status=$ERR_VALIDATION
+      fi
+    fi
+  done
+  
+  # Report validation results
+  if [ ${#missing_files[@]} -gt 0 ]; then
+    log_error "Module $module is missing expected output files: ${missing_files[*]}" $ERR_VALIDATION
+  fi
+  
+  if [ ${#invalid_files[@]} -gt 0 ]; then
+    log_error "Module $module produced invalid output files: ${invalid_files[*]}" $ERR_VALIDATION
+  fi
+  
+  [ $validation_status -eq 0 ] && log_formatted "SUCCESS" "Module $module validation successful"
+  return $validation_status
+}
+
+# ------------------------------------------------------------------------------
+# Parallel Processing Functions
+# ------------------------------------------------------------------------------
+
+# Check if GNU parallel is installed and available
+check_parallel() {
+  log_formatted "INFO" "Checking for GNU parallel..."
+  
+  if ! command -v parallel &> /dev/null; then
+    log_formatted "WARNING" "GNU parallel not found. Parallel processing will be disabled."
+    return 1
+  fi
+  
+  # Check if this is GNU parallel and not moreutils parallel
+  if ! parallel --version 2>&1 | grep -q "GNU parallel"; then
+    log_formatted "WARNING" "Found 'parallel' command, but it doesn't appear to be GNU parallel. Parallel processing may not work correctly."
+    return 2
+  fi
+  
+  log_formatted "SUCCESS" "GNU parallel is available: $(command -v parallel)"
+  return 0
+}
+
+# Function to load parallel configuration from config file
+load_parallel_config() {
+  local config_file="${1:-config/parallel_config.sh}"
+  
+  if [ -f "$config_file" ]; then
+    log_formatted "INFO" "Loading parallel configuration from $config_file"
+    source "$config_file"
+    
+    # Auto-detect cores if enabled in config
+    if [ "${AUTO_DETECT_CORES:-false}" = true ]; then
+      auto_detect_cores
+    fi
+    
+    log_formatted "INFO" "Parallel configuration loaded. PARALLEL_JOBS=$PARALLEL_JOBS, MAX_CPU_INTENSIVE_JOBS=$MAX_CPU_INTENSIVE_JOBS"
+    return 0
+  else
+    log_formatted "WARNING" "Parallel configuration file not found: $config_file. Using defaults."
+    return 1
+  fi
+}
+
+# Run a function in parallel across multiple files
+run_parallel() {
+  local func_name="$1"        # Function to run in parallel
+  local find_pattern="$2"     # Find pattern for input files
+  local find_path="$3"        # Path to search for files
+  local jobs="${4:-$PARALLEL_JOBS}"  # Number of jobs (default: PARALLEL_JOBS)
+  local max_depth="${5:-}"    # Optional: max depth for find
+  
+  # Check if parallel processing is enabled
+  if [ "$jobs" -le 0 ]; then
+    log_formatted "INFO" "Parallel processing disabled. Running in sequential mode."
+    # Run sequentially
+    local find_cmd="find \"$find_path\" -name \"$find_pattern\""
+    [ -n "$max_depth" ] && find_cmd="$find_cmd -maxdepth $max_depth"
+    
+    while IFS= read -r file; do
+      "$func_name" "$file"
+    done < <(eval "$find_cmd")
+    return $?
+  fi
+  
+  # Check if GNU parallel is installed
+  if ! check_parallel; then
+    log_formatted "WARNING" "GNU parallel not available. Falling back to sequential processing."
+    # Run sequentially (same as above)
+    local find_cmd="find \"$find_path\" -name \"$find_pattern\""
+    [ -n "$max_depth" ] && find_cmd="$find_cmd -maxdepth $max_depth"
+    
+    while IFS= read -r file; do
+      "$func_name" "$file"
+    done < <(eval "$find_cmd")
+    return $?
+  fi
+  
+  # Build parallel command with proper error handling
+  log_formatted "INFO" "Running $func_name in parallel with $jobs jobs"
+  local parallel_cmd="find \"$find_path\" -name \"$find_pattern\""
+  [ -n "$max_depth" ] && parallel_cmd="$parallel_cmd -maxdepth $max_depth"
+  parallel_cmd="$parallel_cmd -print0 | parallel -0 -j $jobs --halt $PARALLEL_HALT_MODE,fail=1 $func_name {}"
+  
+  # Execute and capture exit code
+  eval "$parallel_cmd"
+  return $?
+}
+
 # Initialize environment
 initialize_environment() {
   # Set error handling
@@ -344,9 +685,18 @@ initialize_environment() {
   export -f log_message
   export -f log_formatted
   export -f check_command
+  export -f log_error
   export -f check_dependencies
   export -f standardize_datatype
+  export -f get_output_path
+  export -f get_module_dir
   export -f set_sequence_params
+  export -f create_module_dir
+  export -f check_parallel
+  export -f load_parallel_config
+  export -f run_parallel
+  export -f validate_file validate_nifti validate_directory
+  export -f validate_module_execution
   
   log_message "Environment initialized"
 }
