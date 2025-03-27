@@ -1,6 +1,6 @@
 # Brain MRI ANTs E2E Pipeline
 
-End-to-end pipeline for processing brain MRI images, with a focus on brainstem segmentation and hyperintensity detection.
+End-to-end pipeline for processing brain MRI images, with a focus on brainstem segmentation and hyperintensity detection in regions and sub-regions (pons, dorsal/ventral pons), but easily extendable to any brain region.
 
 ## Overview
 
@@ -35,6 +35,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - GNU Parallel (via homebrew)
 - MacOS or (untested) Linux OS
 - Python 3.12 (various libraries are unavailable on 3.13 at the time of writing)
+- I reccomend the ITK-SNAP visualisation and manual segmentation tool so that you can compare the autoamted results vs manual segmentation. I also have a separate CNN based segmentation but it doesn't go down to the level that the automated tooling does.
 
 ## Installation
 
