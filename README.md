@@ -24,6 +24,24 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - Comprehensive QA/validation of each step, with automated sanity checks
 - HTML report generation
 
+## Workflow Diagram
+
+```mermaid
+graph TD
+    A[Import DICOM Data] --> B[Preprocess Images]
+    B --> C[Register T2-FLAIR to T1]
+    C --> D[Segment Brainstem & Pons]
+    D --> E[Detect Hyperintensities]
+    E --> F[Generate Visualizations & Reports]
+    
+    QA1[QA: Validate DICOM/NIfTI] --> A
+    QA2[QA: Validate Preprocessing] --> B
+    QA3[QA: Validate Registration] --> C
+    QA4[QA: Validate Segmentation] --> D
+    QA5[QA: Validate Hyperintensities] --> E
+    QA6[QA: Final Report] --> F
+```
+
 ## Requirements
 
 - ANTs (Advanced Normalization Tools): https://github.com/ANTsX/ANTs/wiki/Installing-ANTs-release-binaries
