@@ -192,7 +192,10 @@ run_pipeline() {
   log_message "T1 file: $t1_file"
   log_message "FLAIR file: $flair_file"
   
-  # Combine multi-axial images if available
+  # Combine or select best multi-axial images
+  # Note: For 3D isotropic sequences (MPRAGE, SPACE, etc.), this will
+  # automatically detect and select the best quality single orientation.
+  # For 2D sequences, it will combine multiple orientations when available.
   combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
   combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
   

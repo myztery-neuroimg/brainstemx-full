@@ -73,6 +73,33 @@ def extract_metadata(dicom_path, output_path):
         if hasattr(dcm, 'SequenceVariant'):
             metadata['sequenceVariant'] = safe_value(dcm.SequenceVariant)
             
+        # Additional fields for 3D sequence detection
+        if hasattr(dcm, 'ImageType'):
+            metadata['imageType'] = safe_value(dcm.ImageType)
+        if hasattr(dcm, 'MRAcquisitionType'):
+            metadata['acquisitionType'] = safe_value(dcm.MRAcquisitionType)
+        # Look for Siemens 3D flag (private tag)
+        try:
+            if hasattr(dcm, 'Private_0019_10e0'):
+                metadata['is3D'] = True
+        except:
+            pass
+            
+        # Check for 3D in sequence description
+        is_3d = False
+        if hasattr(dcm, 'SeriesDescription'):
+            desc = str(dcm.SeriesDescription).upper()
+            if '3D' in desc or 'MPRAGE' in desc or 'SPACE' in desc:
+                is_3d = True
+        
+        if hasattr(dcm, 'SequenceName'):
+            seq = str(dcm.SequenceName).upper()
+            if '3D' in seq or 'MPRAGE' in seq or 'SPACE' in seq:
+                is_3d = True
+                
+        if is_3d:
+            metadata['is3D'] = True
+            
         # Acquisition parameters
         if hasattr(dcm, 'SliceThickness'):
             try:

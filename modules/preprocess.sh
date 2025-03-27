@@ -10,10 +10,155 @@
 # - Cropping with padding
 #
 
+# Function to detect 3D isotropic sequences
+# This function identifies 3D sequences like MPRAGE, SPACE, or 3D FLAIR
+# Returns 0 (true) if the sequence is detected as 3D isotropic, 1 (false) otherwise
+is_3d_isotropic_sequence() {
+  local file="$1"
+  local filename=$(basename "$file")
+  
+  # Check filename first (fast path)
+  if [[ "$filename" == *"MPRAGE"* ]] || 
+     [[ "$filename" == *"SPACE"* ]] || 
+     [[ "$filename" == *"MP2RAGE"* ]] || 
+     [[ "$filename" == *"3D"* ]]; then
+    log_message "3D sequence detected by filename pattern: $filename"
+    return 0  # true
+  fi
+  
+  # Check metadata if available
+  local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
+  if [ -f "$metadata_file" ]; then
+    # Check if we have access to jq for JSON parsing
+    if command -v jq &> /dev/null; then
+      # Check for acquisition type
+      local acquisitionType=$(jq -r '.acquisitionType // ""' "$metadata_file")
+      if [[ "$acquisitionType" == "3D" ]]; then
+        log_message "3D sequence detected by DICOM acquisitionType: 3D"
+        return 0  # true
+      fi
+
+      # Check explicitly set is3D flag
+      local is3D=$(jq -r '.is3D // false' "$metadata_file")
+      if [[ "$is3D" == "true" ]]; then
+        log_message "3D sequence detected by DICOM metadata is3D flag"
+        return 0  # true
+      fi
+    fi
+  fi
+  
+  # Check if voxels are approximately isotropic
+  local pixdim1=$(fslval "$file" pixdim1)
+  local pixdim2=$(fslval "$file" pixdim2)
+  local pixdim3=$(fslval "$file" pixdim3)
+  
+  # Calculate max difference between dimensions
+  local max_diff=$(echo "scale=3; m=($pixdim1-$pixdim2); if(m<0) m=-m; 
+                  n=($pixdim1-$pixdim3); if(n<0) n=-n;
+                  o=($pixdim2-$pixdim3); if(o<0) o=-o;
+                  if(m>n) { if(m>o) m else o } else { if(n>o) n else o }" | bc -l)
+  
+  # Check if approximately isotropic (within 15%)
+  local max_dim=$(echo "scale=3; m=$pixdim1; 
+                 if(m<$pixdim2) m=$pixdim2; 
+                 if(m<$pixdim3) m=$pixdim3; m" | bc -l)
+  
+  local threshold=$(echo "scale=3; $max_dim * 0.15" | bc -l)
+  
+  if (( $(echo "$max_diff <= $threshold" | bc -l) )); then
+    log_message "3D sequence detected by isotropic voxel analysis: max_diff=$max_diff, threshold=$threshold"
+    return 0  # true
+  fi
+  
+  return 1  # false
+}
+
+# Function to calculate a resolution quality metric
+# Higher values indicate better quality based on voxel dimensions and isotropy
+calculate_resolution_quality() {
+  local file="$1"
+  
+  # Get dimensions in voxels
+  local d1=$(fslval "$file" dim1)
+  local d2=$(fslval "$file" dim2)
+  local d3=$(fslval "$file" dim3)
+  
+  # Get physical dimensions in mm
+  local p1=$(fslval "$file" pixdim1)
+  local p2=$(fslval "$file" pixdim2)
+  local p3=$(fslval "$file" pixdim3)
+  
+  # Calculate in-plane resolution (average of x and y)
+  local inplane_res=$(echo "scale=3; ($p1 + $p2) / 2" | bc -l)
+  
+  # Calculate anisotropy factor (penalizes highly anisotropic voxels)
+  local anisotropy=$(echo "scale=3; $p3 / $inplane_res" | bc -l)
+  
+  # Calculate quality metric:
+  # Higher for more voxels, lower for more anisotropy
+  # Prioritizes in-plane resolution for 2D sequences
+  local quality=$(echo "scale=3; ($d1 * $d2 * $d3) / ($inplane_res * $inplane_res * $p3 * sqrt($anisotropy))" | bc -l)
+  
+  echo "$quality"
+}
+
+# Common brain extraction function to remove duplication
+perform_brain_extraction() {
+  local input_file="$1"
+  local output_prefix="$2"
+  
+  # Validate input file
+  if ! validate_nifti "$input_file" "Input file for brain extraction"; then
+    log_error "Invalid input file for brain extraction: $input_file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
+  log_message "Running brain extraction on: $(basename "$input_file")"
+  
+  # Run ANTs brain extraction
+  antsBrainExtraction.sh -d 3 \
+    -a "$input_file" \
+    -k 1 \
+    -o "$output_prefix" \
+    -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+    -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+    -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+    
+  # Validate output files
+  local brain_file="${output_prefix}BrainExtractionBrain.nii.gz"
+  local mask_file="${output_prefix}BrainExtractionMask.nii.gz"
+  
+  if [ ! -f "$brain_file" ] || [ ! -f "$mask_file" ]; then
+    log_error "Brain extraction failed to produce output files" $ERR_PREPROC
+    return $ERR_PREPROC
+  fi
+  
+  return 0
+}
+
 # Function to combine multi-axial images
+# 
+# This function detects and handles different types of MRI sequences:
+# 
+# 1. 3D Isotropic Sequences (e.g., T1-MPRAGE, T2-SPACE-FLAIR):
+#    - Automatically detected via filename or metadata
+#    - Skips multi-axis combination (which would degrade quality)
+#    - Uses the highest quality single view
+# 
+# 2. 2D Sequences (e.g., conventional T2-FLAIR, T2-TSE):
+#    - Combines views from different orientations when available
+#    - Uses enhanced resolution selection that considers anisotropy
+#    - Falls back to best single orientation when needed
+# 
+# Resolution selection considers:
+#    - Physical dimensions (in mm)
+#    - Anisotropy (penalizes highly anisotropic voxels)
+#    - Total voxel count
 combine_multiaxis_images() {
   local sequence_type="$1"
   local output_dir="$2"
+  
+  local all_files=()  # To store all files for 3D detection
   
   # Create output directory
   output_dir=$(create_module_dir "combined")
@@ -32,42 +177,78 @@ combine_multiaxis_images() {
   
   local ax_files=($(find "$EXTRACT_DIR" -name "*${sequence_type}*.nii.gz"  | egrep -i "AX"  || true))
 
-  # pick best resolution from each orientation
-  local best_sag="" best_cor="" best_ax=""
-  local best_sag_res=0 best_cor_res=0 best_ax_res=0
+  #iStore all files for 3D detection
+  all_files=("${sag_files[@]}" "${cor_files[@]}" "${ax_files[@]}")
 
+  # Check if sequence is 3D isotropic
+  local is_3d=false
+  for file in "${all_files[@]}"; do
+    if is_3d_isotropic_sequence "$file"; then
+      is_3d=true
+      log_message "Detected 3D isotropic sequence: $file"
+      break
+    fi
+  done
+  
+  local out_file=$(get_output_path "combined" "${sequence_type}" "_combined_highres")
+  
+  # If 3D isotropic sequence detected, skip combination
+  if [ "$is_3d" = true ]; then
+    log_message "3D isotropic sequence detected, skipping multi-axis combination"
+    
+    local best_file=""
+    local best_quality=0
+    
+    # Find best quality 3D file across all orientations
+    for file in "${all_files[@]}"; do
+      if is_3d_isotropic_sequence "$file"; then
+        local quality=$(calculate_resolution_quality "$file")
+        if (( $(echo "$quality > $best_quality" | bc -l) )); then
+          best_file="$file"
+          best_quality="$quality"
+        fi
+      fi
+    done
+    
+    if [ -n "$best_file" ]; then
+      log_message "Using highest quality 3D volume: $best_file (quality score: $best_quality)"
+      cp "$best_file" "$out_file"
+      standardize_datatype "$out_file" "$out_file" "$OUTPUT_DATATYPE"
+      validate_nifti "$out_file" "3D volume (single orientation)"
+      log_formatted "SUCCESS" "Used high-quality 3D image: $out_file"
+      return 0
+    else
+      log_message "Warning: 3D sequence detected but no suitable file found, falling back to standard method"
+    fi
+  fi
+ 
+  # For 2D sequences, pick best resolution from each orientation using enhanced quality metric
+  local best_sag="" best_cor="" best_ax=""
+  local best_sag_qual=0 best_cor_qual=0 best_ax_qual=0
+ 
   for file in "${sag_files[@]}"; do
-    local d1=$(fslval "$file" dim1)
-    local d2=$(fslval "$file" dim2)
-    local d3=$(fslval "$file" dim3)
-    local res=$((d1 * d2 * d3))
-    if [ $res -gt $best_sag_res ]; then
-      best_sag="$file"; best_sag_res=$res
+    local quality=$(calculate_resolution_quality "$file")
+    if (( $(echo "$quality > $best_sag_qual" | bc -l) )); then
+      best_sag="$file"; best_sag_qual=$quality
     fi
   done
   for file in "${cor_files[@]}"; do
-    local d1=$(fslval "$file" dim1)
-    local d2=$(fslval "$file" dim2)
-    local d3=$(fslval "$file" dim3)
-    local res=$((d1 * d2 * d3))
-    if [ $res -gt $best_cor_res ]; then
-      best_cor="$file"; best_cor_res=$res
+    local quality=$(calculate_resolution_quality "$file")
+    if (( $(echo "$quality > $best_cor_qual" | bc -l) )); then
+      best_cor="$file"; best_cor_qual=$quality
     fi
   done
   for file in "${ax_files[@]}"; do
-    local d1=$(fslval "$file" dim1)
-    local d2=$(fslval "$file" dim2)
-    local d3=$(fslval "$file" dim3)
-    local res=$((d1 * d2 * d3))
-    if [ $res -gt $best_ax_res ]; then
-      best_ax="$file"; best_ax_res=$res
+    local quality=$(calculate_resolution_quality "$file")
+    if (( $(echo "$quality > $best_ax_qual" | bc -l) )); then
+      best_ax="$file"; best_ax_qual=$quality
     fi
   done
 
-  local out_file=$(get_output_path "combined" "${sequence_type}" "_combined_highres")
-
+  # Original logic for 2D sequences
+  log_message "Processing as 2D multi-orientation sequence"
   if [ -n "$best_sag" ] && [ -n "$best_cor" ] && [ -n "$best_ax" ]; then
-    log_message "Combining SAG, COR, AX with antsMultivariateTemplateConstruction2.sh"
+    log_message "Combining SAG (quality: $best_sag_qual), COR (quality: $best_cor_qual), AX (quality: $best_ax_qual) with antsMultivariateTemplateConstruction2.sh"
     antsMultivariateTemplateConstruction2.sh \
       -d 3 \
       -o "${output_dir}/${sequence_type}_template_" \
@@ -90,15 +271,30 @@ combine_multiaxis_images() {
   else
     log_message "At least one orientation is missing for $sequence_type. Attempting fallback..."
     local best_file=""
-    if [ -n "$best_sag" ]; then best_file="$best_sag"
-    elif [ -n "$best_cor" ]; then best_file="$best_cor"
-    elif [ -n "$best_ax" ]; then best_file="$best_ax"
+    local best_qual=0
+    
+    # Find best quality among available orientations
+    if [ -n "$best_sag" ]; then 
+      best_file="$best_sag"
+      best_qual=$best_sag_qual
     fi
+    
+    if [ -n "$best_cor" ] && (( $(echo "$best_cor_qual > $best_qual" | bc -l) )); then
+      best_file="$best_cor"
+      best_qual=$best_cor_qual
+    fi
+    
+    if [ -n "$best_ax" ] && (( $(echo "$best_ax_qual > $best_qual" | bc -l) )); then
+      best_file="$best_ax"
+      best_qual=$best_ax_qual
+    fi
+    
     if [ -n "$best_file" ]; then
+      log_message "Using best quality orientation (quality score: $best_qual): $best_file"
       cp "$best_file" "$out_file"
       standardize_datatype "$out_file" "$out_file" "$OUTPUT_DATATYPE"
       validate_nifti "$out_file" "Combined fallback image"
-      log_message "Used single orientation: $best_file"
+      log_formatted "SUCCESS" "Used single orientation: $best_file"
       return 0
     else
       log_error "No $sequence_type files found" $ERR_DATA_MISSING
@@ -272,13 +468,7 @@ process_n4_correction() {
   local brain_mask="${brain_prefix}BrainExtractionMask.nii.gz"
   
   # Brain extraction for a better mask
-  antsBrainExtraction.sh -d 3 \
-    -a "$file" \
-    -k 1 \
-    -o "$brain_prefix" \
-    -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
-    -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
-    -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+  perform_brain_extraction "$file" "$brain_prefix"
   
   # Check if brain mask was created
   if [ ! -f "$brain_mask" ]; then
@@ -481,13 +671,7 @@ process_cropping_with_padding() {
     local brain_prefix="${temp_dir}/${basename}_"
 
     # Run brain extraction
-    antsBrainExtraction.sh -d 3 \
-      -a "$file" \
-      -k 1 \
-      -o "${temp_dir}/${basename}_" \
-      -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
-      -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
-      -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+    perform_brain_extraction "$file" "$brain_prefix"
     
     # Use the generated mask
     mask_file="${temp_dir}/${basename}_BrainExtractionMask.nii.gz"
@@ -529,13 +713,7 @@ extract_brain() {
   log_message "Extracting brain from $basename"
 
   # Run ANTs brain extraction
-  antsBrainExtraction.sh -d 3 \
-    -a "$input_file" \
-    -k 1 \
-    -o "$brain_prefix" \
-    -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
-    -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
-    -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
+  perform_brain_extraction "$input_file" "$brain_prefix"
 
   # Source files from ANTs brain extraction
   local source_brain="${brain_prefix}BrainExtractionBrain.nii.gz"
@@ -562,6 +740,9 @@ extract_brain() {
 # Export functions
 export -f combine_multiaxis_images
 export -f combine_multiaxis_images_highres
+export -f is_3d_isotropic_sequence
+export -f calculate_resolution_quality
+export -f perform_brain_extraction
 export -f calculate_inplane_resolution
 export -f get_n4_parameters
 export -f optimize_ants_parameters
