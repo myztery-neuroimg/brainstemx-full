@@ -29,17 +29,19 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 ```mermaid
 graph TD
     A[Import DICOM Data] --> B[Preprocess Images]
-    B --> C[Register T2-FLAIR to T1]
+    A --> B[Combine 2D Ax,Sag,Cor slices to 3D NiFTI]
+    B --> C[Register 3D T2-FLAIR/DWI/SWI/etc against T1]
     C --> D[Segment Brainstem & Pons]
     D --> E[Detect Hyperintensities]
     E --> F[Generate Visualizations & Reports]
     
     QA1[QA: Validate DICOM/NIfTI] --> A
-    QA2[QA: Validate Preprocessing] --> B
-    QA3[QA: Validate Registration] --> C
-    QA4[QA: Validate Segmentation] --> D
-    QA5[QA: Validate Hyperintensities] --> E
-    QA6[QA: Final Report] --> F
+    QA1.5[QA: Validate 3D NiFTI] --> B
+    QA2[QA: Validate Preprocessing] --> C
+    QA3[QA: Validate Registration] --> D
+    QA4[QA: Validate Segmentation] --> E
+    QA5[QA: Validate Hyperintensities] --> F
+    F --> QA6[QA: Final Report]
 ```
 
 ## Requirements
