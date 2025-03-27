@@ -34,6 +34,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - Python 3 (for metadata extraction)
 - GNU Parallel (via homebrew)
 - MacOS or (untested) Linux OS
+- Python >= 3.11
 
 ## Installation
 
@@ -50,6 +51,13 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
    chmod +x pipeline.sh
    chmod +x tests/integration.sh
    chmod +x tests/test_parallel.sh
+   ```
+
+4. Create a python venv and install pydicom
+   ```bash
+   python -m venv venv .
+   source ./bin/activate
+   pip install -r requirements.txt
    ```
 
 ## Usage
