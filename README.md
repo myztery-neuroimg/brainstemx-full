@@ -26,15 +26,15 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 
 ## Requirements
 
-- ANTs (Advanced Normalization Tools)
-- FSL (FMRIB Software Library)
-- Convert3D (c3d)
-- dcm2niix (distributed with FreeSurfer)
-- FreeSurfer (optional, for 3D visualization)
-- Python 3 (for metadata extraction)
+- ANTs (Advanced Normalization Tools): https://github.com/ANTsX/ANTs/wiki/Installing-ANTs-release-binaries
+- FSL (FMRIB Software Library): https://git.fmrib.ox.ac.uk/fsl/conda/installer
+- Convert3D (c3d) (SourceForge download link for Apple Silicon: https://sourceforge.net/projects/c3d/files/c3d/Nightly/c3d-nightly-MacOS-x86_64.dmg/download or just use Homebrew)
+- dcm2niix (distributed with FreeSurfer): install via homebrew
+- FreeSurfer (optional, for 3D visualization): https://surfer.nmr.mgh.harvard.edu/fswiki/rel7downloads
+- Python 3 (for metadata extraction): use `conda` or preferably `uv` to manage python versions
 - GNU Parallel (via homebrew)
 - MacOS or (untested) Linux OS
-- Python >= 3.11
+- Python 3.12 (various libraries are unavailable on 3.13 at the time of writing)
 
 ## Installation
 
@@ -53,11 +53,33 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
    chmod +x tests/test_parallel.sh
    ```
 
-4. Create a python venv and install pydicom
+4. Create a python venv and install required packages. I actually recommend to use `uv` instead of `venv` especially to ensure python 3.12
    ```bash
    python -m venv venv .
    source ./bin/activate
    pip install -r requirements.txt
+   ```
+
+5. Update the filename pattern and/or other configuration options in the configuration.py file
+
+   ```bash
+   # Ensure you already have $FSLDIR and $FREESURFER_HOME configured in your .profile, .bashrc, .zshrc or whatever your shell might be.$
+   # The respective "/bin" directories also need to be in your $PATH
+   
+   export SRC_DIR="../DICOM"          # DICOM input directory
+   export DICOM_PRIMARY_PATTERN='Image"*"'   # Filename pattern for your DICOM files, might be .dcm on some scanners, Image- for Siemens
+   export PIPELINE_SUCCESS=true       # Track overall pipeline success
+   export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
+   export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
+
+   # Parallelization configuration (defaults, can be overridden by config file)
+   export PARALLEL_JOBS=1             # Number of parallel jobs to use
+   export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
+   export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
+   export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
+
+   export RESULTS_DIR="../mri_results"
+   export ANTS_PATH="/Users/davidbrewster/ants"
    ```
 
 ## Usage
