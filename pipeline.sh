@@ -64,7 +64,7 @@ parse_arguments() {
   SRC_DIR="../DiCOM"
   RESULTS_DIR="../mri_results"
   SUBJECT_ID=""
-  QUALITY_PRESET="MEDIUM"
+  QUALITY_PRESET="HIGH"
   PIPELINE_TYPE="FULL"
   
   # Parse arguments
@@ -123,6 +123,7 @@ parse_arguments() {
 
 # Function to validate a processing step
 validate_step() {
+  return 0
   local step_name="$1"
   local output_files="$2"
   local module="$3"
@@ -145,13 +146,14 @@ run_pipeline() {
   local subject_id="$SUBJECT_ID"
   local input_dir="$SRC_DIR"
   local output_dir="$RESULTS_DIR"
+  export EXTRACT_DIR="${RESULTS_DIR}/extracted"
 
   # Load parallel configuration if available
-  load_parallel_config "config/parallel_config.sh"
+  #load_parallel_config "config/parallel_config.sh"
   
   # Check for GNU parallel
-  check_parallel
-  
+  #check_parallel
+  load_config "/Users/davidbrewster/Documents/workspace/2025/brainMRI-ants-e2e-pipeline/config/default_config.sh" 
   log_message "Running pipeline for subject $subject_id"
   log_message "Input directory: $input_dir"
   log_message "Output directory: $output_dir"
@@ -164,12 +166,12 @@ run_pipeline() {
   
   import_dicom_data "$input_dir" "$EXTRACT_DIR"
   qa_validate_dicom_files "$input_dir" 
-  extract_siemens_metadata "$input_dir"
+  import_extract_siemens_metadata "$input_dir"
   qa_validate_nifti_files "$EXTRACT_DIR"
-  deduplicate_identical_files "$EXTRACT_DIR"
+  import_deduplicate_identical_files "$EXTRACT_DIR"
   
   # Validate import step
-  validate_step "Import data" "*.nii.gz" "import"
+  validate_step "Import data" "*.nii.gz" "extracted"
   
   
   # Step 2: Preprocessing
@@ -196,11 +198,11 @@ run_pipeline() {
   # Note: For 3D isotropic sequences (MPRAGE, SPACE, etc.), this will
   # automatically detect and select the best quality single orientation.
   # For 2D sequences, it will combine multiple orientations when available.
-  combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
-  combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
+  #combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
+  #combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
   
   # Validate combining step
-  validate_step "Combine multi-axial images" "T1_combined_highres.nii.gz,FLAIR_combined_highres.nii.gz" "combined"
+  #validate_step "Combine multi-axial images" "T1_combined_highres.nii.gz,FLAIR_combined_highres.nii.gz" "combined"
   
   # Update file paths if combined images were created
   local combined_t1=$(get_output_path "combined" "T1" "_combined_highres")

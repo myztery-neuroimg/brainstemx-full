@@ -12,30 +12,32 @@
 # ------------------------------------------------------------------------------
 # Shell Options
 # ------------------------------------------------------------------------------
-#set -e
-#set -u
-#set -o pipefail
+set -e
+set -u
+set -o pipefail
 
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
 export SRC_DIR="../DICOM"          # DICOM input directory
+export DICOM_PRIMARY_PATTERN='Image"*"'   # Filename pattern for your DICOM files, might be .dcm on some scanners, Image- for Siemens
 export PIPELINE_SUCCESS=true       # Track overall pipeline success
 export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 
 # Parallelization configuration (defaults, can be overridden by config file)
-export PARALLEL_JOBS=4             # Number of parallel jobs to use
-export MAX_CPU_INTENSIVE_JOBS=2    # Number of jobs for CPU-intensive operations
+export PARALLEL_JOBS=1             # Number of parallel jobs to use
+export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
 export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
 export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
 
 export RESULTS_DIR="../mri_results"
 mkdir -p "$RESULTS_DIR"
-export ANTS_PATH="~/ants"
+export ANTS_PATH="/Users/davidbrewster/ants"
 export PATH="$PATH:${ANTS_PATH}/bin"
 export LOG_DIR="${RESULTS_DIR}/logs"
 mkdir -p "$LOG_DIR"
+mkdir -p "$RESULTS_DIR"
 
 # Log file capturing pipeline-wide logs
 export LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
