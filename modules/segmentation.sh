@@ -35,7 +35,7 @@ extract_brainstem_standardspace() {
     standard_template="${FSLDIR}/data/standard/MNI152_T1_1mm.nii.gz"
     
     # Path to Harvard-Oxford Subcortical atlas (more reliable than Talairach for this task)
-    harvard_subcortical="${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr25-2mm.nii.gz"
+    harvard_subcortical="${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr25-1m.nii.gz"
     
     if [ ! -f "$standard_template" ]; then
         log_formatted "ERROR" "Standard template not found at $standard_template"

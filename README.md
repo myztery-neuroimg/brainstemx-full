@@ -153,3 +153,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - FreeSurfer
 - GNU Parallel
 - Roo Code/Claude 3.7 :D 
+- ITK-SNAP (Convert3D)

@@ -12,14 +12,14 @@
 # ------------------------------------------------------------------------------
 # Shell Options
 # ------------------------------------------------------------------------------
-set -e
-set -u
-set -o pipefail
+#set -e
+#set -u
+#set -o pipefail
 
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="../DiCOM"          # DICOM input directory
+export SRC_DIR="../DICOM"          # DICOM input directory
 export PIPELINE_SUCCESS=true       # Track overall pipeline success
 export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix

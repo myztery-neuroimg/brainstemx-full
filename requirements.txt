@@ -1,1 +1,6 @@
 pydicom
+pylint
+numpy
+scikit-learn
+ants
+antspyx

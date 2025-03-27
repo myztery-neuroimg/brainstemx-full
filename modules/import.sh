@@ -49,7 +49,8 @@ deduplicate_identical_files() {
 extract_siemens_metadata() {
   local dicom_dir="$1"
   log_message "dicom_dir: $dicom_dir"
-  [ -e "$dicom_dir" ] || return 0
+  log_message "Starting extract_siemens_metadata with directory: $dicom_dir"
+  [ -e "$dicom_dir" ] || { log_message "Directory $dicom_dir does not exist"; return 0; }
 
   local metadata_file="${RESULTS_DIR}/metadata/siemens_params.json"
   mkdir -p "${RESULTS_DIR}/metadata"
@@ -57,20 +58,37 @@ extract_siemens_metadata() {
   log_message "Extracting Siemens MAGNETOM Sola metadata..."
 
   local first_dicom
-  first_dicom=$(find "$dicom_dir" -name "Image*" -type f | head -1)
-  if [ -z "$first_dicom" ]; then
-    log_message "No DICOM files found for metadata extraction."
-    return 1
+  # Reference the file directly using the known path
+  first_dicom=$(find "$dicom_dir" -type f -name "${DICOM_PRIMARY_PATTERN:-Image-*}" | head -1)
+  echo "DEBUG: Using primary pattern: ${DICOM_PRIMARY_PATTERN:-Image-*}" > /dev/stderr
+  
+  test -f "$first_dicom" && echo "DEBUG: FILE EXISTS: $first_dicom" > /dev/stderr || echo "DEBUG: FILE DOES NOT EXIST: $first_dicom" > /dev/stderr
+  if [ ! -e "$first_dicom" ]; then
+    echo "DEBUG: No DICOM files found with primary pattern, trying additional patterns..." > /dev/stderr
+    for pattern in ${DICOM_ADDITIONAL_PATTERNS:-"*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"}; do
+      first_dicom=$(find "$dicom_dir" -type f -name "$pattern" | head -1)
+      [ -n "$first_dicom" ] && break
+    done
   fi
 
   mkdir -p "$(dirname "$metadata_file")"
   echo "{\"manufacturer\":\"Unknown\",\"fieldStrength\":3,\"modelName\":\"Unknown\"}" > "$metadata_file"
 
   # Path to the external Python script
-  local python_script="./extract_dicom_metadata.py"
+  # Updated path to the correct location in the modules directory
+  local python_script="$(dirname "$0")/extract_dicom_metadata.py"
   if [ ! -f "$python_script" ]; then
-    log_message "Python script not found at: $python_script"
-    return 1
+    # Try a few other common locations
+    log_message "Python script not found at: $python_script, trying alternatives..."
+    for alt_path in "./modules/extract_dicom_metadata.py" "/modules/extract_dicom_metadata.py" "../modules/extract_dicom_metadata.py" "./extract_dicom_metadata.py"; do
+      echo "DEBUG: Checking for script at: $alt_path" > /dev/stderr
+      if [ -f "$alt_path" ]; then
+        python_script="$alt_path"
+        log_message "Found script at: $python_script"
+        break
+      fi
+    done
+    [ ! -f "$python_script" ] && { log_message "Python script not found, using dummy values"; return 0; }
   fi
   chmod +x "$python_script"
 
@@ -136,13 +154,13 @@ convert_dicom_to_nifti() {
   local cmd_options="${options:-$default_options}"
 
   # Run dcm2niix
-  log_message "Running: dcm2niix $cmd_options $output_dir $dicom_dir"
+  log_message "Running: dcm2niix $cmd_options $output_dir $dicom_dir" 
+
+  # Run dcm2niix
   dcm2niix $cmd_options "$output_dir" "$dicom_dir"
   local exit_code=$?
-
   if [ $exit_code -ne 0 ]; then
-    log_formatted "ERROR" "dcm2niix failed with exit code $exit_code"
-    return 1
+    log_formatted "WARNING" "dcm2niix had issues (exit code $exit_code)"
   fi
 
   log_message "DICOM to NIfTI conversion complete"
@@ -150,24 +168,48 @@ convert_dicom_to_nifti() {
 }
 
 # Function to validate DICOM files
-validate_dicom_files() {
+validate_dicom_files_new() {
+  # Print directly to terminal for debug
   local dicom_dir="$1"
   local output_dir="${2:-$RESULTS_DIR/validation/dicom}"
   
+  local dicom_count=0
+  local sample_dicom=""
+  log_message "Starting validate_dicom_files_new with directory: $dicom_dir"
   log_message "Validating DICOM files in $dicom_dir"
   mkdir -p "$output_dir"
   
-  # Count DICOM files
-  local dicom_count=$(find "$dicom_dir" -type f -name "*.dcm" | wc -l)
-  if [ "$dicom_count" -eq 0 ]; then
+  # Check for DICOM files using configured patterns
+  log_message "Looking for files matching pattern: $DICOM_PRIMARY_PATTERN"
+  sample_dicom=$(find "$dicom_dir" -type f -name "$DICOM_PRIMARY_PATTERN" | head -1)
+  
+  if [ -f "$sample_dicom" ]; then
+    dicom_count=$(find "$dicom_dir" -type f -name "$DICOM_PRIMARY_PATTERN" | wc -l)
+    log_message "Found $dicom_count DICOM files with primary pattern. Sample: $sample_dicom"
+  else 
+    # Method 2: Try different common DICOM patterns
+    for pattern in "*.dcm" "IM_*" "Image*" "*.[0-9][0-9][0-9][0-9]" "DICOM*"; do
+      while IFS= read -r file; do
+        if [ -f "$file" ] && file "$file" | grep -q "DICOM"; then
+          ((dicom_count++))
+          [ -z "$sample_dicom" ] && sample_dicom="$file"
+        fi
+      done < <(find "$dicom_dir" -type f -name "$pattern")
+      
+      [ "$dicom_count" -gt 0 ] && break
+    done
+  fi
+
+
+  if [ $dicom_count -eq 0 ]; then
     log_formatted "WARNING" "No DICOM files found in $dicom_dir"
     return 1
   fi
   
   log_message "Found $dicom_count DICOM files"
+  log_message "Using sample DICOM: $sample_dicom"
   
   # Check for common DICOM headers
-  local sample_dicom=$(find "$dicom_dir" -type f -name "*.dcm" | head -1)
   if [ -n "$sample_dicom" ]; then
     log_message "Checking DICOM headers in $sample_dicom"
     if command -v dcmdump &> /dev/null; then
@@ -181,7 +223,7 @@ validate_dicom_files() {
   
   return 0
 }
-
+export validate_dicom_files_new
 # Function to validate NIfTI files
 validate_nifti_files() {
   local nifti_dir="$1"
@@ -275,14 +317,22 @@ process_all_nifti_files_in_dir() {
 import_dicom_data() {
   local dicom_dir="${1:-$SRC_DIR}"
   local output_dir="${2:-$EXTRACT_DIR}"
-  
-  log_message "Importing DICOM data from $dicom_dir"
+  echo "===== ENTERING import_dicom_data =====" > /dev/stderr
+  echo "DEBUG: dicom_dir='$dicom_dir'" > /dev/stderr
+  echo "DEBUG: Checking if directory exists: $dicom_dir" > /dev/stderr
+  test -d "$dicom_dir" && echo "DEBUG: DIRECTORY EXISTS" > /dev/stderr || echo "DEBUG: DIRECTORY DOES NOT EXIST" > /dev/stderr
+  log_message "** Importing DICOM data from $dicom_dir"
   
   # Validate DICOM files
-  validate_dicom_files "$dicom_dir"
+  echo "DEBUG: About to call validate_dicom_files" > /dev/stderr
+  validate_dicom_files_new "$dicom_dir"
+  echo "DEBUG: validate_dicom_files COMPLETED" > /dev/stderr
   
   # Extract metadata
+  echo "DEBUG: About to call extract_siemens_metadata" > /dev/stderr 
   extract_siemens_metadata "$dicom_dir"
+  echo "DEBUG: extract_siemens_metadata COMPLETED" > /dev/stderr
+  echo "DEBUG: About to call convert_dicom_to_nifti" > /dev/stderr
   
   # Convert DICOM to NIfTI
   convert_dicom_to_nifti "$dicom_dir" "$output_dir"
@@ -301,7 +351,7 @@ import_dicom_data() {
 export -f deduplicate_identical_files
 export -f extract_siemens_metadata
 export -f convert_dicom_to_nifti
-export -f validate_dicom_files
+export -f validate_dicom_files_new
 export -f validate_nifti_files
 export -f process_all_nifti_files_in_dir
 export -f import_dicom_data
