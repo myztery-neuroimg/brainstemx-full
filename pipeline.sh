@@ -163,9 +163,9 @@ run_pipeline() {
   log_message "Step 1: Importing and converting data"
   
   import_dicom_data "$input_dir" "$EXTRACT_DIR"
-  validate_dicom_files "$input_dir" 
+  qa_validate_dicom_files "$input_dir" 
   extract_siemens_metadata "$input_dir"
-  validate_nifti_files "$EXTRACT_DIR"
+  qa_validate_nifti_files "$EXTRACT_DIR"
   deduplicate_identical_files "$EXTRACT_DIR"
   
   # Validate import step
@@ -463,77 +463,77 @@ run_pipeline_batch() {
     # Process subjects sequentially
     log_message "Processing subjects sequentially"
   
-  # Traditional sequential processing
-  while read -r subject_id t2_flair t1; do
-    echo "Processing subject: $subject_id"
-    
-    # Skip empty or commented lines
-    [[ -z "$subject_id" || "$subject_id" == \#* ]] && continue
-    
-    # Create subject output directory
-    local subject_dir="${output_base}/${subject_id}"
-    mkdir -p "$subject_dir"
-    
-    # Set global variables for this subject
-    export SUBJECT_ID="$subject_id"
-    export SRC_DIR="$base_dir/$subject_id"
-    export RESULTS_DIR="$subject_dir"
-    
-    # Reset error tracking for this subject
-    PIPELINE_SUCCESS=true
-    PIPELINE_ERROR_COUNT=0
-    
-    # Run processing with proper error handling
-    run_pipeline
-    local status=$?
-    
-    # Determine status text
-    local status_text="FAILED"
-    if [ $status -eq 0 ]; then
-      status_text="COMPLETE"
-    elif [ $status -eq 2 ]; then
-      status_text="INCOMPLETE"
-    fi
-    
-    # Extract key metrics for summary
-    local brainstem_vol="N/A"
-    local pons_vol="N/A"
-    local dorsal_pons_vol="N/A"
-    local hyperintensity_vol="N/A"
-    local largest_cluster_vol="N/A"
-    local reg_quality="N/A"
-    
-    local brainstem_file=$(get_output_path "segmentation/brainstem" "${subject_id}" "_brainstem")
-    if [ -f "$brainstem_file" ]; then
-      brainstem_vol=$(fslstats "$brainstem_file" -V | awk '{print $1}')
-    fi
-    
-    local pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_pons")
-    if [ -f "$pons_file" ]; then
-      pons_vol=$(fslstats "$pons_file" -V | awk '{print $1}')
-    fi
-    
-    local dorsal_pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
-    if [ -f "$dorsal_pons_file" ]; then
-      dorsal_pons_vol=$(fslstats "$dorsal_pons_file" -V | awk '{print $1}')
-    fi
-    
-    local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_dorsal_pons_thresh2.0")
-    if [ -f "$hyperintensity_file" ]; then
-      hyperintensity_vol=$(fslstats "$hyperintensity_file" -V | awk '{print $1}')
+    # Traditional sequential processing
+    while read -r subject_id t2_flair t1; do
+      echo "Processing subject: $subject_id"
       
-      # Get largest cluster size if clusters file exists
-      local clusters_file="${hyperintensities_dir}/${subject_id}_dorsal_pons_clusters_sorted.txt"
-      if [ -f "$clusters_file" ]; then
-        largest_cluster_vol=$(head -1 "$clusters_file" | awk '{print $2}')
+      # Skip empty or commented lines
+      [[ -z "$subject_id" || "$subject_id" == \#* ]] && continue
+      
+      # Create subject output directory
+      local subject_dir="${output_base}/${subject_id}"
+      mkdir -p "$subject_dir"
+      
+      # Set global variables for this subject
+      export SUBJECT_ID="$subject_id"
+      export SRC_DIR="$base_dir/$subject_id"
+      export RESULTS_DIR="$subject_dir"
+      
+      # Reset error tracking for this subject
+      PIPELINE_SUCCESS=true
+      PIPELINE_ERROR_COUNT=0
+      
+      # Run processing with proper error handling
+      run_pipeline
+      local status=$?
+      
+      # Determine status text
+      local status_text="FAILED"
+      if [ $status -eq 0 ]; then
+        status_text="COMPLETE"
+      elif [ $status -eq 2 ]; then
+        status_text="INCOMPLETE"
       fi
-    fi
-    
-    # Add to summary
-    echo "${subject_id},${status_text},${brainstem_vol},${pons_vol},${dorsal_pons_vol},${hyperintensity_vol},${largest_cluster_vol},${reg_quality}" >> "$summary_file"
-    
+      
+      # Extract key metrics for summary
+      local brainstem_vol="N/A"
+      local pons_vol="N/A"
+      local dorsal_pons_vol="N/A"
+      local hyperintensity_vol="N/A"
+      local largest_cluster_vol="N/A"
+      local reg_quality="N/A"
+      
+      local brainstem_file=$(get_output_path "segmentation/brainstem" "${subject_id}" "_brainstem")
+      if [ -f "$brainstem_file" ]; then
+        brainstem_vol=$(fslstats "$brainstem_file" -V | awk '{print $1}')
+      fi
+      
+      local pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_pons")
+      if [ -f "$pons_file" ]; then
+        pons_vol=$(fslstats "$pons_file" -V | awk '{print $1}')
+      fi
+      
+      local dorsal_pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
+      if [ -f "$dorsal_pons_file" ]; then
+        dorsal_pons_vol=$(fslstats "$dorsal_pons_file" -V | awk '{print $1}')
+      fi
+      
+      local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_dorsal_pons_thresh2.0")
+      if [ -f "$hyperintensity_file" ]; then
+        hyperintensity_vol=$(fslstats "$hyperintensity_file" -V | awk '{print $1}')
+        
+        # Get largest cluster size if clusters file exists
+        local clusters_file="${hyperintensities_dir}/${subject_id}_dorsal_pons_clusters_sorted.txt"
+        if [ -f "$clusters_file" ]; then
+          largest_cluster_vol=$(head -1 "$clusters_file" | awk '{print $2}')
+        fi
+      fi
+      
+      # Add to summary
+      echo "${subject_id},${status_text},${brainstem_vol},${pons_vol},${dorsal_pons_vol},${hyperintensity_vol},${largest_cluster_vol},${reg_quality}" >> "$summary_file"
+      
   done < "$subject_list"
-  
+  fi
   echo "Batch processing complete. Summary available at: $summary_file"
   return 0
 }

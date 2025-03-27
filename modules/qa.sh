@@ -497,35 +497,49 @@ check_image_statistics() {
 }
 
 # Function to validate DICOM files
-validate_dicom_files() {
+qa_validate_dicom_files() {
     local dicom_dir="$1"
     local output_dir="${2:-$RESULTS_DIR/validation/dicom}"
     
     echo "Validating DICOM files in $dicom_dir"
     mkdir -p "$output_dir"
     
-    # Count DICOM files
-    local dicom_count=$(find "$dicom_dir" -type f -name "*.dcm" | wc -l)
+    # Count DICOM files using configured patterns
+    local dicom_count=$(find "$dicom_dir" -type f -name "${DICOM_PRIMARY_PATTERN:-Image-*}" | wc -l)
     if [ "$dicom_count" -eq 0 ]; then
-        echo "[WARNING] No DICOM files found in $dicom_dir"
-        return 1
+        echo "No files found with primary pattern '${DICOM_PRIMARY_PATTERN:-Image-*}', trying alternative patterns..."
+        # Try additional patterns
+        for pattern in ${DICOM_ADDITIONAL_PATTERNS:-"*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"}; do
+            local pattern_count=$(find "$dicom_dir" -type f -name "$pattern" | wc -l)
+            dicom_count=$((dicom_count + pattern_count))
+        done
+        
+        if [ "$dicom_count" -eq 0 ]; then
+            echo "[WARNING] No DICOM files found in $dicom_dir"
+            return 1
+        fi
     fi
     
     echo "Found $dicom_count DICOM files"
     
     # Check for common DICOM headers
-    local sample_dicom=$(find "$dicom_dir" -type f -name "*.dcm" | head -1)
+    local sample_dicom=$(find "$dicom_dir" -type f -name "${DICOM_PRIMARY_PATTERN:-Image-*}" | head -1)
+    if [ -z "$sample_dicom" ]; then
+        sample_dicom=$(find "$dicom_dir" -type f -name "${DICOM_ADDITIONAL_PATTERNS%% *}" | head -1)
+    fi
     if [ -n "$sample_dicom" ]; then
         echo "Checking DICOM headers in $sample_dicom"
-        dcmdump "$sample_dicom" > "$output_dir/sample_dicom_headers.txt"
+        command -v dcmdump &>/dev/null && dcmdump "$sample_dicom" > "$output_dir/sample_dicom_headers.txt" || echo "dcmdump not available"
     fi
     
     return 0
 }
 
 # Function to validate NIfTI files
-validate_nifti_files() {
+qa_validate_nifti_files() {
     local nifti_dir="$1"
+    
+    # Rest of function remains the same
     local output_dir="${2:-$RESULTS_DIR/validation/nifti}"
     
     echo "Validating NIfTI files in $nifti_dir"
@@ -586,7 +600,7 @@ export -f calculate_cc
 export -f calculate_mi
 export -f calculate_ncc
 export -f check_image_statistics
-export -f validate_dicom_files
-export -f validate_nifti_files
+export -f qa_validate_dicom_files
+export -f qa_validate_nifti_files
 
 log_message "QA module loaded"

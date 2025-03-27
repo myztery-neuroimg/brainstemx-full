@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="../DiCOM"          # DICOM input directory
+export SRC_DIR="/Users/davidbrewster/Documents/workspace/2025/DICOM"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
 export ANTS_PATH="~/ants"
@@ -99,3 +99,10 @@ REGISTRATION_MASK="MNI152_T1_1mm_brain_mask_dil.nii.gz"
 
 # Batch processing parameters
 SUBJECT_LIST=""  # Path to subject list file for batch processing
+
+# ------------------------------------------------------------------------------
+# DICOM File Pattern Configuration (used by import.sh and qa.sh)
+# ------------------------------------------------------------------------------
+export DICOM_PRIMARY_PATTERN='Image*'  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
+export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"  # Space-separated list of additional patterns to try
+
