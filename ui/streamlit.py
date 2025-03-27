@@ -3,7 +3,6 @@
 
 import streamlit as st
 import subprocess
-import os
 import re
 from pathlib import Path
 
