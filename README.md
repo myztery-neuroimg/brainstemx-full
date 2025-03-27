@@ -4,7 +4,7 @@ End-to-end pipeline for processing brain MRI images, with a focus on brainstem s
 
 ## Overview
 
-This pipeline processes T1-weighted and T2-FLAIR MRI images to:
+This pipeline processes T1-weighted and T2-SPACE/FLAIR and other modalities of MRI images to:
 
 1. Extract and segment the brainstem and pons via Atlas based segmentation (though easily extensible to other regions)
 2. Detect hyperintensities within those regions
@@ -15,13 +15,13 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 ## Features
 
 - DICOM to NIfTI conversion with metadata extraction
-- Multi-axial image integration
+- Multi-axial image integration for 2D sequences to NiFTI format
 - N4 bias field correction
-- Brain extraction
+- Brain extraction using ANTs
 - Registration of modalities such as FLAIR/SPACE-FLAIR/DWI/SWI against T1MPRAGE
-- Brainstem and pons segmentation
+- Brainstem and pons segmentation (atlas based and geometric based for sub-regions of the pons)
 - Hyperintensity detection with multiple thresholds
-- Comprehensive QA/validation
+- Comprehensive QA/validation of each step, with automated sanity checks
 - HTML report generation
 
 ## Requirements
