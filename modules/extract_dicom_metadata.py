@@ -10,12 +10,24 @@ Usage:
 import sys
 import json
 import os
+try:
+    import pydicom
+except ImportError as e:
+    print(f"ImportError: {str(e)}")
+    # pydicom not available
+    with open(output_path, 'w') as f:
+        json.dump({
+            "manufacturer": "Unknown",
+            "fieldStrength": 3,
+            "modelName": "Unknown",
+            "error": "pydicom module not installed"
+        }, f, indent=2)
+    print("extract_dicom_metadata.py: FATAL: PYDICOM_NOT_FOUND")
+    exit(1)
 
 def extract_metadata(dicom_path, output_path):
     """Extract metadata from a DICOM file and save it as JSON."""
     try:
-        import pydicom
-        
         # Read the DICOM file
         print(f"Reading DICOM file: {dicom_path}")
         dcm = pydicom.dcmread(dicom_path)
@@ -106,20 +118,7 @@ def extract_metadata(dicom_path, output_path):
             
         print("SUCCESS")
         return 0
-        
-    except ImportError as e:
-        print(f"ImportError: {str(e)}")
-        # pydicom not available
-        with open(output_path, 'w') as f:
-            json.dump({
-                "manufacturer": "Unknown",
-                "fieldStrength": 3,
-                "modelName": "Unknown",
-                "error": "pydicom module not installed"
-            }, f, indent=2)
-        print("PYDICOM_NOT_FOUND")
-        return 1
-        
+                
     except Exception as e:
         print(f"Error: {str(e)}")
         # Handle other errors
@@ -140,7 +139,7 @@ if __name__ == "__main__":
         sys.exit(1)
         
     input_file = sys.argv[1]
-    output_file = sys.argv[2]
+    output_file = sys.argv[2] #Write to JSON file with the scanner metadata
     
     # Verify input file exists
     if not os.path.isfile(input_file):
