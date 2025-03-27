@@ -50,8 +50,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 3. Make the pipeline script executable:
    ```bash
    chmod +x pipeline.sh
-   chmod +x tests/integration.sh
-   chmod +x tests/test_parallel.sh
+   chmod +x tests/*.sh
    ```
 
 4. Create a python venv and install required packages. I actually recommend to use `uv` instead of `venv` especially to ensure python 3.12
@@ -59,6 +58,11 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
    python -m venv venv .
    source ./bin/activate
    pip install -r requirements.txt
+   # alternatively:
+   uv init
+   uv python pin #version
+   uv pip install -r requirements.txt
+   uv venv / uv sync
    ```
 
 5. Update the filename pattern and/or other configuration options in the configuration.py file
