@@ -6,7 +6,7 @@ End-to-end pipeline for processing brain MRI images, with a focus on brainstem s
 
 This pipeline processes T1-weighted and T2-SPACE/FLAIR and other modalities of MRI images to:
 
-1. Extract and segment the brainstem and pons via Atlas based segmentation (though easily extensible to other regions)
+1. Extract and segment the brainstem and pons via Atlas based segmentation (though easily extensible to other regions) but also sub-regions of the pons e.g., dorsal and ventral via geometric approaches as I'm not aware of any such detailed atlases for this segmentation and I don't have the knowledge or dataset to train a segmentation model or create an atlas myself.
 2. Detect hyperintensities within those regions
 3. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
