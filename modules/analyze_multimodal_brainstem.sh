@@ -11,6 +11,13 @@ log() { echo "[$(date +'%H:%M:%S')] $*" >&2; }
 # SWI
 # T2_SWI_AX_8_to_FLAIR_brainstem.nii.gz -V -M -S -P 25 -P 50 -P 75
 # 4707 4596.677246 95.770767 7.723324 92.000000 97.000000 101.000000
+# DWI
+# dwi_b1000_to_FLAIR.nii.gz -V -M -S -P 10 -P 20 -P 25 -P 30 -P 35 -P 50 -P 75 -P 90 -P 95 -P 99 -P 92 -P 96
+# 5104741 4985096.000000 30.930867 36.512138 1.000000 3.000000 4.000000 5.000000 6.000000 11.000000 68.000000 92.000000 99.000000 112.000000 94.000000 101.000000 
+# T1/MPRAGE
+# analysis_multimodal/T1_MPRAGE_SAG_12_to_FLAIR_brainstem.nii.gz -V -M -S -P 10 -P 20 -P 35 -P 50 -P 60 -P 70 -P 75 -P 90 -P 95 -P 98 -P 99
+# 4707 4596.677246 164.709369 31.651552 119.000000 153.000000 168.000000 174.000000 177.000000 180.000000 182.000000 190.000000 196.000000 203.000000 207.000000 
+
 
 T1=../extracted/T1_MPRAGE_SAG_12.nii.gz
 DWI_4D=../extracted/EPI_DWI_AX_5.nii.gz
@@ -67,12 +74,12 @@ cluster --in="$OUTDIR/FLAIR_brainstem_232.nii.gz" --thresh=232 --connectivity=6 
 
 # --- DWI ---
 log "Clustering DWI restriction..."
-cluster --in="$OUTDIR/dwi_b1000_to_FLAIR_brainstem.nii.gz" --thresh=98 --connectivity=6 \
+cluster --in="$OUTDIR/dwi_b1000_to_FLAIR_brainstem.nii.gz" --thresh=104 --connectivity=6 \
   --oindex="$OUTDIR/clusters_dwi.nii.gz" --mm > "$OUTDIR/report_dwi.tsv"
 
 # --- T1 ---
 log "Clustering T1 hypointensities..."
-fslmaths "$OUTDIR/T1_MPRAGE_SAG_12_to_FLAIR_brainstem.nii.gz" -uthr 165 -bin "$OUTDIR/t1_hypo_mask.nii.gz"
+fslmaths "$OUTDIR/T1_MPRAGE_SAG_12_to_FLAIR_brainstem.nii.gz" -uthr 150 -bin "$OUTDIR/t1_hypo_mask.nii.gz"
 cluster --in="$OUTDIR/t1_hypo_mask.nii.gz" --thresh=0.01 --connectivity=6 \
   --oindex="$OUTDIR/clusters_t1.nii.gz" --mm > "$OUTDIR/report_t1.tsv"
 
