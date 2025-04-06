@@ -164,14 +164,14 @@ run_pipeline() {
   # Step 1: Import and convert data
   log_message "Step 1: Importing and converting data"
   
-  #import_dicom_data "$input_dir" "$EXTRACT_DIR"
-  #qa_validate_dicom_files "$input_dir" 
-  #import_extract_siemens_metadata "$input_dir"
-  #qa_validate_nifti_files "$EXTRACT_DIR"
-  #import_deduplicate_identical_files "$EXTRACT_DIR"
+  import_dicom_data "$input_dir" "$EXTRACT_DIR"
+  qa_validate_dicom_files "$input_dir" 
+  import_extract_siemens_metadata "$input_dir"
+  qa_validate_nifti_files "$EXTRACT_DIR"
+  import_deduplicate_identical_files "$EXTRACT_DIR"
   
   # Validate import step
-  #validate_step "Import data" "*.nii.gz" "extracted"
+  validate_step "Import data" "*.nii.gz" "extracted"
   
   
   # Step 2: Preprocessing
@@ -201,7 +201,8 @@ run_pipeline() {
   # Note: For 3D isotropic sequences (MPRAGE, SPACE, etc.), this will
   # automatically detect and select the best quality single orientation.
   # For 2D sequences, it will combine multiple orientations when available.
-  #combine_multiaxis_images "T1" "${RESULTS_DIR}/combined"
+
+  #combine_multiaxis_images "T1" "${RESULTS_DIR}/combined" #only if using 2d scan types
   #combine_multiaxis_images "FLAIR" "${RESULTS_DIR}/combined"
   
   # Validate combining step

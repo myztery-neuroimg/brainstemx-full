@@ -11,3 +11,5 @@ log
 *.log
 data/*
 data
+*.tsv
+*.mat
