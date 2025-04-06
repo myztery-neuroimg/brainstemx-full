@@ -4,11 +4,12 @@ End-to-end pipeline for processing brain MRI images, with a focus on brainstem s
 
 ## Overview
 
-This pipeline processes T1-weighted and T2-SPACE/FLAIR and other modalities of MRI images to:
+This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI and any other modalities of MRI images to:
 
-1. Extract and segment the brainstem and pons via Atlas based segmentation (though easily extensible to other regions) but also sub-regions of the pons e.g., dorsal and ventral via geometric approaches as I'm not aware of any such detailed atlases for this segmentation and I don't have the knowledge or dataset to train a segmentation model or create an atlas myself.
-2. Detect hyperintensities within those regions
-3. Generate comprehensive QA visualizations and reports ensuring pipeline validity
+1. Extract, perform bias correction (N4) via ANTs, register against T1 and/or standard Atlas space 
+2. Segment the brainstem and pons via various Atlas and geomorphological based segmentation (though easily extensible to other regions) but also sub-regions of the pons e.g., dorsal and ventral via geometric approaches as I'm not aware of any such detailed atlases for this segmentation and I don't have the knowledge or dataset to train a segmentation model or create an atlas myself.
+3. Detect hyperintensities within those regions using fslstats and cluster
+4. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
 The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing framework, with some additional tools from FSL and Convert3D.
 
@@ -204,15 +205,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - GNU Parallel
 - Roo Code/Claude 3.7 :D 
 - ITK-SNAP (Convert3D)
-- SNAP Neuroatlas
-
-## Citations
-
-  Diedrichsen, J., Balsters, J. H., Flavell, J., Cussans, E.,
-   & Ramnani, N. (2009). A probabilistic atlas of the human
-   cerebellum. Neuroimage.
- Diedrichsen, J., Maderwald, S., Kuper, M., Thurling, M.,
-   Rabe, K., Gizewski, E. R., et al. (2011). Imaging the deep
-   cerebellar nuclei: A probabilistic atlas and normalization
-   procedure. Neuroimage
-
