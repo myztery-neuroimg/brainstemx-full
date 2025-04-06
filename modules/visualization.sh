@@ -19,8 +19,8 @@ generate_qc_visualizations() {
     mkdir -p "$output_dir"
     
     # Get input files
-    local t2_flair=$(find "${subject_dir}" -name "*T2_FLAIR*.nii.gz" | head -1)
-    local t1=$(find "${subject_dir}" -name "*T1*.nii.gz" | head -1)
+    local t2_flair=$(find "${subject_dir}" -name "*T2_SPACE_FLAIR*.nii.gz" | head -1)
+    local t1=$(find "${subject_dir}" -name "*MPRAGE*.nii.gz" | head -1)
     
     # Create edge overlays for segmentation validation
     for region in "brainstem" "pons" "dorsal_pons" "ventral_pons"; do

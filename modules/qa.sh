@@ -303,8 +303,8 @@ validate_transformation() {
     local fixed="$1"           # Fixed/reference image
     local moving="$2"          # Moving image
     local transform="$3"       # Transformation file
-    local fixed_mask="$4"      # Optional: mask in fixed space
-    local moving_mask="$5"     # Optional: mask in moving space
+    local fixed_mask="${4:-}"      # Optional: mask in fixed space
+    local moving_mask="${5:-}"     # Optional: mask in moving space
     local output_dir="$6"      # Directory for outputs
     local threshold="$7"       # Optional: threshold for binary metrics
     
@@ -424,8 +424,9 @@ validate_transformation() {
 calculate_cc() {
     local img1="$1"
     local img2="$2"
-    local mask="$3"  # Optional
-    
+    local mask="${3:-}"  # empty if not passed
+
+   
     local cc_cmd="fslcc -p 10 $img1 $img2"
     if [ -n "$mask" ] && [ -f "$mask" ]; then
         cc_cmd="$cc_cmd -m $mask"
@@ -439,7 +440,7 @@ calculate_cc() {
 calculate_mi() {
     local img1="$1"
     local img2="$2"
-    local mask="$3"  # Optional
+    local mask="${3:-}"  # empty if not passed
     
     # Use ANTs' MeasureImageSimilarity for MI
     local mi_cmd="MeasureImageSimilarity 3 1 $img1 $img2"
@@ -455,7 +456,7 @@ calculate_mi() {
 calculate_ncc() {
     local img1="$1"
     local img2="$2"
-    local mask="$3"  # Optional
+    local mask="${3:-}"  # empty if not passed
     
     # Use ANTs' MeasureImageSimilarity for NCC
     local ncc_cmd="MeasureImageSimilarity 3 2 $img1 $img2"
@@ -470,7 +471,7 @@ calculate_ncc() {
 # Function to check image statistics
 check_image_statistics() {
     local image="$1"
-    local mask="$2"  # Optional
+    local mask="${2:-}"  # empty if not passed
     local min_nonzero="$3"  # Optional
     local max_nonzero="$4"  # Optional
     

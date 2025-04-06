@@ -13,12 +13,12 @@
 # Set to 0 to disable parallel processing
 # Set to a positive number to specify the number of parallel jobs
 # Recommended: Number of CPU cores - 1
-PARALLEL_JOBS=4
+PARALLEL_JOBS=1
 
 # Maximum number of parallel jobs for CPU-intensive operations
 # This is used for operations like ANTs registration that use a lot of CPU
 # Recommended: Half the number of CPU cores or less
-MAX_CPU_INTENSIVE_JOBS=2
+MAX_CPU_INTENSIVE_JOBS=1
 
 # Timeout (in seconds) for parallel operations
 # If a parallel operation takes longer than this, it will be terminated
@@ -80,3 +80,9 @@ auto_detect_cores() {
 if [ "$AUTO_DETECT_CORES" = true ]; then
   auto_detect_cores
 fi
+# Prioritize sagittal 3D sequences explicitly
+export T1_PRIORITY_PATTERN="MPRAGE.*SAG"
+export FLAIR_PRIORITY_PATTERN="SPACE.*FLAIR.*SAG"
+export RESAMPLE_TO_ISOTROPIC=1
+export ISOTROPIC_SPACING=1.0
+

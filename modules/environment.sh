@@ -781,4 +781,25 @@ show_help() {
   echo "  -h, --help           Show this help message and exit"
 }
 
+compute_initial_affine() {
+  local moving="$1"
+  local fixed="$2"  # typically MNI
+  local output_prefix="$3"
+
+  if [[ ! -f "${output_prefix}0GenericAffine.mat" ]]; then
+    echo "Generating initial affine for ${moving}"
+    antsRegistrationSyNQuick.sh \
+      -d 3 \
+      -f "$fixed" \
+      -m "$moving" \
+      -t a \
+      -o "$output_prefix"
+  else
+    echo "Affine already exists for ${moving}"
+  fi
+}
+
+export compute_initial_affine
+
 log_message "Environment module loaded"
+

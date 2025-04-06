@@ -201,3 +201,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - GNU Parallel
 - Roo Code/Claude 3.7 :D 
 - ITK-SNAP (Convert3D)
+- SNAP Neuroatlas
+
+## Citations
+
+  Diedrichsen, J., Balsters, J. H., Flavell, J., Cussans, E.,
+   & Ramnani, N. (2009). A probabilistic atlas of the human
+   cerebellum. Neuroimage.
+ Diedrichsen, J., Maderwald, S., Kuper, M., Thurling, M.,
+   Rabe, K., Gizewski, E. R., et al. (2011). Imaging the deep
+   cerebellar nuclei: A probabilistic atlas and normalization
+   procedure. Neuroimage
+

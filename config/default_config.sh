@@ -25,13 +25,20 @@ export UTPUT_DATATYPE="int"        # final int16
 
 # Quality settings (LOW, MEDIUM, HIGH)
 export QUALITY_PRESET="HIGH"
+#export MAX_CPU_INTENSIVE_JOBS=4
 
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
 export N4_PRESET_LOW="20x20x25,0.0001,150,4"
-export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
+#export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
 export N4_PRESET_HIGH="100x100x100x50,0.0000001,500,2"
+export N4_PRESET_MEDIUM="100x100x100x50,0.0000001,500,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
 
+export PARALLEL_JOBS=0
+unset MAX_CPU_INTENSIVE_JOBS
+
+
+export QUALITY_PRESET="HIGH"
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
@@ -40,7 +47,6 @@ elif [ "$QUALITY_PRESET" = "MEDIUM" ]; then
 else
     export N4_PARAMS="$N4_PRESET_LOW"
 fi
-export QUALITY_PRESET="HIGH"
 # Parse out the fields for general sequences
 export N4_ITERATIONS=$(echo "$N4_PARAMS"      | cut -d',' -f1)
 export N4_CONVERGENCE=$(echo "$N4_PARAMS"    | cut -d',' -f2)
@@ -54,8 +60,8 @@ export N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
 export N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
 
 # Multi-axial integration parameters (antsMultivariateTemplateConstruction2.sh)
-export TEMPLATE_ITERATIONS=2
-export TEMPLATE_GRADIENT_STEP=0.2
+export TEMPLATE_ITERATIONS=1
+export TEMPLATE_GRADIENT_STEP=0.05
 export TEMPLATE_TRANSFORM_MODEL="SyN"
 export TEMPLATE_SIMILARITY_METRIC="CC"
 export TEMPLATE_SHRINK_FACTORS="6x4x2x1"
@@ -75,8 +81,8 @@ export MIN_HYPERINTENSITY_SIZE=3
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3
-export ATROPOS_FLAIR_CLASSES==2
-export ATROPOS_CONVERGENCE="5,0.0"
+export ATROPOS_FLAIR_CLASSES=2
+export ATROPOS_CONVERGENCE="1,0.0"
 export ATROPOS_MRF="[0.1,1x1x1]"
 export ATROPOS_INIT_METHOD="kmeans"
 
@@ -105,4 +111,8 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # ------------------------------------------------------------------------------
 export DICOM_PRIMARY_PATTERN='Image-[0-9]*'  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
 export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"  # Space-separated list of additional patterns to try
-
+# Prioritize sagittal 3D sequences explicitly
+export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz"
+export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz"
+export RESAMPLE_TO_ISOTROPIC=0
+export ISOTROPIC_SPACING=1.0

@@ -202,15 +202,19 @@ apply_transformation() {
     
     log_message "Applying transformation to $input"
     
-    # Check if transform is a .mat file (FSL) or a .h5/.txt file (ANTs)
     if [[ "$transform" == *".mat" ]]; then
-        # FSL linear transform
-        flirt -in "$input" -ref "$reference" -applyxfm -init "$transform" -out "$output" -interp "$interpolation"
+        if [[ "$transform" == *"ants"* || "$transform" == *"Affine"* ]]; then
+            # ANTs .mat transform — likely affine, must be inverted to go MNI -> subject
+            antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "[$transform,1]" -n "$interpolation"
+        else
+            # FSL .mat transform
+            flirt -in "$input" -ref "$reference" -applyxfm -init "$transform" -out "$output" -interp "$interpolation"
+        fi
     else
-        # ANTs transform
+        # ANTs .h5 or .txt transforms — typically don't need inversion unless explicitly known
         antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "$transform" -n "$interpolation"
     fi
-    
+
     log_message "Transformation applied. Output: $output"
     return 0
 }
