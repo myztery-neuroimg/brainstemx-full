@@ -98,6 +98,9 @@ graph TD
    export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 
    # Parallelization configuration (defaults, can be overridden by config file)
+   # # NOTE: I Suggest NOT to use parallelism with ANTs, its a pain in the backside because of some of its internal logging
+   # # and anyway it supports multithreadedness
+
    export PARALLEL_JOBS=1             # Number of parallel jobs to use
    export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
    export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)

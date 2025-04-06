@@ -25,7 +25,7 @@ export UTPUT_DATATYPE="int"        # final int16
 
 # Quality settings (LOW, MEDIUM, HIGH)
 export QUALITY_PRESET="HIGH"
-#export MAX_CPU_INTENSIVE_JOBS=4
+export MAX_CPU_INTENSIVE_JOBS=1
 
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
 export N4_PRESET_LOW="20x20x25,0.0001,150,4"
@@ -35,8 +35,6 @@ export N4_PRESET_MEDIUM="100x100x100x50,0.0000001,500,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
 
 export PARALLEL_JOBS=0
-unset MAX_CPU_INTENSIVE_JOBS
-
 
 export QUALITY_PRESET="HIGH"
 # Set default N4_PARAMS by QUALITY_PRESET
@@ -76,8 +74,8 @@ export ANTS_THREADS=24
 export REG_PRECISION=1
 
 # Hyperintensity detection
-export HRESHOLD_WM_SD_MULTIPLIER=2
-export MIN_HYPERINTENSITY_SIZE=3
+export HRESHOLD_WM_SD_MULTIPLIER=1.5 #Standard devications from local norm
+export MIN_HYPERINTENSITY_SIZE=2
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3
@@ -110,8 +108,12 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)
 # ------------------------------------------------------------------------------
 export DICOM_PRIMARY_PATTERN='Image-[0-9]*'  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
+# Currently not well implemented
+
 export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"  # Space-separated list of additional patterns to try
 # Prioritize sagittal 3D sequences explicitly
+# Super hackery, adjust for yourself.. this works with Siemens scanners which primarily scan in sagital orientation for 3D scans I thiink
+
 export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz"
 export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz"
 export RESAMPLE_TO_ISOTROPIC=0
