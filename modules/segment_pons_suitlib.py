@@ -263,9 +263,9 @@ class BrainstemSegmentation:
     
 if __name__ == "__main__":
     # Example usage
-    input_path = Path("path/to/input/image.nii.gz")
+    input_path = Path("../mri_results/")
 
-    suit_dir = Path("/path/to/spm12/toolbox/suit")
+    suit_dir = Path("/Users/davidbrewster")
     segmenter = BrainstemSegmentation(suit_dir)
     results = segmenter.process_image(input_path)
 

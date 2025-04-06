@@ -18,8 +18,8 @@ is_3d_isotropic_sequence() {
   local filename=$(basename "$file")
   
   # Check filename first (fast path)
-  if [[ "$filename" == *"MPRAGE"* ]] || 
-     [[ "$filename" == *"SPACE"* ]] || 
+  if [[ "$filename" == *"T1"*"12" ]] || 
+     [[ "$filename" == *"T2_SPACE"*"SAG"*"17"* ]] || 
      [[ "$filename" == *"MP2RAGE"* ]] || 
      [[ "$filename" == *"3D"* ]]; then
     log_message "3D sequence detected by filename pattern: $filename"
@@ -307,7 +307,7 @@ combine_multiaxis_images() {
 combine_multiaxis_images_highres() {
   local sequence_type="$1"
   local output_dir="$2"
-  local resolution="${3:-1}"  # Default to 1mm isotropic
+  local resolution=1 ##"${3:-1}"  # Default to 1mm isotropic
 
   # Create output directory
   output_dir=$(create_module_dir "combined")

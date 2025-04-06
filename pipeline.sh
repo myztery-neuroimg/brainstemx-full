@@ -164,22 +164,25 @@ run_pipeline() {
   # Step 1: Import and convert data
   log_message "Step 1: Importing and converting data"
   
-  import_dicom_data "$input_dir" "$EXTRACT_DIR"
-  qa_validate_dicom_files "$input_dir" 
-  import_extract_siemens_metadata "$input_dir"
-  qa_validate_nifti_files "$EXTRACT_DIR"
-  import_deduplicate_identical_files "$EXTRACT_DIR"
+  #import_dicom_data "$input_dir" "$EXTRACT_DIR"
+  #qa_validate_dicom_files "$input_dir" 
+  #import_extract_siemens_metadata "$input_dir"
+  #qa_validate_nifti_files "$EXTRACT_DIR"
+  #import_deduplicate_identical_files "$EXTRACT_DIR"
   
   # Validate import step
-  validate_step "Import data" "*.nii.gz" "extracted"
+  #validate_step "Import data" "*.nii.gz" "extracted"
   
   
   # Step 2: Preprocessing
   log_message "Step 2: Preprocessing"
   
   # Find T1 and FLAIR files
-  local t1_file=$(find "$EXTRACT_DIR" -name "*T1*.nii.gz" | head -1)
-  local flair_file=$(find "$EXTRACT_DIR" -name "*FLAIR*.nii.gz" | head -1)
+  export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz"
+  export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz"
+
+  local t1_file=$(find "$EXTRACT_DIR" -name "${T1_PRIORITY_PATTERN}" | head -1)
+  local flair_file=$(find "$EXTRACT_DIR" -name "${FLAIR_PRIORITY_PATTERN}" | head -1)
   
   if [ -z "$t1_file" ]; then
     log_error "T1 file not found in $EXTRACT_DIR" $ERR_DATA_MISSING

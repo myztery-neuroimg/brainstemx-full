@@ -22,8 +22,8 @@ extract_brainstem() {
     output_file="${input_dir}/${input_basename}_brainstem.nii.gz"
     
     # Path to Juelich atlas - adjust if your FSL installation has it elsewhere
-    juelich_atlas="${FSLDIR}/data/atlases/Juelich/Juelich-maxprob-thr25-2mm.nii.gz"
-    juelich_xml="${FSLDIR}/data/atlases/Juelich/Juelich-maxprob-thr25-2mm.xml"
+    juelich_atlas="${FSLDIR}/data/atlases/Juelich/Juelich-maxprob-thr25-1mm.nii.gz"
+    juelich_xml="${FSLDIR}/data/atlases/Juelich/Juelich-maxprob-thr25-1mm.xml"
     
     if [ ! -f "$juelich_atlas" ]; then
         echo "Error: Juelich atlas not found at $juelich_atlas"
