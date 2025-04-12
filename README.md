@@ -1,13 +1,13 @@
 # MRI ANTs E2E Pipeline
 
-End-to-end pipeline for processing brain MRI images, with a focus on brainstem segmentation and hyperintensity detection in regions and sub-regions (pons, dorsal/ventral pons), but easily extendable to any brain region.
+End-to-end pipeline for processing MRI images, with a focus on brainstem segmentation and hyperintensity detection in neurological regions and sub-regions, but easily extendable to any region.
 
 ## Overview
 
 This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI and any other modalities of MRI images to:
 
 1. Extract, perform bias correction (N4) via ANTs, register against T1 and/or standard Atlas space 
-2. Segment the brainstem and pons via various Atlas and geomorphological based segmentation (though easily extensible to other regions) but also sub-regions of the pons e.g., dorsal and ventral via geometric approaches as I'm not aware of any such detailed atlases for this segmentation and I don't have the knowledge or dataset to train a segmentation model or create an atlas myself.
+2. Segment the brainstem and pons via various Atlas and geomorphological based segmentation (though easily extensible to other regions) geometric approaches as I'm not aware of any such detailed atlases for this segmentation and I don't have the knowledge or dataset to train a segmentation model or create an atlas myself.
 3. Detect hyperintensities within those regions using fslstats and cluster
 4. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
