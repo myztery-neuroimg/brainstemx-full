@@ -1,4 +1,4 @@
-# Brain MRI ANTs E2E Pipeline
+# MRI ANTs E2E Pipeline
 
 End-to-end pipeline for processing brain MRI images, with a focus on brainstem segmentation and hyperintensity detection in regions and sub-regions (pons, dorsal/ventral pons), but easily extendable to any brain region.
 
