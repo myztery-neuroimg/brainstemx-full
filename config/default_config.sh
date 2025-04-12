@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="~/workspace/DICOM"          # DICOM input directory
+export SRC_DIR="${HOME}/workspace/DICOM"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
 export ANTS_PATH="~/ants"

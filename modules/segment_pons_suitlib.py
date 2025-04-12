@@ -265,7 +265,7 @@ if __name__ == "__main__":
     # Example usage
     input_path = Path("../mri_results/")
 
-    suit_dir = Path("/Users/davidbrewster")
+    suit_dir = Path("${HOME}")
     segmenter = BrainstemSegmentation(suit_dir)
     results = segmenter.process_image(input_path)
 
