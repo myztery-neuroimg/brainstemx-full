@@ -13,3 +13,11 @@ data/*
 data
 *.tsv
 *.mat
+*.dcm
+*.tmp
+*.tdf
+*.pdf
+*.png
+*.git
+*.jpg
+*.pyc

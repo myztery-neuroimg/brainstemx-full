@@ -64,8 +64,8 @@ graph TD
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/davidj-brewster/e2e-brain-MRI-lesion-segment.git
-   cd e2e-MRI-lesion-segment-clustering
+   git clone https://github.com/(userid)/autoneurosegment
+   cd autoneurosegment
    ```
 
 2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
@@ -168,7 +168,7 @@ mri_results/
 ├── metadata/                      # DICOM metadata
 ├── combined/                      # Multi-axial combined images
 ├── bias_corrected/                # N4 bias-corrected images
-├── brain_extraction/              # Brain-extracted images
+├── extraction/                    # Extracted RoI images
 ├── standardized/                  # Dimension-standardized images
 ├── registered/                    # Registration results
 ├── segmentation/                  # Segmentation results
