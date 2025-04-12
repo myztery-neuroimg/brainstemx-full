@@ -1,13 +1,15 @@
 # MRI ANTs E2E Pipeline
 
-End-to-end pipeline for processing MRI images, with a focus on brainstem segmentation and hyperintensity detection in neurological regions and sub-regions, but easily extendable to any region.
+End-to-end pipeline for processing MRI images, with a focus on detailed and adaptable segmentation, hyperintensity detection and clustering in soft tissues regions and sub-regions (exemplory implementation is neurological), easily extendable to other region.
+
+Motivation is simply to see AI and computer vision more widely adopted!
 
 ## Overview
 
 This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI and any other modalities of MRI images to:
 
 1. Extract, perform bias correction (N4) via ANTs, register against T1 and/or standard Atlas space 
-2. Segment the brainstem and pons via various Atlas and geomorphological based segmentation (though easily extensible to other regions) geometric approaches as I'm not aware of any such detailed atlases for this segmentation and I don't have the knowledge or dataset to train a segmentation model or create an atlas myself.
+2. Segment regions, adapting Atlases and geomorphological based segmentation geometric approaches
 3. Detect hyperintensities within those regions using fslstats and cluster
 4. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
@@ -20,7 +22,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - N4 bias field correction
 - Brain extraction using ANTs
 - Registration of modalities such as FLAIR/SPACE-FLAIR/DWI/SWI against T1MPRAGE
-- Brainstem and pons segmentation (atlas based and geometric based for sub-regions of the pons)
+- For neurology: Brainstem and pons segmentation (atlas based and geometric based for sub-regions of the pons)
 - Hyperintensity detection with multiple thresholds
 - Comprehensive QA/validation of each step, with automated sanity checks
 - HTML report generation
@@ -32,7 +34,7 @@ graph TD
     A[Import DICOM Data] --> B[Preprocess Images]
     A --> B[Combine 2D Ax,Sag,Cor slices to 3D NiFTI]
     B --> C[Register 3D T2-FLAIR/DWI/SWI/etc against T1]
-    C --> D[Segment Brainstem & Pons]
+    C --> D[Segmentation]
     D --> E[Detect Hyperintensities]
     E --> F[Generate Visualizations & Reports]
     
@@ -63,7 +65,7 @@ graph TD
 1. Clone this repository:
    ```bash
    git clone https://github.com/davidj-brewster/e2e-brain-MRI-lesion-segment.git
-   cd e2e-brain-MRI-lesion-segment
+   cd e2e-MRI-lesion-segment-clustering
    ```
 
 2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
@@ -151,9 +153,9 @@ The pipeline is organized into modular components:
 
 - **environment.sh**: Environment setup, logging, configuration
 - **import.sh**: DICOM import, metadata extraction, conversion to NIfTI
-- **preprocess.sh**: Multi-axial integration, bias correction, brain extraction
-- **registration.sh**: T1 to FLAIR registration
-- **segmentation.sh**: Brainstem and pons segmentation
+- **preprocess.sh**: Multi-axial integration, bias correction, ROI extraction
+- **registration.sh**: T1 to FLAIR (or DWI/SWI/etc) registration
+- **segmentation.sh**: Segmentation controller (adapt as needed to your use-case)
 - **analysis.sh**: Hyperintensity detection and analysis
 - **visualization.sh**: QC visualizations, multi-threshold overlays, HTML reports
 - **qa.sh**: Quality assurance and validation functions
@@ -170,8 +172,7 @@ mri_results/
 ├── standardized/                  # Dimension-standardized images
 ├── registered/                    # Registration results
 ├── segmentation/                  # Segmentation results
-│   ├── brainstem/                 # Brainstem segmentation
-│   └── pons/                      # Pons segmentation
+│   ├── ....
 ├── hyperintensities/              # Hyperintensity detection results
 │   ├── thresholds/                # Multiple threshold results
 │   └── clusters/                  # Cluster analysis
@@ -203,5 +204,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - dcm2niix
 - FreeSurfer
 - GNU Parallel
-- Roo Code/Claude 3.7 :D 
+- Roo Code/Claude 3.7
+- ChatGPT
+- Gemini 2.0/2.5 Pro + Gemma 3!
 - ITK-SNAP (Convert3D)
