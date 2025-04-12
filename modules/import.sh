@@ -19,7 +19,7 @@ export RESULTS_DIR="../mri_results"
 # Function to deduplicate identical files
 import_deduplicate_identical_files() {
   local dir="$1"
-  log_message "==== Deduplicating identical files in $dir ===="
+  #log_message "==== Deduplicating identical files in $dir ===="
   [ -d "$dir" ] || return 0
 
   mkdir -p "${dir}/tmp_checksums"
@@ -145,7 +145,7 @@ import_convert_dicom_to_nifti() {
   dcm2niix -z y -f "%p_%s" -o "$output_dir" "$dicom_dir"
   local exit_code=$?
   if [ $exit_code -ne 0 ]; then
-    log_formatted "WARNING" "dcm2niix had issues (exit code $exit_code)"
+    log_formatted "ERROR" "dcm2niix had issues (exit code $exit_code)"
   fi
 
   log_message "DICOM to NIfTI conversion complete"
@@ -158,7 +158,7 @@ import_validate_dicom_files_new_2() {
   return 0
   local dicom_dir="$1"
   local output_dir="$2"
-  DICOM_PRIMARY_PATTERN='Image"*"'
+  export DICOM_PRIMARY_PATTERN='Image"*"'
   local dicom_count=0
   local sample_dicom=""
   log_message "Starting validate_dicom_files_new with directory: $dicom_dir"
@@ -185,7 +185,7 @@ import_validate_dicom_files_new_2() {
   fi
   
   if [ $dicom_count -eq 0 ]; then
-    log_message "WARNING: No DICOM files found in $dicom_dir"
+    log_message "ERROR: No DICOM files found in $dicom_dir"
     return 1
   fi
   
@@ -206,7 +206,7 @@ import_validate_nifti_files() {
   # Count NIfTI files
   local nifti_count=$(find "$nifti_dir" -type f -name "*.nii.gz" | wc -l)
   if [ "$nifti_count" -eq 0 ]; then
-    log_formatted "WARNING" "No NIfTI files found in $nifti_dir"
+    log_formatted "ERROR" "No NIfTI files found in $nifti_dir"
     return 1
   fi
   
@@ -228,7 +228,7 @@ import_validate_nifti_files() {
     local dims=$(fslinfo "$nifti_file" | grep -E "^dim[1-3]" | awk '{print $2}')
     for dim in $dims; do
       if [ "$dim" -le 1 ]; then
-        log_formatted "WARNING" "$nifti_file has suspicious dimension: $dim"
+        log_formatted "ERROR" "$nifti_file has suspicious dimension: $dim"
         all_valid=false
         break
       fi
@@ -252,13 +252,13 @@ import_validate_nifti_files() {
   shift 3
   local process_args=("$@")
   
-  log_message "Processing all NIfTI files in $input_dir"
+  log_formatted "INFO" "Processing all NIfTI files in $input_dir"
   mkdir -p "$output_dir"
   
   # Find all NIfTI files
   local nifti_files=($(find "$input_dir" -name "*.nii.gz" -type f))
   if [ $nifti_files[@] -eq 0 ]; then
-    log_formatted "WARNING" "No NIfTI files found in $input_dir"
+    log_formatted "ERROR" "No NIfTI files found in $input_dir"
     return 1
   fi
   
@@ -274,7 +274,7 @@ import_validate_nifti_files() {
     
     # Check if processing was successful
     if [ $? -ne 0 ]; then
-      log_formatted "WARNING" "Processing failed for $basename"
+      log_formatted "ERROR" "Processing failed for $basename"
     else
       log_message "Processing complete for $basename"
     fi
@@ -296,7 +296,7 @@ import_dicom_data() {
   
   # Validate DICOM files
   echo "DEBUG: About to call import_validate_dicom_files_new_2" > /dev/stderr
-  import_validate_dicom_files_new_2 "$dicom_dir" "$output_dir"
+  import_validate_dicERRORom_files_new_2 "$dicom_dir" "$output_dir"
   echo "DEBUG: validate_dicom_files COMPLETED" > /dev/stderr
   
   # Extract metadata
