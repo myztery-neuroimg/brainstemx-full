@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+!/usr/bin/env bash
 #
 # default_config.sh - Default configuration for the brain MRI processing pipeline
 #
@@ -10,10 +10,10 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="/Users/davidbrewster/Documents/workspace/2025/brainMRI-ants-e2e-pipeline/DICOM"          # DICOM input directory
+export SRC_DIR="~/Documents/workspace/2025/DICOM"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
-export ANTS_PATH="/Users/davidbrewster/ants"
+export ANTS_PATH="~/ants"
 export PATH="$PATH:${ANTS_PATH}/bin"
 export LOG_DIR="${RESULTS_DIR}/logs"
 export RESULTS_DIR="../mri_results"

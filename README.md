@@ -110,7 +110,7 @@ graph TD
    export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
 
    export RESULTS_DIR="../mri_results"
-   export ANTS_PATH="/Users/davidbrewster/ants"
+   export ANTS_PATH="~/ants"
    ```
 
 ## Usage

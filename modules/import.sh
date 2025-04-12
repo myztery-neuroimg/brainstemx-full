@@ -83,7 +83,7 @@ import_extract_siemens_metadata() {
 
   # Path to the external Python script
   # Updated path to the correct location in the modules directory
-  local python_script="/Users/davidbrewster/Documents/workspace/2025/brainMRI-ants-e2e-pipeline/extract_dicom_metadata.py"
+  local python_script="../extract_dicom_metadata.py"
   if [ ! -f "$python_script" ]; then
     # Try a few other common locations
     log_message "Python script not found at: $python_script, trying alternatives..."

@@ -33,7 +33,7 @@ export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
 
 export RESULTS_DIR="../mri_results"
 mkdir -p "$RESULTS_DIR"
-export ANTS_PATH="/Users/davidbrewster/ants"
+export ANTS_PATH="~/ants"
 export PATH="$PATH:${ANTS_PATH}/bin"
 export LOG_DIR="${RESULTS_DIR}/logs"
 mkdir -p "$LOG_DIR"
