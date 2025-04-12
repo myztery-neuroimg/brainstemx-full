@@ -153,7 +153,7 @@ run_pipeline() {
   
   # Check for GNU parallel
   #check_parallel
-  load_config "/Users/davidbrewster/Documents/workspace/2025/brainMRI-ants-e2e-pipeline/config/default_config.sh" 
+  load_config "config/default_config.sh"
   log_message "Running pipeline for subject $subject_id"
   log_message "Input directory: $input_dir"
   log_message "Output directory: $output_dir"

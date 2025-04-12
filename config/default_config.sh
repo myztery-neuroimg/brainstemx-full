@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="~/Documents/workspace/2025/DICOM"          # DICOM input directory
+export SRC_DIR="~/workspace/DICOM"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
 export ANTS_PATH="~/ants"
@@ -114,7 +114,7 @@ export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM
 # Prioritize sagittal 3D sequences explicitly
 # Super hackery, adjust for yourself.. this works with Siemens scanners which primarily scan in sagital orientation for 3D scans I thiink
 
-export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz"
-export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz"
+export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_.*.nii.gz"
+export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS.*.nii.gz"
 export RESAMPLE_TO_ISOTROPIC=0
 export ISOTROPIC_SPACING=1.0
