@@ -1,4 +1,4 @@
-# MRI ANTs E2E Pipeline
+# MRI Intensity Clustering pipeline
 
 End-to-end pipeline for processing MRI images, with a focus on detailed and adaptable segmentation, hyperintensity detection and clustering in soft tissues regions and sub-regions (exemplory implementation is neurological), easily extendable to other region.
 
