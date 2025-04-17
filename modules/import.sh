@@ -154,11 +154,12 @@ import_convert_dicom_to_nifti() {
 
 # Function to validate DICOM files
 import_validate_dicom_files_new_2() {
-  # Print directly to terminal for debug
-  return 0
+  # Print directly to terminal for debug (early return disabled to allow validation)
+  # return 0
   local dicom_dir="$1"
   local output_dir="$2"
-  export DICOM_PRIMARY_PATTERN='Image"*"'
+  # Use primary pattern from environment (modules/environment.sh)
+  # export DICOM_PRIMARY_PATTERN='Image*'
   local dicom_count=0
   local sample_dicom=""
   log_message "Starting validate_dicom_files_new with directory: $dicom_dir"
@@ -296,7 +297,7 @@ import_dicom_data() {
   
   # Validate DICOM files
   echo "DEBUG: About to call import_validate_dicom_files_new_2" > /dev/stderr
-  import_validate_dicERRORom_files_new_2 "$dicom_dir" "$output_dir"
+  import_validate_dicom_files_new_2 "$dicom_dir" "$output_dir"
   echo "DEBUG: validate_dicom_files COMPLETED" > /dev/stderr
   
   # Extract metadata

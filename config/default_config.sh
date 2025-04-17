@@ -1,4 +1,4 @@
-!/usr/bin/env bash
+#!/usr/bin/env bash
 #
 # default_config.sh - Default configuration for the brain MRI processing pipeline
 #
@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="${HOME}/workspace/DICOM"          # DICOM input directory
+export SRC_DIR="${HOME}/DICOM2"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
 export ANTS_PATH="~/ants"
@@ -107,7 +107,7 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # ------------------------------------------------------------------------------
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)
 # ------------------------------------------------------------------------------
-export DICOM_PRIMARY_PATTERN='Image-[0-9]*'  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
+export DICOM_PRIMARY_PATTERN='IMG*'  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
 # Currently not well implemented
 
 export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"  # Space-separated list of additional patterns to try
