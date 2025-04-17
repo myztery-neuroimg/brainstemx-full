@@ -64,8 +64,8 @@ graph TD
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/(userid)/autoneurosegment
-   cd autoneurosegment
+   git clone https://github.com/myztery-neuroimg/intensityclustering
+   cd intensityclustering
    ```
 
 2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
@@ -73,10 +73,11 @@ graph TD
 3. Make the pipeline script executable:
    ```bash
    chmod +x pipeline.sh
+   chmod +x modules/*.sh
    chmod +x tests/*.sh
    ```
 
-4. Create a python venv and install required packages. I actually recommend to use `uv` instead of `venv` especially to ensure python 3.12
+4. Create a python venv and install required packages. I *strongly* recommend to use `uv` instead of `venv` especially to ensure python 3.12
    ```bash
    python -m venv venv .
    source ./bin/activate
