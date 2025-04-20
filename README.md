@@ -20,6 +20,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 ## Features
 
 - DICOM to NIfTI conversion with metadata extraction
+- Extracts scanner metadata specific to MRI brands (like Siemens, Philips, etc) amd can pick/combine the best slices even..
 - Multi-axial image integration for 2D sequences to NiFTI format
 - N4 bias field correction
 - Brain extraction using ANTs
