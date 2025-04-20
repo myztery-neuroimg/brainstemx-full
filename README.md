@@ -4,6 +4,8 @@ End-to-end pipeline for processing MRI images, with a focus on detailed and adap
 
 Motivation is simply to see AI and computer vision more widely adopted!
 
+![image](https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1)
+
 ## Overview
 
 This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI and any other modalities of MRI images to:
@@ -14,8 +16,6 @@ This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI an
 4. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
 The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing framework, with some additional tools from FSL and Convert3D.
-
-![image](https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1)
 
 ## Features
 
@@ -211,3 +211,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - ChatGPT
 - Gemini 2.0/2.5 Pro + Gemma 3!
 - ITK-SNAP (Convert3D)
+- and more (I'll add them when I can..)
