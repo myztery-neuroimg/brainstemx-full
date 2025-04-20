@@ -34,20 +34,27 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 
 ```mermaid
 graph TD
-    A[Import DICOM Data] --> B[Preprocess Images]
-    A --> B[Combine 2D Ax,Sag,Cor slices to 3D NiFTI]
-    B --> C[Register 3D T2-FLAIR/DWI/SWI/etc against T1]
-    C --> D[Segmentation]
-    D --> E[Detect Hyperintensities]
-    E --> F[Generate Visualizations & Reports]
+    A[pipeline.sh] --> B[modules/environment.sh]
+    A --> C[modules/import.sh: Import DICOM Data]
+    A --> D[modules/preprocess.sh: Preprocessing]
+    A --> E[modules/registration.sh: Register 2D/3D T2-FLAIR/DWI/SWI/etc against T1]
+    E --> F[modules/segmentation.sh: against predefined atlasses or geomorphology]
+    F --> G[modules/analysis.sh: Detect Hyperintensities]
+    F --> H[modules/visualization.sh: Generate Visualizations & Reports]
+    A --> I[modules/qa.sh: Runs continuously against each step]
     
-    QA1[QA: Validate DICOM/NIfTI] --> A
-    QA1.5[QA: Validate 3D NiFTI] --> B
-    QA2[QA: Validate Preprocessing] --> C
-    QA3[QA: Validate Registration] --> D
-    QA4[QA: Validate Segmentation] --> E
-    QA5[QA: Validate Hyperintensities] --> F
-    F --> QA6[QA: Final Report]
+    subgraph "Key Issues"
+        J[Parallel Processing Lost]
+        K[Performance Bottlenecks]
+        L[Module Integration]
+        M[Error Handling]
+    end
+    
+    D -.-> K
+    E -.-> K
+    A -.-> J
+    B -.-> L
+    I -.-> M
 ```
 
 ## Requirements
