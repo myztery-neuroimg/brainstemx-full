@@ -15,6 +15,8 @@ This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI an
 
 The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing framework, with some additional tools from FSL and Convert3D.
 
+![image](https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1)
+
 ## Features
 
 - DICOM to NIfTI conversion with metadata extraction
