@@ -40,7 +40,17 @@ show_help() {
   echo "  -s, --subject ID     Subject ID (default: derived from input directory)"
   echo "  -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)"
   echo "  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM, ORIENTATION_TEST) (default: FULL)"
+  echo "  -t, --start-stage STAGE  Start pipeline from STAGE (default: import)"
   echo "  -h, --help           Show this help message and exit"
+  echo ""
+  echo "Pipeline Stages:"
+  echo "  import: Import and convert DICOM data"
+  echo "  preprocess: Perform bias correction and brain extraction"
+  echo "  registration: Align images to standard space"
+  echo "  segmentation: Extract brainstem and pons regions"
+  echo "  analysis: Detect and analyze hyperintensities"
+  echo "  visualization: Generate visualizations and reports"
+  echo "  tracking: Track pipeline progress"
 }
 
 # Load configuration file
@@ -57,6 +67,41 @@ load_config() {
   fi
 }
 
+# Function to convert stage name to numeric value
+get_stage_number() {
+  local stage_name="$1"
+  local stage_num
+  
+  case "$stage_name" in
+    import|dicom|1)
+      stage_num=1
+      ;;
+    preprocess|preprocessing|pre|2)
+      stage_num=2
+      ;;
+    registration|register|reg|3)
+      stage_num=3
+      ;;
+    segmentation|segment|seg|4)
+      stage_num=4
+      ;;
+    analysis|analyze|5)
+      stage_num=5
+      ;;
+    visualization|visualize|vis|6)
+      stage_num=6
+      ;;
+    tracking|track|progress|7)
+      stage_num=7
+      ;;
+    *)
+      stage_num=0  # Invalid stage
+      ;;
+  esac
+  
+  echo $stage_num
+}
+
 # Parse command line arguments
 parse_arguments() {
   # Default values
@@ -66,6 +111,7 @@ parse_arguments() {
   SUBJECT_ID=""
   QUALITY_PRESET="HIGH"
   PIPELINE_TYPE="FULL"
+  START_STAGE_NAME="import"
   
   # Parse arguments
   while [[ $# -gt 0 ]]; do
@@ -94,6 +140,10 @@ parse_arguments() {
         PIPELINE_TYPE="$2"
         shift 2
         ;;
+      -t|--start-stage)
+        START_STAGE_NAME="$2"
+        shift 2
+        ;;
       -h|--help)
         show_help
         exit 0
@@ -111,12 +161,23 @@ parse_arguments() {
     SUBJECT_ID=$(basename "$SRC_DIR")
   fi
   
+  # Convert stage name to numeric value and validate
+  START_STAGE=$(get_stage_number "$START_STAGE_NAME")
+  if [ "$START_STAGE" -eq 0 ]; then
+    log_error "Invalid start stage: $START_STAGE_NAME" $ERR_INVALID_ARGS
+    log_message "Valid stages: import, preprocess, registration, segmentation, analysis, visualization, tracking"
+    show_help
+    exit 1
+  fi
+  
   # Export variables
   export SRC_DIR
   export RESULTS_DIR
   export SUBJECT_ID
   export QUALITY_PRESET
   export PIPELINE_TYPE
+  export START_STAGE
+  export START_STAGE_NAME
   
   log_message "Arguments parsed: SRC_DIR=$SRC_DIR, RESULTS_DIR=$RESULTS_DIR, SUBJECT_ID=$SUBJECT_ID, QUALITY_PRESET=$QUALITY_PRESET, PIPELINE_TYPE=$PIPELINE_TYPE"
 }
@@ -162,27 +223,62 @@ run_pipeline() {
   create_directories
   
   # Step 1: Import and convert data
-  log_message "Step 1: Importing and converting data"
-  
-  import_dicom_data "$input_dir" "$EXTRACT_DIR"
-  qa_validate_dicom_files "$input_dir" 
-  import_extract_siemens_metadata "$input_dir"
-  qa_validate_nifti_files "$EXTRACT_DIR"
-  import_deduplicate_identical_files "$EXTRACT_DIR"
-  
-  # Validate import step
-  validate_step "Import data" "*.nii.gz" "extracted"
+  if [ $START_STAGE -le 1 ]; then
+    log_message "Step 1: Importing and converting data"
+    
+    import_dicom_data "$input_dir" "$EXTRACT_DIR"
+    qa_validate_dicom_files "$input_dir"
+    import_extract_siemens_metadata "$input_dir"
+    qa_validate_nifti_files "$EXTRACT_DIR"
+    import_deduplicate_identical_files "$EXTRACT_DIR"
+    
+    # Validate import step
+    validate_step "Import data" "*.nii.gz" "extracted"
+  else
+    log_message "Skipping Step 1 (Import and convert data) as requested"
+    log_message "Checking if import data exists..."
+    
+    # Check if essential directories and files exist to continue
+    if [ ! -d "$EXTRACT_DIR" ] || [ $(find "$EXTRACT_DIR" -name "*.nii.gz" | wc -l) -eq 0 ]; then
+      log_error "Import data is missing. Cannot skip Step 1." $ERR_DATA_MISSING
+      return $ERR_DATA_MISSING
+    fi
+    
+    log_message "Import data exists, continuing from Step $START_STAGE"
+  fi
   
   
   # Step 2: Preprocessing
-  log_message "Step 2: Preprocessing"
+  if [ $START_STAGE -le 2 ]; then
+    log_message "Step 2: Preprocessing"
+    
+    # Find T1 and FLAIR files
+    # Use simple glob patterns that work reliably with find
+    export T1_PRIORITY_PATTERN="${T1_PRIORITY_PATTERN:-T1_MPRAGE_SAG_*.nii.gz}"
+    export FLAIR_PRIORITY_PATTERN="${FLAIR_PRIORITY_PATTERN:-T2_SPACE_FLAIR_Sag_CS_*.nii.gz}"
+    
+    log_message "Using T1 pattern: $T1_PRIORITY_PATTERN"
+    log_message "Using FLAIR pattern: $FLAIR_PRIORITY_PATTERN"
   
-  # Find T1 and FLAIR files
-  export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz"
-  export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz"
-
-  local t1_file=$(find "$EXTRACT_DIR" -name "${T1_PRIORITY_PATTERN}" | head -1)
-  local flair_file=$(find "$EXTRACT_DIR" -name "${FLAIR_PRIORITY_PATTERN}" | head -1)
+    # Log before finding files
+    log_message "Looking for T1 files in: $EXTRACT_DIR"
+    log_message "Available files in extract dir:"
+    ls -la "$EXTRACT_DIR"
+    
+    # Use simple shell globbing for more reliable file matching
+    local t1_file=$(find "$EXTRACT_DIR" -name "T1_MPRAGE_SAG_*.nii.gz" | head -1)
+    local flair_file=$(find "$EXTRACT_DIR" -name "T2_SPACE_FLAIR_Sag_CS_*.nii.gz" | head -1)
+    
+    # If not found with specific pattern, try more general patterns
+    if [ -z "$t1_file" ]; then
+      log_message "T1 not found with specific pattern, trying more general search"
+      t1_file=$(find "$EXTRACT_DIR" -name "T1_*.nii.gz" | head -1)
+    fi
+    
+    if [ -z "$flair_file" ]; then
+      log_message "FLAIR not found with specific pattern, trying more general search"
+      flair_file=$(find "$EXTRACT_DIR" -name "*FLAIR*.nii.gz" | head -1)
+    fi
   
   if [ -z "$t1_file" ]; then
     log_error "T1 file not found in $EXTRACT_DIR" $ERR_DATA_MISSING
@@ -288,13 +384,33 @@ run_pipeline() {
   # Validate standardization step
   validate_step "Standardize dimensions" "$(basename "$t1_std"),$(basename "$flair_std")" "standardized"
   
-  # Step 3: Registration
-  log_message "Step 3: Registration"
+  # Launch visual QA for brain extraction (non-blocking)
+  launch_visual_qa "$t1_std" "$t1_brain" ":colormap=heat:opacity=0.5" "brain-extraction" "sagittal"
   
-  # Create output directory for registration
-  local reg_dir=$(create_module_dir "registered")
-  local reg_prefix="${reg_dir}/t1_to_flair"
-  local validation_dir="${reg_prefix}_validation"
+  fi  # End of Preprocessing (Step 2)
+  
+  # Step 3: Registration
+  if [ $START_STAGE -le 3 ]; then
+    log_message "Step 3: Registration"
+    
+    # If we're skipping previous steps, we need to find the standardized files
+    if [ $START_STAGE -eq 3 ]; then
+      log_message "Looking for standardized files..."
+      t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
+      flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+      
+      if [ -z "$t1_std" ] || [ -z "$flair_std" ]; then
+        log_error "Standardized data is missing. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+        return $ERR_DATA_MISSING
+      fi
+      
+      log_message "Found standardized data:"
+      log_message "T1: $t1_std"
+      log_message "FLAIR: $flair_std"
+    fi
+    
+    # Create output directory for registration
+    local reg_dir=$(create_module_dir "registered")
   
   # Check if we should use orientation-preserving registration
   if [ "${ORIENTATION_PRESERVATION_ENABLED}" = "true" ]; then
@@ -347,11 +463,34 @@ run_pipeline() {
      register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
   fi
   
-  # Update file paths
-  flair_registered="${reg_prefix}Warped.nii.gz"
+  # Determine whether to use automatic multi-modality registration
+  if [ "${AUTO_REGISTER_ALL_MODALITIES:-false}" = "true" ]; then
+    log_message "Performing automatic registration of all modalities to T1"
+    register_all_modalities "$t1_std" "$(get_module_dir "standardized")" "$reg_dir"
+    
+    # Find the registered FLAIR file for downstream processing
+    local flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" | head -1)
+    if [ -z "$flair_registered" ]; then
+      log_formatted "WARNING" "No registered FLAIR found after multi-modality registration. Using original FLAIR."
+      # Fall back to standard FLAIR registration
+      local reg_prefix="${reg_dir}/t1_to_flair"
+      register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+      flair_registered="${reg_prefix}Warped.nii.gz"
+    else
+      log_message "Using automatically registered FLAIR: $flair_registered"
+    fi
+  else
+    # Traditional single-modality (FLAIR) registration
+    local reg_prefix="${reg_dir}/t1_to_flair"
+    register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+    flair_registered="${reg_prefix}Warped.nii.gz"
+  fi
   
   # Validate registration step
   validate_step "Registration" "t1_to_flairWarped.nii.gz" "registered"
+  
+  # Launch visual QA for registration (non-blocking)
+  launch_visual_qa "$t1_std" "$flair_registered" ":colormap=heat:opacity=0.5" "registration" "axial"
   
   # Create registration visualizations
   local validation_dir=$(create_module_dir "validation/registration")
@@ -359,41 +498,131 @@ run_pipeline() {
   
   # Validate visualization step
   validate_step "Registration visualizations" "*.png,quality.txt" "validation/registration"
+else
+  log_message "Skipping Step 3 (Registration) as requested"
+  log_message "Checking if standardized data exists..."
   
-  # Step 4: Segmentation
+  # Initialize variables for other stages to use
+  t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
+  flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+  
+  if [ -z "$t1_std" ] || [ -z "$flair_std" ]; then
+    log_error "Standardized data is missing. Cannot skip to Stage $START_STAGE." $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
+  
+  log_message "Found standardized data:"
+  log_message "T1: $t1_std"
+  log_message "FLAIR: $flair_std"
+fi  # End of Registration (Step 3)
+  
+# Step 4: Segmentation
+if [ $START_STAGE -le 4 ]; then
   log_message "Step 4: Segmentation"
   
   # Create output directories for segmentation
   local brainstem_dir=$(create_module_dir "segmentation/brainstem")
   local pons_dir=$(create_module_dir "segmentation/pons")
   
-  # Extract brainstem
+  log_message "Attempting all available segmentation methods..."
+  
+  # Use the comprehensive method that tries all approaches
+  extract_brainstem_final "$t1_std"
+  
+  # Get output files (should have been created by extract_brainstem_final)
   local brainstem_output=$(get_output_path "segmentation/brainstem" "${subject_id}" "_brainstem")
-  extract_brainstem_ants "$t1_std" "$brainstem_output"
-  
-  # Validate brainstem extraction
-  validate_step "Brainstem extraction" "${subject_id}_brainstem.nii.gz" "segmentation/brainstem"
-  
-  # Extract pons from brainstem
   local pons_output=$(get_output_path "segmentation/pons" "${subject_id}" "_pons")
-  extract_pons_from_brainstem "$brainstem_output" "$pons_output"
-  
-  # Validate pons extraction
-  validate_step "Pons extraction" "${subject_id}_pons.nii.gz" "segmentation/pons"
-  
-  # Divide pons into dorsal and ventral regions
   local dorsal_pons=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
   local ventral_pons=$(get_output_path "segmentation/pons" "${subject_id}" "_ventral_pons")
-  divide_pons "$pons_output" "$dorsal_pons" "$ventral_pons"
+  
+  # Validate files exist
+  log_message "Validating output files exist..."
+  [ ! -f "$brainstem_output" ] && log_formatted "WARNING" "Brainstem file not found: $brainstem_output"
+  [ ! -f "$pons_output" ] && log_formatted "WARNING" "Pons file not found: $pons_output"
+  [ ! -f "$dorsal_pons" ] && log_formatted "WARNING" "Dorsal pons file not found: $dorsal_pons"
+  [ ! -f "$ventral_pons" ] && log_formatted "WARNING" "Ventral pons file not found: $ventral_pons"
   
   # Validate dorsal/ventral division
-  validate_step "Pons division" "${subject_id}_dorsal_pons.nii.gz,${subject_id}_ventral_pons.nii.gz" "segmentation/pons"
+  validate_step "Segmentation" "${subject_id}_dorsal_pons.nii.gz,${subject_id}_ventral_pons.nii.gz" "segmentation/pons"
+
+  # Launch visual QA for brainstem segmentation (non-blocking)
+  launch_visual_qa "$t1_std" "$brainstem_output" ":colormap=heat:opacity=0.5" "brainstem-segmentation" "coronal"
+else
+  log_message "Skipping Step 4 (Segmentation) as requested"
+  log_message "Checking if registration data exists..."
   
-  # Validate segmentation
-  validate_segmentation "$t1_std" "$brainstem_output" "$pons_output" "$dorsal_pons" "$ventral_pons"
+  # Check if essential files exist to continue
+  local reg_dir=$(get_module_dir "registered")
+  if [ ! -d "$reg_dir" ] || [ $(find "$reg_dir" -name "*Warped.nii.gz" | wc -l) -eq 0 ]; then
+    log_error "Registration data is missing. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
   
-  # Step 5: Analysis
+  # Find the registered FLAIR file
+  flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" | head -1)
+  if [ -z "$flair_registered" ]; then
+    flair_registered=$(find "$reg_dir" -name "t1_to_flairWarped.nii.gz" | head -1)
+  fi
+  
+  if [ -z "$flair_registered" ]; then
+    log_error "Registered FLAIR not found. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
+  
+  log_message "Found registered data: $flair_registered"
+fi  # End of Segmentation (Step 4)
+  
+# Step 5: Analysis
+if [ $START_STAGE -le 5 ]; then
   log_message "Step 5: Analysis"
+  
+  # Initialize registered directory if we're starting from this stage
+  local reg_dir=$(get_module_dir "registered")
+  if [ ! -d "$reg_dir" ]; then
+    log_message "Creating registered directory..."
+    reg_dir=$(create_module_dir "registered")
+  fi
+  
+  # Find the registered FLAIR file if we're starting from this stage
+  if [ $START_STAGE -eq 5 ]; then
+    log_message "Looking for registered FLAIR file..."
+    flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" | head -1)
+    if [ -z "$flair_registered" ]; then
+      flair_registered=$(find "$reg_dir" -name "t1_to_flairWarped.nii.gz" | head -1)
+    fi
+    
+    # Also need to find the dorsal pons file
+    dorsal_pons=$(find "$RESULTS_DIR/segmentation/pons" -name "*dorsal_pons.nii.gz" | head -1)
+    
+    if [ -z "$flair_registered" ]; then
+      log_formatted "WARNING" "No registered FLAIR found. Will register now."
+      # If we skipped registration but have T1 and FLAIR, we can register now
+      if [ -n "$t1_std" ] && [ -n "$flair_std" ] && [ -n "$dorsal_pons" ]; then
+        local reg_prefix="${reg_dir}/t1_to_flair"
+        register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+        flair_registered="${reg_prefix}Warped.nii.gz"
+      else
+        log_error "Cannot find or create registered FLAIR file" $ERR_DATA_MISSING
+        return $ERR_DATA_MISSING
+      fi
+    fi
+    
+    log_message "Using registered FLAIR: $flair_registered"
+    log_message "Using dorsal pons: $dorsal_pons"
+  fi
+  
+  # Ensure flair_registered is defined and exists before proceeding
+  if [ -z "${flair_registered:-}" ]; then
+      log_formatted "WARNING" "flair_registered variable not defined, searching for it now"
+      flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)
+      
+      if [ -z "$flair_registered" ]; then
+          log_error "Cannot find registered FLAIR file in $reg_dir" $ERR_DATA_MISSING
+          return $ERR_DATA_MISSING
+      fi
+      
+      log_message "Found registered FLAIR: $flair_registered"
+  fi
   
   # Register FLAIR to dorsal pons
   local dorsal_pons_reg_prefix="${reg_dir}/${subject_id}_dorsal_pons"
@@ -413,7 +642,32 @@ run_pipeline() {
   # Validate hyperintensities detection
   validate_step "Hyperintensity detection" "${subject_id}_dorsal_pons*.nii.gz" "hyperintensities"
   
-  # Step 6: Visualization
+  # Launch visual QA for hyperintensity detection (non-blocking)
+  launch_visual_qa "$flair_dorsal_pons" "${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}.nii.gz" ":colormap=heat:opacity=0.7" "hyperintensity-detection" "axial"
+else
+  log_message "Skipping Step 5 (Analysis) as requested"
+  log_message "Checking if segmentation data exists..."
+  
+  # Check if essential files exist to continue
+  local segmentation_dir="$RESULTS_DIR/segmentation"
+  if [ ! -d "$segmentation_dir" ]; then
+    log_error "Segmentation data is missing. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
+  
+  # Find key segmentation files
+  dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons.nii.gz" | head -1)
+  
+  if [ -z "$dorsal_pons" ]; then
+    log_error "Dorsal pons segmentation not found. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
+  
+  log_message "Found segmentation data: $dorsal_pons"
+fi  # End of Analysis (Step 5)
+  
+# Step 6: Visualization
+if [ $START_STAGE -le 6 ]; then
   log_message "Step 6: Visualization"
   
   # Generate QC visualizations
@@ -425,10 +679,27 @@ run_pipeline() {
   
   # Generate HTML report
   generate_html_report "$subject_id" "$RESULTS_DIR"
+else
+  log_message "Skipping Step 6 (Visualization) as requested"
+  log_message "Checking if hyperintensity data exists..."
   
-  # Step 7: Track pipeline progress
+  # Check if essential files exist to continue
+  local hyperintensities_dir="$RESULTS_DIR/hyperintensities"
+  if [ ! -d "$hyperintensities_dir" ]; then
+    log_error "Hyperintensity data is missing. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
+  
+  log_message "Found hyperintensity data directory: $hyperintensities_dir"
+fi  # End of Visualization (Step 6)
+  
+# Step 7: Track pipeline progress
+if [ $START_STAGE -le 7 ]; then
   log_message "Step 7: Tracking pipeline progress"
   track_pipeline_progress "$subject_id" "$RESULTS_DIR"
+else
+  log_message "Skipping Step 7 (Pipeline progress tracking) as requested"
+fi
   
   log_message "Pipeline completed successfully for subject $subject_id"
   return 0
@@ -574,7 +845,9 @@ run_pipeline_batch() {
         dorsal_pons_vol=$(fslstats "$dorsal_pons_file" -V | awk '{print $1}')
       fi
       
-      local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_dorsal_pons_thresh2.0")
+      # Use the configured threshold from config instead of hardcoded 2.0
+      local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+      local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_dorsal_pons_thresh${threshold_multiplier}")
       if [ -f "$hyperintensity_file" ]; then
         hyperintensity_vol=$(fslstats "$hyperintensity_file" -V | awk '{print $1}')
         
