@@ -39,7 +39,7 @@ show_help() {
   echo "  -o, --output DIR     Output directory (default: ../mri_results)"
   echo "  -s, --subject ID     Subject ID (default: derived from input directory)"
   echo "  -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)"
-  echo "  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)"
+  echo "  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM, ORIENTATION_TEST) (default: FULL)"
   echo "  -h, --help           Show this help message and exit"
 }
 
@@ -294,8 +294,58 @@ run_pipeline() {
   # Create output directory for registration
   local reg_dir=$(create_module_dir "registered")
   local reg_prefix="${reg_dir}/t1_to_flair"
+  local validation_dir="${reg_prefix}_validation"
   
-  register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+  # Check if we should use orientation-preserving registration
+  if [ "${ORIENTATION_PRESERVATION_ENABLED}" = "true" ]; then
+     log_message "Using orientation-preserving registration for better anatomical accuracy"
+     
+     # Check if we have a brainstem mask already (from previous run or pre-defined masks)
+     local existing_brainstem=$(find "$RESULTS_DIR/segmentation/brainstem" -name "*brainstem.nii.gz" | head -1)
+     
+     if [ -n "$existing_brainstem" ]; then
+        # Use anatomically-constrained registration with brainstem mask
+        log_message "Using anatomically-constrained registration with brainstem mask"
+        register_with_anatomical_constraints "$t1_std" "$flair_std" "$reg_prefix" "$existing_brainstem"
+     else
+        # Use topology-preserving registration without mask
+        log_message "Using topology-preserving registration"
+        register_with_topology_preservation "$t1_std" "$flair_std" "$reg_prefix"
+     fi
+     
+     # Validate and potentially correct registration result
+     validate_transformation "$t1_std" "$flair_std" "${reg_prefix}Warped.nii.gz" "$reg_prefix"
+     
+     # Get orientation metrics
+     local orientation_metrics=$(calculate_orientation_metrics "$t1_std" "${reg_prefix}Warped.nii.gz" "${validation_dir}/orientation")
+     local orient_mean_dev="$orientation_metrics"
+     
+     log_message "Orientation mean deviation: $orient_mean_dev radians"
+     
+     # If mean orientation deviation is high, apply correction
+     if (( $(echo "$orient_mean_dev > $ORIENTATION_CORRECTION_THRESHOLD" | bc -l) )); then
+        log_formatted "WARNING" "High orientation deviation detected ($orient_mean_dev > $ORIENTATION_CORRECTION_THRESHOLD), applying correction"
+        # Find the transform file
+        local transform="${reg_prefix}0GenericAffine.mat"
+        if [ -f "$transform" ]; then
+           # Apply correction
+           correct_orientation_distortion "$t1_std" "${reg_prefix}Warped.nii.gz" "$transform" "${reg_prefix}Corrected.nii.gz"
+           
+           # If correction succeeded, update registered image
+           if [ -f "${reg_prefix}Corrected.nii.gz" ]; then
+              mv "${reg_prefix}Warped.nii.gz" "${reg_prefix}Warped_original.nii.gz"
+              mv "${reg_prefix}Corrected.nii.gz" "${reg_prefix}Warped.nii.gz"
+              log_message "Orientation-corrected image is now the primary registered image"
+           fi
+        else
+           log_formatted "WARNING" "Transform file not found for correction: $transform"
+        fi
+     fi
+  else
+     # Use original registration method
+     log_message "Using standard registration (orientation preservation disabled)"
+     register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+  fi
   
   # Update file paths
   flair_registered="${reg_prefix}Warped.nii.gz"
@@ -544,6 +594,93 @@ run_pipeline_batch() {
   return 0
 }
 
+# Function to test orientation preservation functionality
+test_orientation_preservation() {
+  log_message "Testing orientation preservation and correction functionality"
+  
+  # Create test directories
+  local test_dir="${RESULTS_DIR}/orientation_test"
+  mkdir -p "$test_dir"
+  local validation_dir="${test_dir}/validation"
+  mkdir -p "$validation_dir"
+  
+  # Find T1 and FLAIR files (assuming they exist in the extract directory)
+  local t1_file=$(find "$EXTRACT_DIR" -name "*T1*.nii.gz" | head -1)
+  local flair_file=$(find "$EXTRACT_DIR" -name "*FLAIR*.nii.gz" | head -1)
+  
+  if [ -z "$t1_file" ] || [ -z "$flair_file" ]; then
+    log_error "Test requires T1 and FLAIR files in $EXTRACT_DIR" $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
+  fi
+  
+  log_message "Using T1: $t1_file"
+  log_message "Using FLAIR: $flair_file"
+  
+  # Test both registration approaches for comparison
+  log_message "Running standard registration for comparison"
+  local std_reg_prefix="${test_dir}/standard_reg"
+  register_t2_flair_to_t1mprage "$t1_file" "$flair_file" "$std_reg_prefix"
+  
+  log_message "Running topology-preserving registration"
+  local topo_reg_prefix="${test_dir}/topo_reg"
+  register_with_topology_preservation "$t1_file" "$flair_file" "$topo_reg_prefix"
+  
+  log_message "Running anatomically-constrained registration"
+  local anat_reg_prefix="${test_dir}/anat_reg"
+  register_with_anatomical_constraints "$t1_file" "$flair_file" "$anat_reg_prefix"
+  
+  # Calculate orientation metrics for all approaches
+  log_message "Calculating orientation metrics for comparison"
+  local std_metrics=$(calculate_orientation_metrics "$t1_file" "${std_reg_prefix}Warped.nii.gz" "${validation_dir}/standard")
+  local topo_metrics=$(calculate_orientation_metrics "$t1_file" "${topo_reg_prefix}Warped.nii.gz" "${validation_dir}/topology")
+  local anat_metrics=$(calculate_orientation_metrics "$t1_file" "${anat_reg_prefix}Warped.nii.gz" "${validation_dir}/anatomical")
+  
+  # Apply orientation correction to standard registration
+  log_message "Testing orientation correction on standard registration"
+  local transform="${std_reg_prefix}0GenericAffine.mat"
+  correct_orientation_distortion "$t1_file" "${std_reg_prefix}Warped.nii.gz" "$transform" "${std_reg_prefix}Corrected.nii.gz"
+  
+  # Calculate metrics after correction
+  local corrected_metrics=$(calculate_orientation_metrics "$t1_file" "${std_reg_prefix}Corrected.nii.gz" "${validation_dir}/corrected")
+  
+  # Analyze shearing for all approaches
+  log_message "Analyzing shearing distortion for all approaches"
+  analyze_shearing_distortion "$t1_file" "${std_reg_prefix}Warped.nii.gz" "${validation_dir}/standard"
+  analyze_shearing_distortion "$t1_file" "${topo_reg_prefix}Warped.nii.gz" "${validation_dir}/topology"
+  analyze_shearing_distortion "$t1_file" "${anat_reg_prefix}Warped.nii.gz" "${validation_dir}/anatomical"
+  analyze_shearing_distortion "$t1_file" "${std_reg_prefix}Corrected.nii.gz" "${validation_dir}/corrected"
+  
+  # Generate comparative report
+  {
+    echo "Orientation Preservation Test Results"
+    echo "===================================="
+    echo ""
+    echo "Standard Registration Mean Angular Deviation: $std_metrics"
+    echo "Topology-Preserving Registration Mean Angular Deviation: $topo_metrics"
+    echo "Anatomically-Constrained Registration Mean Angular Deviation: $anat_metrics"
+    echo "Corrected Registration Mean Angular Deviation: $corrected_metrics"
+    echo ""
+    echo "Configuration Parameters:"
+    echo "  TOPOLOGY_CONSTRAINT_WEIGHT: $TOPOLOGY_CONSTRAINT_WEIGHT"
+    echo "  TOPOLOGY_CONSTRAINT_FIELD: $TOPOLOGY_CONSTRAINT_FIELD"
+    echo "  JACOBIAN_REGULARIZATION_WEIGHT: $JACOBIAN_REGULARIZATION_WEIGHT"
+    echo "  REGULARIZATION_GRADIENT_FIELD_WEIGHT: $REGULARIZATION_GRADIENT_FIELD_WEIGHT"
+    echo "  ORIENTATION_CORRECTION_THRESHOLD: $ORIENTATION_CORRECTION_THRESHOLD"
+    echo "  ORIENTATION_SCALING_FACTOR: $ORIENTATION_SCALING_FACTOR"
+    echo "  ORIENTATION_SMOOTH_SIGMA: $ORIENTATION_SMOOTH_SIGMA"
+    echo ""
+    echo "Improvement Metrics:"
+    echo "  Standard to Topology: $(echo "$std_metrics - $topo_metrics" | bc -l)"
+    echo "  Standard to Anatomical: $(echo "$std_metrics - $anat_metrics" | bc -l)"
+    echo "  Standard to Corrected: $(echo "$std_metrics - $corrected_metrics" | bc -l)"
+    echo ""
+    echo "Test completed: $(date)"
+  } > "${test_dir}/orientation_test_report.txt"
+  
+  log_message "Orientation preservation test completed. Report available at: ${test_dir}/orientation_test_report.txt"
+  return 0
+}
+
 # Main function
 main() {
   # Parse command line arguments
@@ -574,6 +711,18 @@ main() {
     
     run_pipeline_batch "$SUBJECT_LIST" "$SRC_DIR" "$RESULTS_DIR"
     status=$?
+  elif [ "$PIPELINE_TYPE" = "ORIENTATION_TEST" ]; then
+    # Run the orientation preservation test
+    log_message "Running orientation preservation test mode"
+    
+    # Create basic directories needed for testing
+    create_directories
+    
+    # Run the test function
+    test_orientation_preservation
+    status=$?
+    
+    log_message "Orientation test completed with status $status"
   else
     run_pipeline
     status=$?
@@ -587,6 +736,9 @@ main() {
   log_message "Pipeline completed successfully"
   return 0
 }
+
+# Export functions
+export -f test_orientation_preservation
 
 # Run main function with all arguments
 main "$@"

@@ -101,13 +101,58 @@ export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
 export N4_PRESET_HIGH="100x100x100x50,0.0000001,300,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
 
-# Set default N4_PARAMS by QUALITY_PRESET
+# Set default parameters by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "HIGH" ]; then
+    # N4 bias field correction parameters
     export N4_PARAMS="$N4_PRESET_HIGH"
+    
+    # Orientation preservation parameters for HIGH quality (strict preservation)
+    export ORIENTATION_PRESERVATION_ENABLED=true
+    export TOPOLOGY_CONSTRAINT_WEIGHT=0.5
+    export TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
+    export JACOBIAN_REGULARIZATION_WEIGHT=1.0
+    export REGULARIZATION_GRADIENT_FIELD_WEIGHT=0.5
+    export ORIENTATION_CORRECTION_THRESHOLD=0.25  # Stricter threshold
+    export ORIENTATION_SCALING_FACTOR=0.05
+    export ORIENTATION_SMOOTH_SIGMA=1.0
+    export ORIENTATION_EXCELLENT_THRESHOLD=0.08
+    export ORIENTATION_GOOD_THRESHOLD=0.15
+    export ORIENTATION_ACCEPTABLE_THRESHOLD=0.25
+    export SHEARING_DETECTION_THRESHOLD=0.04
 elif [ "$QUALITY_PRESET" = "MEDIUM" ]; then
+    # N4 bias field correction parameters
     export N4_PARAMS="$N4_PRESET_MEDIUM"
+    
+    # Orientation preservation parameters for MEDIUM quality (balanced)
+    export ORIENTATION_PRESERVATION_ENABLED=true
+    export TOPOLOGY_CONSTRAINT_WEIGHT=0.3
+    export TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
+    export JACOBIAN_REGULARIZATION_WEIGHT=0.7
+    export REGULARIZATION_GRADIENT_FIELD_WEIGHT=0.3
+    export ORIENTATION_CORRECTION_THRESHOLD=0.3
+    export ORIENTATION_SCALING_FACTOR=0.03
+    export ORIENTATION_SMOOTH_SIGMA=1.5
+    export ORIENTATION_EXCELLENT_THRESHOLD=0.1
+    export ORIENTATION_GOOD_THRESHOLD=0.2
+    export ORIENTATION_ACCEPTABLE_THRESHOLD=0.3
+    export SHEARING_DETECTION_THRESHOLD=0.05
 else
+    # N4 bias field correction parameters for LOW quality
     export N4_PARAMS="$N4_PRESET_LOW"
+    
+    # Orientation preservation parameters for LOW quality (faster processing)
+    export ORIENTATION_PRESERVATION_ENABLED=false  # Disable for faster processing
+    export TOPOLOGY_CONSTRAINT_WEIGHT=0.2
+    export TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
+    export JACOBIAN_REGULARIZATION_WEIGHT=0.5
+    export REGULARIZATION_GRADIENT_FIELD_WEIGHT=0.2
+    export ORIENTATION_CORRECTION_THRESHOLD=0.4  # Less strict threshold
+    export ORIENTATION_SCALING_FACTOR=0.02
+    export ORIENTATION_SMOOTH_SIGMA=2.0
+    export ORIENTATION_EXCELLENT_THRESHOLD=0.15
+    export ORIENTATION_GOOD_THRESHOLD=0.3
+    export ORIENTATION_ACCEPTABLE_THRESHOLD=0.4
+    export SHEARING_DETECTION_THRESHOLD=0.1
 fi
 
 # Parse out the fields for general sequences
