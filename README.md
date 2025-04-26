@@ -3,6 +3,7 @@
 BrainStem X is an end-to-end pipeline designed for precise analysis of the brainstem and pons - critical neuroanatomical regions that traditional neuroimaging pipelines often handle poorly. This pipeline addresses the unique challenges of brainstem imaging with:
 
 - **Multi-modal integration** across T1/T2/FLAIR/SWI/DWI sequences with cross-modality anomaly detection
+- **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences). N4 bias field correction algorithm is a popular method for correcting low frequency intensity non-uniformity present in MRI image data.
 - **Precise orientation preservation** critical for analyzing directionally sensitive brainstem microstructure
 - **Real-time cluster analysis** that identifies signal anomalies without manual segmentation bias
 - **Multiple fallback methods** ensuring robust results even with suboptimal input data
