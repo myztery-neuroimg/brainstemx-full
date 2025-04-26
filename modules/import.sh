@@ -9,14 +9,73 @@
 # - Deduplication
 #
 unset import_deduplicate_identical_files
-unset import_extract_siemens_metadata
+unset import_extract_metadata
 unset import_convert_dicom_to_nifti
 unset import_validate_dicom_files_new_2
 unset import_validate_nifti_files
 unset import_process_all_nifti_files_in_dir
 unset import_import_dicom_data
 export RESULTS_DIR="../mri_results"
-set -x 
+
+# Source the DICOM analysis module with improved error handling
+log_message "Attempting to load dicom_analysis.sh module"
+DICOM_ANALYSIS_LOADED=false
+
+# First try to find the module
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+MODULE_PATHS=(
+  "${SCRIPT_DIR}/dicom_analysis.sh"
+  "./src/modules/dicom_analysis.sh"
+  "../src/modules/dicom_analysis.sh"
+  "./modules/dicom_analysis.sh"
+  "../modules/dicom_analysis.sh"
+)
+
+# Also source vendor-specific import module
+VENDOR_MODULE="${SCRIPT_DIR}/import_vendor_specific.sh"
+if [ -f "$VENDOR_MODULE" ]; then
+  log_message "Loading vendor-specific import module from $VENDOR_MODULE"
+  source "$VENDOR_MODULE"
+else
+  log_formatted "WARNING" "Vendor-specific import module not found: $VENDOR_MODULE"
+fi
+
+# Source the import_extract_metadata.sh module
+EXTRACT_MODULE="${SCRIPT_DIR}/import_extract_metadata.sh"
+if [ -f "$EXTRACT_MODULE" ]; then
+  log_message "Loading metadata extraction module from $EXTRACT_MODULE"
+  source "$EXTRACT_MODULE"
+else
+  log_formatted "WARNING" "Metadata extraction module not found: $EXTRACT_MODULE"
+fi
+
+for path in "${MODULE_PATHS[@]}"; do
+  if [ -f "$path" ]; then
+    log_message "Found dicom_analysis.sh at: $path"
+    if source "$path"; then
+      log_message "Successfully loaded DICOM analysis module from $path"
+      DICOM_ANALYSIS_LOADED=true
+      break
+    else
+      log_formatted "WARNING" "Found but failed to source dicom_analysis.sh from $path"
+    fi
+  fi
+done
+
+if [ "$DICOM_ANALYSIS_LOADED" = false ]; then
+  log_formatted "WARNING" "Could not load dicom_analysis.sh module - using fallback implementations"
+  
+  # Provide minimal implementations of key functions for fallback
+  extract_scanner_metadata() {
+    local dicom_file="$1"
+    local output_dir="$2"
+    log_formatted "WARNING" "Using fallback extract_scanner_metadata implementation"
+    mkdir -p "$output_dir"
+    echo "{\"manufacturer\":\"Unknown\",\"fieldStrength\":3,\"modelName\":\"Unknown\",\"source\":\"fallback\"}" > "$output_dir/scanner_params.json"
+    return 0
+  }
+  export -f extract_scanner_metadata
+fi
 # Function to deduplicate identical files
 import_deduplicate_identical_files() {
   local dir="$1"
@@ -139,14 +198,113 @@ import_convert_dicom_to_nifti() {
   local default_options="-z y -f %p_%s -o"
   local cmd_options="$default_options"
   
-  # Run dcm2niix
-  log_message "Running: dcm2niix $cmd_options $output_dir $dicom_dir" 
+  # Before conversion, count actual DICOM files using all patterns
+  local total_dicom_files=0
+  # First try primary pattern
+  local primary_count=$(find "$dicom_dir" -type f -name "${DICOM_PRIMARY_PATTERN}" 2>/dev/null | wc -l)
+  total_dicom_files=$primary_count
+  
+  # If primary pattern doesn't find anything, try alternative patterns
+  if [ $total_dicom_files -eq 0 ]; then
+    log_message "No files found with primary pattern, trying alternative patterns..."
+    for pattern in ${DICOM_ADDITIONAL_PATTERNS:-"*.dcm IM* Image* *.[0-9][0-9][0-9][0-9] DICOM*"}; do
+      local pattern_count=$(find "$dicom_dir" -type f -name "$pattern" 2>/dev/null | wc -l)
+      total_dicom_files=$((total_dicom_files + pattern_count))
+    done
+  fi
+  
+  log_message "Total DICOM files found: $total_dicom_files"
 
-  # Run dcm2niix
-  dcm2niix -z y -f "%p_%s" -o "$output_dir" "$dicom_dir"
+  # Check if dcm2niix supports the exact_values flag
+  local supports_exact_values=false
+  if dcm2niix -h 2>&1 | grep -q "exact_values"; then
+    supports_exact_values=true
+    log_message "dcm2niix supports exact_values flag, will use for better slice handling"
+  else
+    log_message "dcm2niix does not support exact_values flag, using standard conversion"
+  fi
+
+  # Analyze DICOM headers using the vendor-agnostic module
+  local sample_file=$(find "$dicom_dir" -type f -name "${DICOM_PRIMARY_PATTERN}" | head -1)
+  local conversion_options=""
+  
+  if [ -n "$sample_file" ]; then
+    log_message "Performing vendor-agnostic DICOM header analysis"
+    
+    if type analyze_dicom_header &>/dev/null; then
+      # Use the new module functions if available
+      analyze_dicom_header "$sample_file" "${LOG_DIR}/dicom_header_analysis.txt"
+      
+      # Check for empty fields that might cause grouping issues
+      if type check_empty_dicom_fields &>/dev/null; then
+        check_empty_dicom_fields "$sample_file"
+      fi
+      
+      # Detect scanner manufacturer and get appropriate conversion options
+      if type detect_scanner_manufacturer &>/dev/null && type get_conversion_recommendations &>/dev/null; then
+        local manufacturer=$(detect_scanner_manufacturer "$sample_file")
+        log_message "Detected scanner manufacturer: $manufacturer"
+        
+        conversion_options=$(get_conversion_recommendations "$manufacturer")
+        log_message "Using recommended conversion options for $manufacturer: $conversion_options"
+      fi
+    else
+      # Fallback to basic inspection if module functions not available
+      log_message "DICOM analysis module not loaded, using basic inspection"
+      if command -v dcmdump &>/dev/null; then
+        log_message "Examining DICOM header fields:"
+        dcmdump "$sample_file" | grep -E "(Series|Acquisition|Instance|Study)" | tee -a "$LOG_FILE"
+      else
+        log_message "dcmdump not available, skipping header inspection"
+      fi
+    fi
+  fi
+
+  # Run dcm2niix with appropriate options
+  if $supports_exact_values; then
+    if [ -n "$conversion_options" ]; then
+      log_message "Running dcm2niix with vendor-specific options: $conversion_options"
+      dcm2niix -z y -f "%p_%s" $conversion_options -o "$output_dir" "$dicom_dir"
+    else
+      log_message "Running dcm2niix with exact_values flag to prevent incorrect grouping of slices"
+      dcm2niix -z y -f "%p_%s" --exact_values 1 -o "$output_dir" "$dicom_dir"
+    fi
+  else
+    log_message "Running standard dcm2niix conversion"
+    dcm2niix -z y -f "%p_%s" -o "$output_dir" "$dicom_dir"
+  fi
+  
   local exit_code=$?
   if [ $exit_code -ne 0 ]; then
     log_formatted "ERROR" "dcm2niix had issues (exit code $exit_code)"
+  fi
+
+  # After conversion, count resulting files and check for missing data
+  local converted_files=$(find "$output_dir" -type f -name "*.nii.gz" | wc -l)
+  log_message "Total NIfTI files created: $converted_files"
+
+  # Check for discrepancies and provide detailed analysis
+  local expected_ratio=0
+  
+  # Calculate expected slices per volume based on common MRI protocols
+  if [ $total_dicom_files -gt 100 ]; then
+    # Probably 3D acquisition - many slices per volume
+    expected_ratio=100
+  else
+    # Probably 2D acquisition - fewer slices per volume
+    expected_ratio=30
+  fi
+  
+  # Compare actual vs expected ratio
+  if (( total_dicom_files > converted_files * $expected_ratio )); then
+    log_formatted "WARNING" "Significant mismatch between DICOM inputs ($total_dicom_files) and NIfTI outputs ($converted_files) - possible data loss"
+    log_formatted "WARNING" "This may indicate that empty header fields are causing improper slice grouping"
+    log_formatted "WARNING" "Consider using a different DICOM conversion tool or manually inspecting the data"
+  elif (( total_dicom_files > converted_files * 10 )); then
+    log_formatted "INFO" "Moderate mismatch between DICOM inputs ($total_dicom_files) and NIfTI outputs ($converted_files)"
+    log_formatted "INFO" "This is expected for 3D acquisitions but verify outputs are complete"
+  else
+    log_formatted "SUCCESS" "Conversion ratio within expected range: $total_dicom_files DICOM files → $converted_files NIfTI files"
   fi
 
   log_message "DICOM to NIfTI conversion complete"
@@ -289,9 +447,9 @@ import_dicom_data() {
   log_message "DEBUG: validate_dicom_files COMPLETED" 
   
   # Extract metadata
-  log_message "DEBUG: About to call extract_siemens_metadata" 
-  import_extract_siemens_metadata "$dicom_dir"
-  log_message j"DEBUG: extract_siemens_metadata COMPLETED" 
+  log_message "DEBUG: About to call extract_metadata"
+  import_extract_metadata "$dicom_dir"
+  log_message "DEBUG: extract_metadata COMPLETED"
   log_message "DEBUG: About to call convert_dicom_to_nifti" 
   
   # Convert DICOM to NIfTI
@@ -309,7 +467,7 @@ import_dicom_data() {
 
 # Export functions
 export -f import_deduplicate_identical_files
-export -f import_extract_siemens_metadata
+export -f import_extract_metadata
 export -f import_convert_dicom_to_nifti
 export -f import_validate_dicom_files_new_2
 export -f import_validate_nifti_files
