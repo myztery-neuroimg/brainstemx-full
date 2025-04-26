@@ -576,4 +576,98 @@ export -f generate_qc_visualizations
 export -f create_multi_threshold_overlays
 export -f generate_html_report
 
+# Function to launch visual QA in freeview without blocking pipeline execution
+launch_visual_qa() {
+    local image="$1"
+    local overlay="$2"
+    local overlay_options="$3"
+    local stage="$4"
+    local viewport="${5:-axial}"
+    
+    # Skip visual QA if disabled
+    if [ "${SKIP_VISUALIZATION:-false}" = "true" ]; then
+        log_message "Visual QA skipped (SKIP_VISUALIZATION=true)"
+        return 0
+    fi
+    
+    # Create a QA folder to store scripts instead of running freeview directly
+    local qa_dir="${RESULTS_DIR}/qa_scripts"
+    mkdir -p "$qa_dir"
+    
+    # Create script that will be run manually later
+    local script_file="${qa_dir}/qa_${stage}.sh"
+    echo "#!/bin/bash" > "$script_file"
+    echo "# Visual QA script for $stage" >> "$script_file"
+    
+    # Check if image exists before adding to command
+    if [ -n "$image" ] && [ -f "$image" ]; then
+        local freeview_cmd="freeview \"$image\""
+        
+        # Only add overlay if it exists
+        if [ -n "$overlay" ] && [ -f "$overlay" ]; then
+            freeview_cmd="$freeview_cmd -v \"$overlay\" $overlay_options"
+        fi
+        
+        freeview_cmd="$freeview_cmd -viewport $viewport"
+        echo "$freeview_cmd" >> "$script_file"
+    else
+        echo "echo \"Error: Image file not found: $image\"" >> "$script_file"
+        echo "exit 1" >> "$script_file"
+    fi
+    
+    # Make script executable
+    chmod +x "$script_file"
+    
+    log_message "Visual QA script created: $script_file (run manually to view)"
+    
+    # Display guidance for the specific stage
+    echo ""
+    echo "===== VISUAL QA GUIDANCE - $stage ====="
+    
+    case "$stage" in
+        "brain-extraction")
+            echo "Please check in freeview that:"
+            echo "1. The brain extraction is complete (whole brain is included)"
+            echo "2. No non-brain tissue (skull, neck, eyes) is included"
+            echo "3. The brainstem is completely included"
+            echo "4. The cerebellum is completely included"
+            ;;
+        "registration")
+            echo "Please check in freeview that:"
+            echo "1. The FLAIR is properly aligned with the T1"
+            echo "2. Edges of brain structures align between modalities"
+            echo "3. Ventricles are properly aligned"
+            echo "4. No apparent distortion or stretching is visible"
+            ;;
+        "brainstem-segmentation")
+            echo "Please check in freeview that:"
+            echo "1. The brainstem segmentation includes the entire brainstem"
+            echo "2. The pons is correctly identified (middle part of brainstem)"
+            echo "3. The dorsal/ventral division follows anatomical boundaries"
+            echo "4. No obvious errors in segmentation boundaries"
+            ;;
+        "hyperintensity-detection")
+            echo "Please check in freeview that:"
+            echo "1. Detected hyperintensities correspond to legitimate signal anomalies"
+            echo "2. The threshold appears appropriate (not too many false positives)"
+            echo "3. Hyperintensities are within the dorsal pons region"
+            echo "4. No obvious artifacts are labeled as hyperintensities"
+            ;;
+        *)
+            echo "Please review the results in freeview"
+            ;;
+    esac
+    
+    echo ""
+    echo "The pipeline will continue processing in the background."
+    echo "You can close freeview when done with visual inspection."
+    echo "==============================================="
+    echo ""
+    
+    # Continue processing - don't block the pipeline
+    return 0
+}
+
+export -f launch_visual_qa
+
 log_message "Visualization module loaded"
