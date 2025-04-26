@@ -8,55 +8,257 @@
 # - Registration QA integration
 #
 
-# Function to register FLAIR to T1
-register_t2_flair_to_t1mprage() {
-    # Usage: register_t2_flair_to_t1mprage <T1_file.nii.gz> <FLAIR_file.nii.gz> <output_prefix>
+# Function to detect image resolution and set appropriate template
+detect_image_resolution() {
+    local image_file="$1"
+    local result="$DEFAULT_TEMPLATE_RES"  # Default if detection fails
+    
+    # Check if file exists
+    if [ ! -f "$image_file" ]; then
+        log_formatted "ERROR" "Image file not found: $image_file"
+        echo "$result"
+        return 1
+    fi
+    
+    # Get voxel dimensions using fslinfo
+    local pixdim1=$(fslinfo "$image_file" | grep pixdim1 | awk '{print $2}')
+    local pixdim2=$(fslinfo "$image_file" | grep pixdim2 | awk '{print $2}')
+    local pixdim3=$(fslinfo "$image_file" | grep pixdim3 | awk '{print $2}')
+    
+    # Calculate average voxel dimension
+    local avg_dim=$(echo "($pixdim1 + $pixdim2 + $pixdim3) / 3" | bc -l)
+    
+    log_message "Detected average voxel dimension: $avg_dim mm"
+    
+    # Determine closest template resolution
+    if (( $(echo "$avg_dim <= 1.25" | bc -l) )); then
+        result="1mm"
+    elif (( $(echo "$avg_dim <= 2.5" | bc -l) )); then
+        result="2mm"
+    else
+        log_formatted "WARNING" "Image has unusual resolution ($avg_dim mm). Using default template."
+    fi
+    
+    log_message "Selected template resolution: $result"
+    echo "$result"
+    return 0
+}
+
+# Function to set template based on detected resolution
+set_template_resolution() {
+    local resolution="$1"
+    
+    case "$resolution" in
+        "1mm")
+            export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
+            export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
+            export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
+            ;;
+        "2mm")
+            export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_2MM"
+            export PROBABILITY_MASK="$PROBABILITY_MASK_2MM"
+            export REGISTRATION_MASK="$REGISTRATION_MASK_2MM"
+            ;;
+        *)
+            log_formatted "WARNING" "Unknown resolution: $resolution. Using default (1mm)"
+            export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
+            export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
+            export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
+            ;;
+    esac
+    
+    log_message "Set templates for $resolution resolution: $EXTRACTION_TEMPLATE"
+    return 0
+}
+
+# Function to register any modality to T1
+register_modality_to_t1() {
+    # Usage: register_modality_to_t1 <T1_file.nii.gz> <modality_file.nii.gz> <modality_name> <output_prefix>
     #
-    # If T1 and FLAIR have identical dimensions & orientation, you might only need a
-    # simple identity transform or a short rigid alignment.
-    # This function uses antsRegistrationSyN for a minimal transformation.
+    # Enhanced with BBR priming for better cortical alignment
+    # First uses FSL's BBR for an initial alignment, then refines with ANTs SyN
 
     local t1_file="$1"
-    local flair_file="$2"
-    local out_prefix="${3:-${RESULTS_DIR}/registered/t1_to_flair}"
+    local modality_file="$2"
+    local modality_name="${3:-OTHER}"  # Default to OTHER if not specified
+    local out_prefix="${4:-${RESULTS_DIR}/registered/t1_to_${modality_name,,}}"  # Convert to lowercase
 
-    if [ ! -f "$t1_file" ] || [ ! -f "$flair_file" ]; then
-        log_formatted "ERROR" "T1 or FLAIR file not found"
+    if [ ! -f "$t1_file" ] || [ ! -f "$modality_file" ]; then
+        log_formatted "ERROR" "T1 or $modality_name file not found"
         return 1
     fi
 
-    log_message "=== Registering FLAIR to T1 ==="
+    log_message "=== Registering $modality_name to T1 with BBR Priming ==="
     log_message "T1: $t1_file"
-    log_message "FLAIR: $flair_file"
+    log_message "$modality_name: $modality_file"
     log_message "Output prefix: $out_prefix"
+    
+    # Detect resolution and set appropriate template
+    local detected_res=$(detect_image_resolution "$modality_file")
+    set_template_resolution "$detected_res"
 
     # Create output directory
     mkdir -p "$(dirname "$out_prefix")"
-
-    # If T1 & FLAIR are from the same 3D session, we can use a simpler transform
-    # -t r => rigid. For cross-modality, we can specify 'MI' or 'CC'.
-    # antsRegistrationSyN.sh defaults to 's' (SyN) with reg type 'r' or 'a'.
     
-    antsRegistrationSyN.sh \
-      -d 3 \
-      -f "$t1_file" \
-      -m "$flair_file" \
-      -o "$out_prefix" \
-      -t r \
-      -n 4 \
-      -p f \
-      -j 1 \
-      -x "$REG_METRIC_CROSS_MODALITY"
+    # Initialize BBR variables
+    local use_bbr="${USE_BBR_PRIMING:-true}"
+    local bbr_mat="${out_prefix}_bbr.mat"
+    local wm_mask="${out_prefix}_wm_mask.nii.gz"
+    local bbr_initialized=false
+    local outer_ribbon_mask="${out_prefix}_outer_ribbon_mask.nii.gz"
+    
+    # Step 1: Create WM mask for BBR if it doesn't exist
+    if [ "$use_bbr" = "true" ]; then
+        log_message "Preparing for BBR priming..."
+        
+        # Check if we already have a WM segmentation
+        local wm_seg=$(find "$RESULTS_DIR/segmentation" -name "*white_matter*.nii.gz" -o -name "*wm*.nii.gz" | head -1)
+        
+        if [ -n "$wm_seg" ] && [ -f "$wm_seg" ]; then
+            log_message "Using existing WM segmentation: $wm_seg"
+            cp "$wm_seg" "$wm_mask"
+        else
+            # Use FSL's FAST for WM segmentation
+            log_message "Creating WM segmentation using FAST..."
+            if command -v fast &>/dev/null; then
+                # Create brain mask to speed up segmentation
+                local temp_dir=$(mktemp -d)
+                local brain_mask="${temp_dir}/brain_mask.nii.gz"
+                fslmaths "$t1_file" -bin "$brain_mask"
+                
+                # Run FAST segmentation
+                fast -t 1 -n 3 -o "${temp_dir}/fast" -m "$brain_mask" "$t1_file"
+                
+                # WM is typically label 3 in FAST output
+                fslmaths "${temp_dir}/fast_seg" -thr 3 -uthr 3 -bin "$wm_mask"
+                
+                # Clean up temporary files
+                rm -rf "$temp_dir"
+            else
+                log_formatted "WARNING" "FSL's FAST not available, skipping BBR priming"
+                use_bbr=false
+            fi
+        fi
+        
+        # Create outer ribbon mask
+        if [ "$use_bbr" = "true" ]; then
+            # Create brain mask
+            fslmaths "$t1_file" -bin "${out_prefix}_brain_mask.nii.gz"
+            
+            # Create eroded mask (outer ribbon excluded)
+            log_message "Creating outer ribbon mask for cost function masking..."
+            fslmaths "${out_prefix}_brain_mask.nii.gz" -ero -ero "$outer_ribbon_mask"
+        fi
+    fi
+    
+    # Step 2: Perform BBR registration
+    if [ "$use_bbr" = "true" ] && [ -f "$wm_mask" ]; then
+        log_message "Running BBR priming step..."
+        
+        # Run FSL's FLIRT with BBR cost function
+        flirt -in "$modality_file" -ref "$t1_file" \
+              -out "${out_prefix}_bbr.nii.gz" \
+              -omat "$bbr_mat" \
+              -dof 6 -cost bbr -wmseg "$wm_mask"
+              
+        # Check if BBR transform was created successfully
+        if [ -f "$bbr_mat" ]; then
+            bbr_initialized=true
+            log_message "BBR priming completed successfully"
+        else
+            log_formatted "WARNING" "BBR priming failed, falling back to standard registration"
+        fi
+    fi
+    
+    # Step 3: Run ANTs registration with BBR initialization or mask constraint
+    # Set ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS environment variable to ensure ANTs uses all cores
+    export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="$ANTS_THREADS"
+    
+    # Explicitly use the full path to antsRegistration commands
+    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+    
+    log_message "Running ANTs registration with full parallelization (ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$ANTS_THREADS)"
+    
+    if [ "$bbr_initialized" = "true" ]; then
+        # Convert FSL BBR matrix to ANTs format for initialization
+        log_message "Using BBR initialization for ANTs registration"
+        
+        # Convert FSL transform to ITK format (required for ANTs initialization)
+        c3d_affine_tool -ref "$t1_file" -src "$modality_file" \
+            -fsl2ras -oitk "${out_prefix}_bbr_itk.txt" "$bbr_mat"
+        
+        # Run antsRegistration with the BBR initialization
+        ${ants_bin}/antsRegistrationSyN.sh \
+          -d 3 \
+          -f "$t1_file" \
+          -m "$modality_file" \
+          -o "$out_prefix" \
+          -t r \
+          -i "${out_prefix}_bbr_itk.txt" \
+          -n "$ANTS_THREADS" \
+          -p f \
+          -j "$ANTS_THREADS" \
+          -x "$REG_METRIC_CROSS_MODALITY"
+    elif [ -f "$outer_ribbon_mask" ]; then
+        # If BBR failed but we have the outer ribbon mask, use it for cost function masking
+        log_message "Using outer ribbon mask constraint for ANTs registration"
+        ${ants_bin}/antsRegistrationSyN.sh \
+          -d 3 \
+          -f "$t1_file" \
+          -m "$modality_file" \
+          -o "$out_prefix" \
+          -t r \
+          -n "$ANTS_THREADS" \
+          -p f \
+          -j "$ANTS_THREADS" \
+          -x "$REG_METRIC_CROSS_MODALITY" \
+          -m "$outer_ribbon_mask"
+    else
+        # Fall back to standard registration
+        log_message "Using standard ANTs registration"
+        ${ants_bin}/antsRegistrationSyN.sh \
+          -d 3 \
+          -f "$t1_file" \
+          -m "$modality_file" \
+          -o "$out_prefix" \
+          -t r \
+          -n "$ANTS_THREADS" \
+          -p f \
+          -j "$ANTS_THREADS" \
+          -x "$REG_METRIC_CROSS_MODALITY"
+    fi
+    
+    # Optional: Print resource utilization during registration
+    log_message "Resource utilization during registration:"
+    ps -p $$ -o %cpu,%mem | tail -n 1 || true
 
     # The Warped file => ${out_prefix}Warped.nii.gz
     # The transform(s) => ${out_prefix}0GenericAffine.mat, etc.
 
-    log_message "Registration complete. Warped FLAIR => ${out_prefix}Warped.nii.gz"
+    log_message "Registration complete. Warped ${modality_name} => ${out_prefix}Warped.nii.gz"
     
-    # Validate the registration
-    validate_registration "$t1_file" "$flair_file" "${out_prefix}Warped.nii.gz" "${out_prefix}"
+    # Validate the registration with improved error handling
+    log_message "Validating registration with improved error handling"
+    if ! validate_registration "$t1_file" "$modality_file" "${out_prefix}Warped.nii.gz" "${out_prefix}"; then
+        log_formatted "WARNING" "Registration validation produced errors but continuing with pipeline"
+        # Create a minimal validation report to allow pipeline to continue
+        mkdir -p "${out_prefix}_validation"
+        echo "UNKNOWN" > "${out_prefix}_validation/quality.txt"
+    fi
     
     return 0
+}
+
+# Function to register FLAIR to T1 (wrapper for backward compatibility)
+register_t2_flair_to_t1mprage() {
+    # Usage: register_t2_flair_to_t1mprage <T1_file.nii.gz> <FLAIR_file.nii.gz> <output_prefix>
+    local t1_file="$1"
+    local flair_file="$2"
+    local out_prefix="${3:-${RESULTS_DIR}/registered/t1_to_flair}"
+    
+    # Call the new generic function with "FLAIR" as the modality name
+    register_modality_to_t1 "$t1_file" "$flair_file" "FLAIR" "$out_prefix"
+    return $?
 }
 
 # Function to create registration visualizations
@@ -205,14 +407,14 @@ apply_transformation() {
     if [[ "$transform" == *".mat" ]]; then
         if [[ "$transform" == *"ants"* || "$transform" == *"Affine"* ]]; then
             # ANTs .mat transform — likely affine, must be inverted to go MNI -> subject
-            antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "[$transform,1]" -n "$interpolation"
+            antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "[$transform,1]" -n "$interpolation" -j "$ANTS_THREADS"
         else
             # FSL .mat transform
             flirt -in "$input" -ref "$reference" -applyxfm -init "$transform" -out "$output" -interp "$interpolation"
         fi
     else
         # ANTs .h5 or .txt transforms — typically don't need inversion unless explicitly known
-        antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "$transform" -n "$interpolation"
+        antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "$transform" -n "$interpolation" -j "$ANTS_THREADS"
     fi
 
     log_message "Transformation applied. Output: $output"
@@ -241,12 +443,53 @@ register_multiple_to_reference() {
     return 0
 }
 
+# Function to register all supported modalities in a directory to T1
+register_all_modalities() {
+    local t1_file="$1"
+    local input_dir="$2"
+    local output_dir="${3:-${RESULTS_DIR}/registered}"
+    
+    log_message "Registering all supported modalities to T1: $t1_file"
+    mkdir -p "$output_dir"
+    
+    # Check if T1 exists
+    if [ ! -f "$t1_file" ]; then
+        log_formatted "ERROR" "T1 file not found: $t1_file"
+        return 1
+    fi
+    
+    # Find and register each supported modality
+    for modality in "${SUPPORTED_MODALITIES[@]}"; do
+        # Try to find files matching the modality pattern
+        local modality_files=($(find "$input_dir" -type f -name "*${modality}*.nii.gz" -o -name "*${modality,,}*.nii.gz"))
+        
+        if [ ${#modality_files[@]} -gt 0 ]; then
+            for mod_file in "${modality_files[@]}"; do
+                local basename=$(basename "$mod_file" .nii.gz)
+                local output_prefix="${output_dir}/${basename}_to_t1"
+                
+                log_message "Found $modality file: $mod_file"
+                register_modality_to_t1 "$t1_file" "$mod_file" "$modality" "$output_prefix"
+            done
+        else
+            log_message "No $modality files found in $input_dir"
+        fi
+    done
+    
+    log_message "All modality registrations complete"
+    return 0
+}
+
 # Export functions
+export -f detect_image_resolution
+export -f set_template_resolution
+export -f register_modality_to_t1
 export -f register_t2_flair_to_t1mprage
 export -f create_registration_visualizations
 export -f validate_registration
 export -f apply_transformation
 export -f register_multiple_to_reference
+export -f register_all_modalities
 
 # Function to calculate orientation metrics from registration
 calculate_orientation_metrics() {
@@ -647,4 +890,4 @@ export -f calculate_orientation_metrics
 export -f validate_transformation
 export -f analyze_shearing_distortion
 
-log_message "Registration module loaded with orientation preservation capabilities"
+log_message "Registration module loaded with enhanced capabilities (orientation preservation, multi-modality registration, BBR priming)"

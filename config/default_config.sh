@@ -13,8 +13,10 @@
 export SRC_DIR="${HOME}/workspace-priv/DiCOM"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
-export ANTS_PATH="~/ants"
-export PATH="$PATH:${ANTS_PATH}/bin"
+# ANTs configuration
+export ANTS_PATH="/opt/ants"  # Base ANTs installation directory
+export ANTS_BIN="${ANTS_PATH}/bin"  # Directory containing ANTs binaries
+export PATH="$PATH:${ANTS_BIN}"
 export LOG_DIR="${RESULTS_DIR}/logs"
 export RESULTS_DIR="../mri_results"
 # ------------------------------------------------------------------------------
@@ -68,13 +70,17 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 
 # Registration & motion correction
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
-export REG_METRIC_CROSS_MODALITY="MI"
-export REG_METRIC_SAME_MODALITY="CC"
-export ANTS_THREADS=8
-export REG_PRECISION=1
+export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
+export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
+export ANTS_THREADS=8                 # Number of threads for ANTs processing
+export REG_PRECISION=1                 # Registration precision (higher = more accurate but slower)
+
+# ANTs specific parameters - if not set, ANTs will use defaults
+# export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
+# export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
 
 # Hyperintensity detection
-export HRESHOLD_WM_SD_MULTIPLIER=1.5 #Standard devications from local norm
+export THRESHOLD_WM_SD_MULTIPLIER=1.5 #Standard deviations from local norm
 export MIN_HYPERINTENSITY_SIZE=2
 
 # Tissue segmentation parameters
@@ -93,13 +99,32 @@ export C3D_PADDING_MM=5
 
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
-  log_formatted "WARNING" "FSLDIR not set. Template references may fail."
+  log_formatted "WARNING" "FSLDIR not set. Using default paths for templates."
+  export TEMPLATE_DIR="/usr/local/fsl/data/standard"
+  # Don't exit - allow pipeline to continue with default paths
 else
   export TEMPLATE_DIR="${FSLDIR}/data/standard"
 fi
-export EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
-export PROBABILITY_MASK="MNI152_T1_1mm_brain_mask.nii.gz"
-export  REGISTRATION_MASK="MNI152_T1_1mm_brain_mask_dil.nii.gz"
+# Template resolutions - these can be automatically selected based on input resolution
+export TEMPLATE_RESOLUTIONS=("1mm" "2mm")
+export DEFAULT_TEMPLATE_RES="1mm"
+
+# Templates for different resolutions
+export EXTRACTION_TEMPLATE_1MM="MNI152_T1_1mm.nii.gz"
+export PROBABILITY_MASK_1MM="MNI152_T1_1mm_brain_mask.nii.gz"
+export REGISTRATION_MASK_1MM="MNI152_T1_1mm_brain_mask_dil.nii.gz"
+
+export EXTRACTION_TEMPLATE_2MM="MNI152_T1_2mm.nii.gz"
+export PROBABILITY_MASK_2MM="MNI152_T1_2mm_brain_mask.nii.gz"
+export REGISTRATION_MASK_2MM="MNI152_T1_2mm_brain_mask_dil.nii.gz"
+
+# Set initial defaults (will be updated based on detected image resolution)
+export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
+export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
+export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
+
+# Supported modalities for registration to T1
+export SUPPORTED_MODALITIES=("FLAIR" "T2" "SWI" "DWI" "TLE")
 
 # Batch processing parameters
 export  SUBJECT_LIST=""  # Path to subject list file for batch processing
@@ -107,17 +132,36 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # ------------------------------------------------------------------------------
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)
 # ------------------------------------------------------------------------------
+# DICOM pattern configuration for different scanner manufacturers
 export DICOM_PRIMARY_PATTERN='Image*'  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
-# Currently not well implemented
 
-export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"  # Space-separated list of additional patterns to try
-# Prioritize sagittal 3D sequences explicitly
-# Super hackery, adjust for yourself.. this works with Siemens scanners which primarily scan in sagital orientation for 3D scans I thiink
+# Space-separated list of additional patterns to try for different vendors:
+# - *.dcm: Standard DICOM extension (all vendors)
+# - IM_*: Philips format
+# - Image*: Siemens format
+# - *.[0-9][0-9][0-9][0-9]: Numbered format (GE and others)
+# - DICOM*: Generic DICOM prefix
+export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM*"
+
+# Prioritize sagittal 3D sequences - these patterns match Siemens file naming conventions
+# after DICOM to NIfTI conversion with dcm2niix
 
 export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_.*.nii.gz"
 export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS.*.nii.gz"
 export RESAMPLE_TO_ISOTROPIC=0
 export ISOTROPIC_SPACING=1.0
+
+# Advanced registration options
+
+# Auto-register all modalities to T1 (if false, only FLAIR is registered)
+export AUTO_REGISTER_ALL_MODALITIES=false
+
+# Auto-detect resolution and use appropriate template
+# When true, the pipeline will select between 1mm and 2mm templates based on input image resolution
+export AUTO_DETECT_RESOLUTION=true
+
+# Additional vendor-specific optimizations are applied automatically
+# based on the metadata extracted during import (field strength, manufacturer, model)
 
 # ------------------------------------------------------------------------------
 # Orientation Preservation Configuration
