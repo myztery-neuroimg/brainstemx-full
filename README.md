@@ -1,4 +1,4 @@
-# Brainstem/Pons-specific Neuroradiology multi-modal (T1/T2/FLAIR/SWI/DWI) MRI intensity anomaly and clustering
+# Brainstem/Pons-specific Neuroradiology multi-modal (T1/T2/FLAIR/SWI/DWI) MRI signal-intensity anomaly clustering
 
 End-to-end pipeline for processing MRI images, with a focus on detailed and adaptable segmentation, hyperintensity detection and clustering in neurological "difficult to get" spots like the brainstem and pons.
 
