@@ -248,4 +248,403 @@ export -f validate_registration
 export -f apply_transformation
 export -f register_multiple_to_reference
 
-log_message "Registration module loaded"
+# Function to calculate orientation metrics from registration
+calculate_orientation_metrics() {
+    local fixed="$1"
+    local warped="$2"
+    local output_dir="${3:-${RESULTS_DIR}/validation/orientation}"
+    
+    log_message "Calculating orientation metrics"
+    mkdir -p "$output_dir"
+    
+    # Create temporary directory
+    local temp_dir=$(mktemp -d)
+    
+    # Calculate gradient fields
+    fslmaths "$fixed" -gradient_x "${temp_dir}/fixed_grad_x.nii.gz"
+    fslmaths "$fixed" -gradient_y "${temp_dir}/fixed_grad_y.nii.gz"
+    fslmaths "$fixed" -gradient_z "${temp_dir}/fixed_grad_z.nii.gz"
+    
+    fslmaths "$warped" -gradient_x "${temp_dir}/warped_grad_x.nii.gz"
+    fslmaths "$warped" -gradient_y "${temp_dir}/warped_grad_y.nii.gz"
+    fslmaths "$warped" -gradient_z "${temp_dir}/warped_grad_z.nii.gz"
+    
+    # Calculate angles between gradient vectors
+    local orient_mean_dev=$(python -c "
+import numpy as np
+import nibabel as nib
+
+# Load gradient fields
+fx = nib.load('${temp_dir}/fixed_grad_x.nii.gz').get_fdata()
+fy = nib.load('${temp_dir}/fixed_grad_y.nii.gz').get_fdata()
+fz = nib.load('${temp_dir}/fixed_grad_z.nii.gz').get_fdata()
+
+wx = nib.load('${temp_dir}/warped_grad_x.nii.gz').get_fdata()
+wy = nib.load('${temp_dir}/warped_grad_y.nii.gz').get_fdata()
+wz = nib.load('${temp_dir}/warped_grad_z.nii.gz').get_fdata()
+
+# Create vector fields
+fixed_vec = np.stack([fx, fy, fz], axis=-1)
+warped_vec = np.stack([wx, wy, wz], axis=-1)
+
+# Calculate magnitudes
+fixed_mag = np.sqrt(np.sum(fixed_vec**2, axis=-1))
+warped_mag = np.sqrt(np.sum(warped_vec**2, axis=-1))
+
+# Create mask for valid vectors (non-zero magnitude)
+mask = (fixed_mag > 0.01) & (warped_mag > 0.01)
+
+# Normalize vectors
+fixed_norm = fixed_vec.copy()
+warped_norm = warped_vec.copy()
+
+for i in range(3):
+    fixed_norm[..., i] = np.divide(fixed_vec[..., i], fixed_mag, where=mask)
+    warped_norm[..., i] = np.divide(warped_vec[..., i], warped_mag, where=mask)
+
+# Calculate dot product
+dot_product = np.sum(fixed_norm * warped_norm, axis=-1)
+dot_product = np.clip(dot_product, -1.0, 1.0)  # Ensure in valid range for arccos
+
+# Calculate angle in radians
+angles = np.arccos(dot_product)
+
+# Calculate mean angular deviation (in masked region)
+mean_dev = np.mean(angles[mask])
+print(f'{mean_dev:.6f}')
+")
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    # Return metrics as comma-separated values
+    echo "${orient_mean_dev}"
+}
+
+# Function to register with topology preservation
+register_with_topology_preservation() {
+    local fixed="$1"
+    local moving="$2"
+    local output_prefix="$3"
+    
+    log_message "Performing topology-preserving registration with parameters from config"
+    
+    # Use ANTs SyN with topology preservation parameter
+    antsRegistration --dimensionality 3 \
+      --float 1 \
+      --output [$output_prefix,${output_prefix}Warped.nii.gz] \
+      --interpolation Linear \
+      --use-histogram-matching 1 \
+      --winsorize-image-intensities [0.005,0.995] \
+      --initial-moving-transform [$fixed,$moving,1] \
+      --transform Rigid[0.1] \
+      --metric MI[$fixed,$moving,1,32,Regular,0.25] \
+      --convergence [1000x500x250x100,1e-6,10] \
+      --shrink-factors 8x4x2x1 \
+      --smoothing-sigmas 3x2x1x0vox \
+      --transform Affine[0.1] \
+      --metric MI[$fixed,$moving,1,32,Regular,0.25] \
+      --convergence [1000x500x250x100,1e-6,10] \
+      --shrink-factors 8x4x2x1 \
+      --smoothing-sigmas 3x2x1x0vox \
+      --transform SyN[0.1,3,0] \
+      --restrict-deformation ${TOPOLOGY_CONSTRAINT_FIELD} \
+      --metric CC[$fixed,$moving,1,4] \
+      --convergence [100x70x50x20,1e-6,10] \
+      --shrink-factors 8x4x2x1 \
+      --smoothing-sigmas 3x2x1x0vox
+      
+    return $?
+}
+
+# Function to register with anatomical constraints
+register_with_anatomical_constraints() {
+    local fixed="$1"
+    local moving="$2"
+    local output_prefix="$3"
+    local brainstem_mask="$4"  # Optional mask for constraint
+    
+    log_message "Performing anatomically-constrained registration with parameters from config"
+    
+    # Create directional gradient maps to capture anatomical orientation
+    local temp_dir=$(mktemp -d)
+    
+    # Create orientation priors (principal direction field)
+    fslmaths "$fixed" -gradient_x "${temp_dir}/fixed_grad_x.nii.gz"
+    fslmaths "$fixed" -gradient_y "${temp_dir}/fixed_grad_y.nii.gz"
+    fslmaths "$fixed" -gradient_z "${temp_dir}/fixed_grad_z.nii.gz"
+    
+    # Create orientation constraint field
+    if [ -n "$brainstem_mask" ] && [ -f "$brainstem_mask" ]; then
+        # Apply mask to gradients
+        fslmaths "${temp_dir}/fixed_grad_x.nii.gz" -mas "$brainstem_mask" "${temp_dir}/fixed_orient_x.nii.gz"
+        fslmaths "${temp_dir}/fixed_grad_y.nii.gz" -mas "$brainstem_mask" "${temp_dir}/fixed_orient_y.nii.gz"
+        fslmaths "${temp_dir}/fixed_grad_z.nii.gz" -mas "$brainstem_mask" "${temp_dir}/fixed_orient_z.nii.gz"
+        
+        # Create vector field for constraint
+        fslmerge -t "${temp_dir}/orientation_field.nii.gz" \
+                 "${temp_dir}/fixed_orient_x.nii.gz" \
+                 "${temp_dir}/fixed_orient_y.nii.gz" \
+                 "${temp_dir}/fixed_orient_z.nii.gz"
+                 
+        # Use ANTs with orientation constraints via the jacobian regularization parameter
+        antsRegistration --dimensionality 3 \
+          --float 1 \
+          --output [$output_prefix,${output_prefix}Warped.nii.gz] \
+          --interpolation Linear \
+          --use-histogram-matching 1 \
+          --winsorize-image-intensities [0.005,0.995] \
+          --initial-moving-transform [$fixed,$moving,1] \
+          --transform Rigid[0.1] \
+          --metric MI[$fixed,$moving,1,32,Regular,0.25] \
+          --convergence [1000x500x250x100,1e-6,10] \
+          --shrink-factors 8x4x2x1 \
+          --smoothing-sigmas 3x2x1x0vox \
+          --transform Affine[0.1] \
+          --metric MI[$fixed,$moving,1,32,Regular,0.25] \
+          --convergence [1000x500x250x100,1e-6,10] \
+          --shrink-factors 8x4x2x1 \
+          --smoothing-sigmas 3x2x1x0vox \
+          --transform SyN[0.1,3,0] \
+          --jacobian-regularization ${JACOBIAN_REGULARIZATION_WEIGHT} \
+          --regularization-weight ${TOPOLOGY_CONSTRAINT_WEIGHT} \
+          --metric CC[$fixed,$moving,1,4] \
+          --metric PSE[$fixed,$moving,${temp_dir}/orientation_field.nii.gz,${REGULARIZATION_GRADIENT_FIELD_WEIGHT},4] \
+          --convergence [100x70x50x20,1e-6,10] \
+          --shrink-factors 8x4x2x1 \
+          --smoothing-sigmas 3x2x1x0vox
+    else
+        # If no mask provided, use whole-brain constraint with heavier regularization
+        antsRegistration --dimensionality 3 \
+          --float 1 \
+          --output [$output_prefix,${output_prefix}Warped.nii.gz] \
+          --interpolation Linear \
+          --use-histogram-matching 1 \
+          --winsorize-image-intensities [0.005,0.995] \
+          --initial-moving-transform [$fixed,$moving,1] \
+          --transform Rigid[0.1] \
+          --metric MI[$fixed,$moving,1,32,Regular,0.25] \
+          --convergence [1000x500x250x100,1e-6,10] \
+          --shrink-factors 8x4x2x1 \
+          --smoothing-sigmas 3x2x1x0vox \
+          --transform Affine[0.1] \
+          --metric MI[$fixed,$moving,1,32,Regular,0.25] \
+          --convergence [1000x500x250x100,1e-6,10] \
+          --shrink-factors 8x4x2x1 \
+          --smoothing-sigmas 3x2x1x0vox \
+          --transform SyN[0.1,3,0] \
+          --jacobian-regularization ${JACOBIAN_REGULARIZATION_WEIGHT} \
+          --regularization-weight ${TOPOLOGY_CONSTRAINT_WEIGHT} \
+          --metric CC[$fixed,$moving,1,4] \
+          --convergence [100x70x50x20,1e-6,10] \
+          --shrink-factors 8x4x2x1 \
+          --smoothing-sigmas 3x2x1x0vox
+    fi
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    return $?
+}
+
+# Function to correct orientation distortion
+correct_orientation_distortion() {
+    local fixed="$1"
+    local warped="$2"
+    local transform="$3"
+    local output="$4"
+    
+    log_message "Correcting orientation distortion in registration using configured parameters"
+    
+    # Create temporary directory
+    local temp_dir=$(mktemp -d)
+    
+    # Calculate gradient fields
+    fslmaths "$fixed" -gradient_x "${temp_dir}/fixed_grad_x.nii.gz"
+    fslmaths "$fixed" -gradient_y "${temp_dir}/fixed_grad_y.nii.gz"
+    fslmaths "$fixed" -gradient_z "${temp_dir}/fixed_grad_z.nii.gz"
+    
+    fslmaths "$warped" -gradient_x "${temp_dir}/warped_grad_x.nii.gz"
+    fslmaths "$warped" -gradient_y "${temp_dir}/warped_grad_y.nii.gz"
+    fslmaths "$warped" -gradient_z "${temp_dir}/warped_grad_z.nii.gz"
+    
+    # Create correction transformation
+    if command -v ANTSIntegrateVelocityField &>/dev/null; then
+        # Calculate gradient differences (velocity field)
+        fslmaths "${temp_dir}/fixed_grad_x.nii.gz" -sub "${temp_dir}/warped_grad_x.nii.gz" "${temp_dir}/diff_x.nii.gz"
+        fslmaths "${temp_dir}/fixed_grad_y.nii.gz" -sub "${temp_dir}/warped_grad_y.nii.gz" "${temp_dir}/diff_y.nii.gz"
+        fslmaths "${temp_dir}/fixed_grad_z.nii.gz" -sub "${temp_dir}/warped_grad_z.nii.gz" "${temp_dir}/diff_z.nii.gz"
+        
+        # Merge into vector field
+        fslmerge -t "${temp_dir}/diff_field.nii.gz" \
+                 "${temp_dir}/diff_x.nii.gz" \
+                 "${temp_dir}/diff_y.nii.gz" \
+                 "${temp_dir}/diff_z.nii.gz"
+        
+        # Smooth the difference field with configured sigma
+        ImageMath 3 "${temp_dir}/smooth_diff.nii.gz" G "${temp_dir}/diff_field.nii.gz" ${ORIENTATION_SMOOTH_SIGMA}
+        
+        # Scale down difference field with configured factor
+        ImageMath 3 "${temp_dir}/scaled_diff.nii.gz" m "${temp_dir}/smooth_diff.nii.gz" ${ORIENTATION_SCALING_FACTOR}
+        
+        # Integrate velocity field to get displacement field
+        ANTSIntegrateVelocityField 3 "${temp_dir}/scaled_diff.nii.gz" "${temp_dir}/correction_field.nii.gz" 1 5
+        
+        # Compose with original transform to get corrected transform
+        ComposeTransforms 3 "${temp_dir}/corrected_transform.nii.gz" -r "$transform" "${temp_dir}/correction_field.nii.gz"
+        
+        # Apply corrected transform
+        antsApplyTransforms -d 3 -i "$warped" -r "$fixed" -o "$output" -t "${temp_dir}/corrected_transform.nii.gz"
+    else
+        log_formatted "WARNING" "ANTSIntegrateVelocityField not available, skipping orientation distortion correction"
+        # Simply copy the input as output
+        cp "$warped" "$output"
+    fi
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    return 0
+}
+
+# Function to validate transformation with orientation checks
+validate_transformation() {
+    local fixed="$1"
+    local moving="$2"
+    local warped="$3"
+    local output_prefix="$4"
+    local validation_dir="${output_prefix}_validation"
+    
+    log_message "Validating transformation with orientation metrics"
+    mkdir -p "$validation_dir"
+    
+    # Standard validation metrics
+    validate_registration "$fixed" "$moving" "$warped" "$output_prefix"
+    
+    # Additional orientation-specific validation
+    local orientation_metrics=$(calculate_orientation_metrics "$fixed" "$warped" "${validation_dir}/orientation")
+    local orient_mean_dev=$(echo "$orientation_metrics")
+    
+    log_message "Orientation mean angular deviation: $orient_mean_dev radians"
+    
+    # Analyze shearing distortion
+    analyze_shearing_distortion "$fixed" "$warped" "$validation_dir"
+    
+    # Determine orientation quality
+    local orientation_quality="ACCEPTABLE"
+    if (( $(echo "$orient_mean_dev < $ORIENTATION_EXCELLENT_THRESHOLD" | bc -l) )); then
+        orientation_quality="EXCELLENT"
+    elif (( $(echo "$orient_mean_dev < $ORIENTATION_GOOD_THRESHOLD" | bc -l) )); then
+        orientation_quality="GOOD"
+    elif (( $(echo "$orient_mean_dev > $ORIENTATION_ACCEPTABLE_THRESHOLD" | bc -l) )); then
+        orientation_quality="POOR"
+    fi
+    
+    log_message "Orientation preservation quality: $orientation_quality"
+    echo "$orientation_quality" > "${validation_dir}/orientation_quality.txt"
+    
+    # Save extended validation report
+    {
+        echo "Extended Registration Validation Report"
+        echo "======================================"
+        echo "Fixed image: $fixed"
+        echo "Moving image: $moving"
+        echo "Warped image: $warped"
+        echo ""
+        echo "Orientation Metrics:"
+        echo "  Mean angular deviation: $orient_mean_dev radians"
+        echo "  Orientation quality: $orientation_quality"
+        echo ""
+        echo "Validation completed: $(date)"
+    } > "${validation_dir}/orientation_validation_report.txt"
+    
+    return 0
+}
+
+# Function to analyze shearing distortion in transformation
+analyze_shearing_distortion() {
+    local fixed="$1"
+    local warped="$2"
+    local output_dir="$3"
+    
+    log_message "Analyzing shearing distortion"
+    
+    # Extract transform matrix from header
+    local affine_matrix=$(python -c "
+import nibabel as nib
+import numpy as np
+
+# Load images
+fixed_img = nib.load('$fixed')
+warped_img = nib.load('$warped')
+
+# Get affine transforms
+fixed_affine = fixed_img.affine
+warped_affine = warped_img.affine
+
+# Extract rotation/scaling components (upper 3x3 matrix)
+fixed_rsm = fixed_affine[:3, :3]
+warped_rsm = warped_affine[:3, :3]
+
+# Normalize by removing scaling
+fixed_norm = fixed_rsm / np.sqrt(np.sum(fixed_rsm**2, axis=0))
+warped_norm = warped_rsm / np.sqrt(np.sum(warped_rsm**2, axis=0))
+
+# Calculate relative transform
+relative_transform = np.dot(warped_norm, np.linalg.inv(fixed_norm))
+
+# Check for orthogonality (deviation indicates shearing)
+identity = np.eye(3)
+ortho_deviation = np.linalg.norm(np.dot(relative_transform.T, relative_transform) - identity)
+
+# Calculate individual shear components
+shear_x = abs(relative_transform[0, 1]**2 + relative_transform[0, 2]**2)
+shear_y = abs(relative_transform[1, 0]**2 + relative_transform[1, 2]**2)
+shear_z = abs(relative_transform[2, 0]**2 + relative_transform[2, 1]**2)
+
+print(f'{ortho_deviation:.6f},{shear_x:.6f},{shear_y:.6f},{shear_z:.6f}')
+")
+    
+    # Parse results
+    local ortho_deviation=$(echo "$affine_matrix" | cut -d',' -f1)
+    local shear_x=$(echo "$affine_matrix" | cut -d',' -f2)
+    local shear_y=$(echo "$affine_matrix" | cut -d',' -f3)
+    local shear_z=$(echo "$affine_matrix" | cut -d',' -f4)
+    
+    # Determine if significant shearing is present
+    local shearing_detected=false
+    if (( $(echo "$shear_x > $SHEARING_DETECTION_THRESHOLD" | bc -l) )) ||
+       (( $(echo "$shear_y > $SHEARING_DETECTION_THRESHOLD" | bc -l) )) ||
+       (( $(echo "$shear_z > $SHEARING_DETECTION_THRESHOLD" | bc -l) )); then
+        shearing_detected=true
+    fi
+    
+    # Save shearing analysis
+    {
+        echo "Shearing Distortion Analysis"
+        echo "============================"
+        echo "Orthogonality deviation: $ortho_deviation"
+        echo "Shear components:"
+        echo "  X: $shear_x"
+        echo "  Y: $shear_y"
+        echo "  Z: $shear_z"
+        echo ""
+        echo "Significant shearing detected: $shearing_detected"
+        echo ""
+        echo "Analysis completed: $(date)"
+    } > "${output_dir}/shearing_analysis.txt"
+    
+    log_message "Shearing analysis completed. Significant shearing: $shearing_detected"
+    
+    return 0
+}
+
+# Export functions
+export -f register_with_topology_preservation
+export -f register_with_anatomical_constraints
+export -f correct_orientation_distortion
+export -f calculate_orientation_metrics
+export -f validate_transformation
+export -f analyze_shearing_distortion
+
+log_message "Registration module loaded with orientation preservation capabilities"

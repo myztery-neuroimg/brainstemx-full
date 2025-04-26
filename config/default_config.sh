@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="${HOME}/DICOM2"          # DICOM input directory
+export SRC_DIR="${HOME}/DICOM"          # DICOM input directory
 export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 export RESULTS_DIR="../mri_results"
 export ANTS_PATH="~/ants"
@@ -70,7 +70,7 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"
 export REG_METRIC_SAME_MODALITY="CC"
-export ANTS_THREADS=24
+export ANTS_THREADS=8
 export REG_PRECISION=1
 
 # Hyperintensity detection
@@ -118,3 +118,57 @@ export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_.*.nii.gz"
 export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS.*.nii.gz"
 export RESAMPLE_TO_ISOTROPIC=0
 export ISOTROPIC_SPACING=1.0
+
+# ------------------------------------------------------------------------------
+# Orientation Preservation Configuration
+# ------------------------------------------------------------------------------
+# These parameters control the orientation preservation during registration
+# and the detection/correction of orientation distortions
+
+# Enable or disable orientation preservation in registration
+# When enabled, registration will use topology preservation constraints to
+# maintain anatomical orientation relationships
+export ORIENTATION_PRESERVATION_ENABLED=true
+
+# Topology preservation parameters
+# TOPOLOGY_CONSTRAINT_WEIGHT: Controls strength of topology preservation (0-1)
+# Higher values enforce stronger orientation preservation but may reduce alignment accuracy
+export TOPOLOGY_CONSTRAINT_WEIGHT=0.5
+
+# TOPOLOGY_CONSTRAINT_FIELD: Deformation field constraints in x,y,z dimensions
+# Format is "XxYxZ" where each value controls allowed deformation in that dimension
+# Use "1x1x1" for equal constraints in all dimensions
+export TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
+
+# Jacobian regularization parameters
+# JACOBIAN_REGULARIZATION_WEIGHT: Weight for regularization (0-1)
+# Higher values enforce smoother deformations and better preserve local orientation
+export JACOBIAN_REGULARIZATION_WEIGHT=1.0
+
+# REGULARIZATION_GRADIENT_FIELD_WEIGHT: Weight for gradient field orientation matching (0-1)
+# Controls how strongly the registration tries to preserve orientation from the original image
+export REGULARIZATION_GRADIENT_FIELD_WEIGHT=0.5
+
+# Orientation correction thresholds
+# ORIENTATION_CORRECTION_THRESHOLD: Mean angular deviation threshold to trigger correction
+# If mean deviation exceeds this value (in radians), correction will be applied
+export ORIENTATION_CORRECTION_THRESHOLD=0.3
+
+# ORIENTATION_SCALING_FACTOR: Scaling factor for correction deformation field
+# Lower values apply gentler corrections
+export ORIENTATION_SCALING_FACTOR=0.05
+
+# ORIENTATION_SMOOTH_SIGMA: Smoothing sigma for correction field (in mm)
+# Higher values create smoother correction fields
+export ORIENTATION_SMOOTH_SIGMA=1.5
+
+# Quality thresholds for orientation metrics
+# These thresholds determine the quality assessment of registration orientation
+export ORIENTATION_EXCELLENT_THRESHOLD=0.1   # Mean angular deviation below this is excellent
+export ORIENTATION_GOOD_THRESHOLD=0.2        # Mean angular deviation below this is good
+export ORIENTATION_ACCEPTABLE_THRESHOLD=0.3  # Mean angular deviation below this is acceptable
+
+# Shearing detection threshold
+# SHEARING_DETECTION_THRESHOLD: Threshold for detecting significant shearing in transformations
+# Measures deviation from orthogonality (0-1), with lower values being more sensitive
+export SHEARING_DETECTION_THRESHOLD=0.05

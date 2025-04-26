@@ -298,36 +298,446 @@ calculate_hausdorff() {
     echo "$hausdorff"
 }
 
-# Function to validate a transformation comprehensively
-validate_transformation() {
+# Function to calculate orientation metrics from registration
+calculate_orientation_metrics() {
     local fixed="$1"           # Fixed/reference image
-    local moving="$2"          # Moving image
-    local transform="$3"       # Transformation file
-    local fixed_mask="${4:-}"      # Optional: mask in fixed space
-    local moving_mask="${5:-}"     # Optional: mask in moving space
-    local output_dir="$6"      # Directory for outputs
-    local threshold="$7"       # Optional: threshold for binary metrics
+    local warped="$2"          # Warped/registered image
+    local output_dir="${3:-./}"
     
-    echo "Validating transformation from $moving to $fixed"
+    log_message "Calculating orientation metrics"
     mkdir -p "$output_dir"
     
-    # Apply transformation to moving image
-    local transformed_img="${output_dir}/transformed.nii.gz"
-    if [[ "$transform" == *".mat" ]]; then
-        # FSL linear transform
-        flirt -in "$moving" -ref "$fixed" -applyxfm -init "$transform" -out "$transformed_img"
-    else
-        # ANTs transform
-        antsApplyTransforms -d 3 -i "$moving" -r "$fixed" -o "$transformed_img" -t "$transform" -n Linear
+    # Create temporary directory
+    local temp_dir=$(mktemp -d)
+    
+    # Calculate gradient fields
+    fslmaths "$fixed" -gradient_x "${temp_dir}/fixed_grad_x.nii.gz"
+    fslmaths "$fixed" -gradient_y "${temp_dir}/fixed_grad_y.nii.gz"
+    fslmaths "$fixed" -gradient_z "${temp_dir}/fixed_grad_z.nii.gz"
+    
+    fslmaths "$warped" -gradient_x "${temp_dir}/warped_grad_x.nii.gz"
+    fslmaths "$warped" -gradient_y "${temp_dir}/warped_grad_y.nii.gz"
+    fslmaths "$warped" -gradient_z "${temp_dir}/warped_grad_z.nii.gz"
+    
+    # Calculate angles between gradient vectors
+    local orient_mean_dev=$(python -c "
+import numpy as np
+import nibabel as nib
+
+# Load gradient fields
+fx = nib.load('${temp_dir}/fixed_grad_x.nii.gz').get_fdata()
+fy = nib.load('${temp_dir}/fixed_grad_y.nii.gz').get_fdata()
+fz = nib.load('${temp_dir}/fixed_grad_z.nii.gz').get_fdata()
+
+wx = nib.load('${temp_dir}/warped_grad_x.nii.gz').get_fdata()
+wy = nib.load('${temp_dir}/warped_grad_y.nii.gz').get_fdata()
+wz = nib.load('${temp_dir}/warped_grad_z.nii.gz').get_fdata()
+
+# Create vector fields
+fixed_vec = np.stack([fx, fy, fz], axis=-1)
+warped_vec = np.stack([wx, wy, wz], axis=-1)
+
+# Calculate magnitudes
+fixed_mag = np.sqrt(np.sum(fixed_vec**2, axis=-1))
+warped_mag = np.sqrt(np.sum(warped_vec**2, axis=-1))
+
+# Create mask for valid vectors (non-zero magnitude)
+mask = (fixed_mag > 0.01) & (warped_mag > 0.01)
+
+# Normalize vectors
+fixed_norm = fixed_vec.copy()
+warped_norm = warped_vec.copy()
+
+for i in range(3):
+    fixed_norm[..., i] = np.divide(fixed_vec[..., i], fixed_mag, where=mask)
+    warped_norm[..., i] = np.divide(warped_vec[..., i], warped_mag, where=mask)
+
+# Calculate dot product
+dot_product = np.sum(fixed_norm * warped_norm, axis=-1)
+dot_product = np.clip(dot_product, -1.0, 1.0)  # Ensure in valid range for arccos
+
+# Calculate angle in radians
+angles = np.arccos(dot_product)
+
+# Calculate mean angular deviation (in masked region)
+mean_dev = np.mean(angles[mask])
+max_dev = np.max(angles[mask])
+std_dev = np.std(angles[mask])
+
+print(f'{mean_dev:.6f},{max_dev:.6f},{std_dev:.6f}')
+")
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    # Return metrics as comma-separated values
+    echo "${orient_mean_dev}"
+}
+
+# Function to analyze shearing distortion in transformation
+analyze_shearing_distortion() {
+    local fixed="$1"
+    local warped="$2"
+    local output_dir="$3"
+    
+    log_message "Analyzing shearing distortion"
+    mkdir -p "$output_dir"
+    
+    # Extract affine matrix from header
+    local affine_matrix=$(python -c "
+import nibabel as nib
+import numpy as np
+
+# Load images
+fixed_img = nib.load('$fixed')
+warped_img = nib.load('$warped')
+
+# Get affine transforms
+fixed_affine = fixed_img.affine
+warped_affine = warped_img.affine
+
+# Extract rotation/scaling components (upper 3x3 matrix)
+fixed_rsm = fixed_affine[:3, :3]
+warped_rsm = warped_affine[:3, :3]
+
+# Normalize by removing scaling
+fixed_norm = fixed_rsm / np.sqrt(np.sum(fixed_rsm**2, axis=0))
+warped_norm = warped_rsm / np.sqrt(np.sum(warped_rsm**2, axis=0))
+
+# Calculate relative transform
+relative_transform = np.dot(warped_norm, np.linalg.inv(fixed_norm))
+
+# Check for orthogonality (deviation indicates shearing)
+identity = np.eye(3)
+ortho_deviation = np.linalg.norm(np.dot(relative_transform.T, relative_transform) - identity)
+
+# Calculate individual shear components
+shear_x = abs(relative_transform[0, 1]**2 + relative_transform[0, 2]**2)
+shear_y = abs(relative_transform[1, 0]**2 + relative_transform[1, 2]**2)
+shear_z = abs(relative_transform[2, 0]**2 + relative_transform[2, 1]**2)
+
+print(f'{ortho_deviation:.6f},{shear_x:.6f},{shear_y:.6f},{shear_z:.6f}')
+")
+    
+    # Parse results
+    local ortho_deviation=$(echo "$affine_matrix" | cut -d',' -f1)
+    local shear_x=$(echo "$affine_matrix" | cut -d',' -f2)
+    local shear_y=$(echo "$affine_matrix" | cut -d',' -f3)
+    local shear_z=$(echo "$affine_matrix" | cut -d',' -f4)
+    
+    # Determine if significant shearing is present
+    local shearing_detected=false
+    if (( $(echo "$shear_x > $SHEARING_DETECTION_THRESHOLD" | bc -l) )) || 
+       (( $(echo "$shear_y > $SHEARING_DETECTION_THRESHOLD" | bc -l) )) || 
+       (( $(echo "$shear_z > $SHEARING_DETECTION_THRESHOLD" | bc -l) )); then
+        shearing_detected=true
     fi
+    
+    # Save shearing analysis
+    {
+        echo "Shearing Distortion Analysis"
+        echo "============================"
+        echo "Orthogonality deviation: $ortho_deviation"
+        echo "Shear components:"
+        echo "  X: $shear_x"
+        echo "  Y: $shear_y"
+        echo "  Z: $shear_z"
+        echo ""
+        echo "Significant shearing detected: $shearing_detected"
+        echo ""
+        echo "Analysis completed: $(date)"
+    } > "${output_dir}/shearing_analysis.txt"
+    
+    log_message "Shearing analysis completed. Significant shearing: $shearing_detected"
+    
+    return 0
+}
+
+# Function to analyze orientation within brainstem/pons regions specifically
+analyze_brainstem_orientation() {
+    local t1_file="$1"
+    local flair_file="$2"
+    local brainstem_mask="$3"
+    local output_dir="$4"
+    
+    log_message "Analyzing orientation in brainstem regions"
+    mkdir -p "$output_dir"
+    
+    # Create ROI masks for different parts of the brainstem
+    local pons_mask="${RESULTS_DIR}/segmentation/pons/${subject_id}_pons.nii.gz"
+    local dorsal_pons="${RESULTS_DIR}/segmentation/pons/${subject_id}_dorsal_pons.nii.gz"
+    local ventral_pons="${RESULTS_DIR}/segmentation/pons/${subject_id}_ventral_pons.nii.gz"
+    
+    # Create temporary directory
+    local temp_dir=$(mktemp -d)
+    
+    # Extract brainstem from both T1 and FLAIR
+    fslmaths "$t1_file" -mas "$brainstem_mask" "${temp_dir}/t1_brainstem.nii.gz"
+    fslmaths "$flair_file" -mas "$brainstem_mask" "${temp_dir}/flair_brainstem.nii.gz"
+    
+    # Calculate gradients for each modality in brainstem
+    fslmaths "${temp_dir}/t1_brainstem.nii.gz" -gradient_x "${temp_dir}/t1_grad_x.nii.gz"
+    fslmaths "${temp_dir}/t1_brainstem.nii.gz" -gradient_y "${temp_dir}/t1_grad_y.nii.gz"
+    fslmaths "${temp_dir}/t1_brainstem.nii.gz" -gradient_z "${temp_dir}/t1_grad_z.nii.gz"
+    
+    fslmaths "${temp_dir}/flair_brainstem.nii.gz" -gradient_x "${temp_dir}/flair_grad_x.nii.gz"
+    fslmaths "${temp_dir}/flair_brainstem.nii.gz" -gradient_y "${temp_dir}/flair_grad_y.nii.gz"
+    fslmaths "${temp_dir}/flair_brainstem.nii.gz" -gradient_z "${temp_dir}/flair_grad_z.nii.gz"
+    
+    # Calculate angle differences
+    local regions=("$brainstem_mask" "$pons_mask" "$dorsal_pons" "$ventral_pons")
+    local region_names=("brainstem" "pons" "dorsal_pons" "ventral_pons")
+    
+    # Create output CSV
+    echo "Region,Mean_Angular_Diff,Max_Angular_Diff,Std_Angular_Diff" > "${output_dir}/brainstem_orientation.csv"
+    
+    # Process each region if it exists
+    for i in "${!regions[@]}"; do
+        local region="${regions[$i]}"
+        local name="${region_names[$i]}"
+        
+        if [ -f "$region" ]; then
+            # Calculate angle map within this region
+            fslmaths "${temp_dir}/t1_grad_x.nii.gz" -mas "$region" "${temp_dir}/t1_${name}_grad_x.nii.gz"
+            fslmaths "${temp_dir}/t1_grad_y.nii.gz" -mas "$region" "${temp_dir}/t1_${name}_grad_y.nii.gz"
+            fslmaths "${temp_dir}/t1_grad_z.nii.gz" -mas "$region" "${temp_dir}/t1_${name}_grad_z.nii.gz"
+            
+            fslmaths "${temp_dir}/flair_grad_x.nii.gz" -mas "$region" "${temp_dir}/flair_${name}_grad_x.nii.gz"
+            fslmaths "${temp_dir}/flair_grad_y.nii.gz" -mas "$region" "${temp_dir}/flair_${name}_grad_y.nii.gz"
+            fslmaths "${temp_dir}/flair_grad_z.nii.gz" -mas "$region" "${temp_dir}/flair_${name}_grad_z.nii.gz"
+            
+            # Calculate dot product components
+            fslmaths "${temp_dir}/t1_${name}_grad_x.nii.gz" -mul "${temp_dir}/flair_${name}_grad_x.nii.gz" "${temp_dir}/dot_${name}_x.nii.gz"
+            fslmaths "${temp_dir}/t1_${name}_grad_y.nii.gz" -mul "${temp_dir}/flair_${name}_grad_y.nii.gz" "${temp_dir}/dot_${name}_y.nii.gz"
+            fslmaths "${temp_dir}/t1_${name}_grad_z.nii.gz" -mul "${temp_dir}/flair_${name}_grad_z.nii.gz" "${temp_dir}/dot_${name}_z.nii.gz"
+            
+            # Sum components
+            fslmaths "${temp_dir}/dot_${name}_x.nii.gz" -add "${temp_dir}/dot_${name}_y.nii.gz" -add "${temp_dir}/dot_${name}_z.nii.gz" "${temp_dir}/dot_${name}_sum.nii.gz"
+            
+            # Calculate magnitude products for normalization
+            fslmaths "${temp_dir}/t1_${name}_grad_x.nii.gz" -sqr -add "${temp_dir}/t1_${name}_grad_y.nii.gz" -sqr -add "${temp_dir}/t1_${name}_grad_z.nii.gz" -sqr -sqrt "${temp_dir}/t1_${name}_mag.nii.gz"
+            fslmaths "${temp_dir}/flair_${name}_grad_x.nii.gz" -sqr -add "${temp_dir}/flair_${name}_grad_y.nii.gz" -sqr -add "${temp_dir}/flair_${name}_grad_z.nii.gz" -sqr -sqrt "${temp_dir}/flair_${name}_mag.nii.gz"
+            
+            # Normalized dot product
+            fslmaths "${temp_dir}/dot_${name}_sum.nii.gz" -div "${temp_dir}/t1_${name}_mag.nii.gz" -div "${temp_dir}/flair_${name}_mag.nii.gz" "${temp_dir}/dot_${name}_norm.nii.gz"
+            
+            # Clamp values for acos
+            fslmaths "${temp_dir}/dot_${name}_norm.nii.gz" -thr -1 -uthr 1 "${temp_dir}/dot_${name}_clamped.nii.gz"
+            
+            # Use acos approximation for angular difference
+            fslmaths "${temp_dir}/dot_${name}_clamped.nii.gz" -mul 100 -div 3.14159 "${output_dir}/${name}_angle_map.nii.gz"
+            
+            # Calculate statistics
+            local mean_diff=$(fslstats "${output_dir}/${name}_angle_map.nii.gz" -M)
+            local max_diff=$(fslstats "${output_dir}/${name}_angle_map.nii.gz" -R | awk '{print $2}')
+            local std_diff=$(fslstats "${output_dir}/${name}_angle_map.nii.gz" -S)
+            
+            # Add to CSV
+            echo "${name},${mean_diff},${max_diff},${std_diff}" >> "${output_dir}/brainstem_orientation.csv"
+        fi
+    done
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    log_message "Brainstem orientation analysis complete, results in ${output_dir}/brainstem_orientation.csv"
+    return 0
+}
+
+# Function to create orientation distortion visualization
+visualize_orientation_distortion() {
+    local t1_file="$1"
+    local orientation_map="$2"
+    local output_dir="$3"
+    local mask="${4:-}"
+    
+    log_message "Creating orientation distortion visualization"
+    mkdir -p "$output_dir"
+    
+    # Create a better visualization with FSLeyes command
+    echo "fsleyes $t1_file $orientation_map -cm hot -a 80" > "${output_dir}/view_orientation_distortion.sh"
+    chmod +x "${output_dir}/view_orientation_distortion.sh"
+    
+    # Create slices for quick visual inspection
+    slicer "$t1_file" "$orientation_map" -a "${output_dir}/orientation_distortion.png"
+    
+    # If mask is provided, create a masked version
+    if [ -n "$mask" ] && [ -f "$mask" ]; then
+        fslmaths "$orientation_map" -mas "$mask" "${output_dir}/masked_orientation_distortion.nii.gz"
+        
+        # Create command for viewing masked version
+        echo "fsleyes $t1_file ${output_dir}/masked_orientation_distortion.nii.gz -cm hot -a 80" > "${output_dir}/view_masked_orientation_distortion.sh"
+        chmod +x "${output_dir}/view_masked_orientation_distortion.sh"
+        
+        # Create slices for quick visual inspection of masked version
+        slicer "$t1_file" "${output_dir}/masked_orientation_distortion.nii.gz" -a "${output_dir}/masked_orientation_distortion.png"
+    fi
+    
+    return 0
+}
+
+# Function to calculate extended registration metrics including orientation
+calculate_extended_registration_metrics() {
+    local fixed="$1"
+    local moving="$2"
+    local warped="$3"
+    local output_dir="$4"
+    local output_csv="${5:-${output_dir}/registration_metrics.csv}"
+    
+    log_message "Calculating extended registration metrics"
+    mkdir -p "$output_dir"
+    
+    # Calculate standard metrics
+    local cc=$(calculate_cc "$fixed" "$warped")
+    local mi=$(calculate_mi "$fixed" "$warped")
+    local ncc=$(calculate_ncc "$fixed" "$warped")
+    
+    # Calculate metrics specific to white matter regions
+    local wm_mask="${output_dir}/wm_mask.nii.gz"
+    fslmaths "$fixed" -thr 0.8 -bin "$wm_mask"  # Simple WM mask based on intensity
+    
+    local wm_cc=$(calculate_cc "$fixed" "$warped" "$wm_mask")
+    
+    # Calculate displacement field statistics
+    local disp_field="${output_dir}/displacement_field.nii.gz"
+    if command -v ANTSUseDeformationFieldToGetAffineTransform &>/dev/null; then
+        # Create displacement field
+        CreateDisplacementField 3 "${output_dir}/affine.mat" "$disp_field" "$fixed"
+        
+        # Calculate statistics
+        local mean_disp=$(fslstats "$disp_field" -M)
+        local std_disp=$(fslstats "$disp_field" -S)
+        local max_disp=$(fslstats "$disp_field" -R | awk '{print $2}')
+    else
+        local mean_disp="N/A"
+        local std_disp="N/A"
+        local max_disp="N/A"
+    fi
+    
+    # Calculate Jacobian determinant statistics
+    local jacobian="${output_dir}/jacobian.nii.gz"
+    if command -v CreateJacobianDeterminantImage &>/dev/null; then
+        # Create Jacobian determinant image
+        CreateJacobianDeterminantImage 3 "${output_dir}/affine.mat" "$jacobian" "$fixed"
+        
+        # Calculate statistics
+        local jacobian_mean=$(fslstats "$jacobian" -M)
+        local jacobian_std=$(fslstats "$jacobian" -S)
+        local jacobian_min=$(fslstats "$jacobian" -R | awk '{print $1}')
+    else
+        local jacobian_mean="N/A"
+        local jacobian_std="N/A"
+        local jacobian_min="N/A"
+    fi
+    
+    # Create header if file doesn't exist
+    if [ ! -f "$output_csv" ]; then
+        echo "fixed_image,moving_image,dice_coefficient,wm_cross_correlation,mean_displacement,jacobian_std_dev,orientation_mean_dev,orientation_max_dev,orientation_std_dev,quality_assessment" > "$output_csv"
+    fi
+    
+    # Calculate orientation distortion metrics
+    log_message "Calculating orientation distortion metrics"
+    local orientation_metrics=$(calculate_orientation_metrics "$fixed" "$warped" "${output_dir}/orientation")
+    
+    # Parse orientation metrics
+    local orient_mean_dev=$(echo "$orientation_metrics" | cut -d',' -f1)
+    local orient_max_dev=$(echo "$orientation_metrics" | cut -d',' -f2)
+    local orient_std_dev=$(echo "$orientation_metrics" | cut -d',' -f3)
+    
+    log_message "Orientation mean deviation: $orient_mean_dev"
+    log_message "Orientation max deviation: $orient_max_dev"
+    log_message "Orientation std deviation: $orient_std_dev"
+    
+    # Evaluate orientation quality
+    local orientation_quality="ACCEPTABLE"
+    if (( $(echo "$orient_mean_dev < $ORIENTATION_EXCELLENT_THRESHOLD" | bc -l) )); then
+        orientation_quality="EXCELLENT"
+    elif (( $(echo "$orient_mean_dev < $ORIENTATION_GOOD_THRESHOLD" | bc -l) )); then
+        orientation_quality="GOOD"
+    elif (( $(echo "$orient_mean_dev > $ORIENTATION_ACCEPTABLE_THRESHOLD" | bc -l) )); then
+        orientation_quality="POOR"
+    fi
+    
+    # Determine overall quality
+    local quality="UNKNOWN"
+    if (( $(echo "$cc > 0.7" | bc -l) )); then
+        quality="EXCELLENT"
+    elif (( $(echo "$cc > 0.5" | bc -l) )); then
+        quality="GOOD"
+    elif (( $(echo "$cc > 0.3" | bc -l) )); then
+        quality="ACCEPTABLE"
+    else
+        quality="POOR"
+    fi
+    
+    # Update the final quality assessment to include orientation
+    if [ "$orientation_quality" = "POOR" ] && [ "$quality" != "POOR" ]; then
+        quality="ACCEPTABLE"  # Downgrade if orientation is poor
+    fi
+    
+    # Write metrics to CSV
+    echo "$(basename "$fixed"),$(basename "$moving"),$dice,$wm_cc,$mean_disp,$jacobian_std,$orient_mean_dev,$orient_max_dev,$orient_std_dev,$quality" >> "$output_csv"
+    
+    # Save detailed report
+    {
+        echo "Extended Registration Validation Report"
+        echo "======================================"
+        echo "Fixed image: $fixed"
+        echo "Moving image: $moving"
+        echo "Warped image: $warped"
+        echo ""
+        echo "Intensity-based metrics:"
+        echo "  Cross-correlation: $cc"
+        echo "  Mutual information: $mi"
+        echo "  Normalized cross-correlation: $ncc"
+        echo "  White matter cross-correlation: $wm_cc"
+        echo ""
+        echo "Deformation metrics:"
+        echo "  Mean displacement: $mean_disp"
+        echo "  Max displacement: $max_disp"
+        echo "  Jacobian standard deviation: $jacobian_std"
+        echo "  Minimum Jacobian determinant: $jacobian_min"
+        echo ""
+        echo "Orientation metrics:"
+        echo "  Mean angular deviation: $orient_mean_dev"
+        echo "  Maximum angular deviation: $orient_max_dev"
+        echo "  Angular deviation std: $orient_std_dev"
+        echo "  Orientation quality: $orientation_quality"
+        echo ""
+        echo "Overall quality assessment: $quality"
+        echo ""
+        echo "Validation completed: $(date)"
+    } > "${output_dir}/extended_validation_report.txt"
+    
+    log_message "Extended registration validation completed"
+    return 0
+}
+
+# Function to validate a transformation comprehensively
+validate_transformation() {
+    local fixed="$1"                # Fixed/reference image
+    local moving="$2"               # Moving image
+    local warped="$3"               # Warped/registered image
+    local output_prefix="$4"        # Output prefix for results
+    local fixed_mask="${5:-}"       # Optional: mask in fixed space
+    local moving_mask="${6:-}"      # Optional: mask in moving space
+    local transform="${7:-}"        # Optional: transformation file
+    local validation_dir="${output_prefix}_validation"
+    
+    log_message "Validating transformation with orientation metrics"
+    mkdir -p "$validation_dir"
     
     # Apply transformation to moving mask if provided
     local transformed_mask=""
-    if [ -n "$moving_mask" ] && [ -f "$moving_mask" ]; then
-        transformed_mask="${output_dir}/transformed_mask.nii.gz"
+    if [ -n "$transform" ] && [ -n "$moving_mask" ] && [ -f "$moving_mask" ]; then
+        transformed_mask="${validation_dir}/transformed_mask.nii.gz"
+        log_message "Applying transformation to moving mask..."
+        
         if [[ "$transform" == *".mat" ]]; then
+            # FSL linear transform
             flirt -in "$moving_mask" -ref "$fixed" -applyxfm -init "$transform" -out "$transformed_mask" -interp nearestneighbour
         else
+            # ANTs transform
             antsApplyTransforms -d 3 -i "$moving_mask" -r "$fixed" -o "$transformed_mask" -t "$transform" -n NearestNeighbor
         fi
         
@@ -335,87 +745,81 @@ validate_transformation() {
         fslmaths "$transformed_mask" -bin "$transformed_mask"
     fi
     
-    # Calculate intensity-based metrics
-    echo "Calculating intensity-based metrics..."
-    local cc=$(calculate_cc "$fixed" "$transformed_img" "$fixed_mask")
-    local mi=$(calculate_mi "$fixed" "$transformed_img" "$fixed_mask")
-    local ncc=$(calculate_ncc "$fixed" "$transformed_img" "$fixed_mask")
+    # Standard validation metrics
+    local cc=$(calculate_cc "$fixed" "$warped")
+    local mi=$(calculate_mi "$fixed" "$warped")
+    local ncc=$(calculate_ncc "$fixed" "$warped")
     
-    echo "  Cross-correlation: $cc"
-    echo "  Mutual information: $mi"
-    echo "  Normalized cross-correlation: $ncc"
+    log_message "Cross-correlation: $cc"
+    log_message "Mutual information: $mi"
+    log_message "Normalized cross-correlation: $ncc"
     
-    # Calculate overlap metrics if masks are provided
-    if [ -n "$transformed_mask" ] && [ -n "$fixed_mask" ] && [ -f "$fixed_mask" ]; then
-        echo "Calculating overlap metrics..."
-        local dice=$(calculate_dice "$fixed_mask" "$transformed_mask")
-        local jaccard=$(calculate_jaccard "$fixed_mask" "$transformed_mask")
-        local hausdorff=$(calculate_hausdorff "$fixed_mask" "$transformed_mask")
-        
-        echo "  Dice coefficient: $dice"
-        echo "  Jaccard index: $jaccard"
-        echo "  Hausdorff distance: $hausdorff"
+    # Calculate orientation metrics
+    local orientation_metrics=$(calculate_orientation_metrics "$fixed" "$warped" "${validation_dir}/orientation")
+    local orient_mean_dev=$(echo "$orientation_metrics")
+    
+    log_message "Orientation mean angular deviation: $orient_mean_dev radians"
+    
+    # Analyze shearing distortion
+    analyze_shearing_distortion "$fixed" "$warped" "$validation_dir"
+    
+    # Determine orientation quality
+    local orientation_quality="ACCEPTABLE"
+    if (( $(echo "$orient_mean_dev < $ORIENTATION_EXCELLENT_THRESHOLD" | bc -l) )); then
+        orientation_quality="EXCELLENT"
+    elif (( $(echo "$orient_mean_dev < $ORIENTATION_GOOD_THRESHOLD" | bc -l) )); then
+        orientation_quality="GOOD"
+    elif (( $(echo "$orient_mean_dev > $ORIENTATION_ACCEPTABLE_THRESHOLD" | bc -l) )); then
+        orientation_quality="POOR"
     fi
     
-    # Create visualization for QC
-    echo "Creating visualization for QC..."
-    local edge_img="${output_dir}/edge.nii.gz"
-    fslmaths "$transformed_img" -edge "$edge_img"
+    log_message "Orientation preservation quality: $orientation_quality"
+    echo "$orientation_quality" > "${validation_dir}/orientation_quality.txt"
     
-    # Create overlay of edges on fixed image
-    local overlay_img="${output_dir}/overlay.nii.gz"
-    fslmaths "$fixed" -mul 0 -add "$edge_img" "$overlay_img"
+    # Determine overall quality
+    local quality="UNKNOWN"
+    if (( $(echo "$cc > 0.7" | bc -l) )); then
+        quality="EXCELLENT"
+    elif (( $(echo "$cc > 0.5" | bc -l) )); then
+        quality="GOOD"
+    elif (( $(echo "$cc > 0.3" | bc -l) )); then
+        quality="ACCEPTABLE"
+    else
+        quality="POOR"
+    fi
     
-    # Save report
-    echo "Saving validation report..."
+    # Downgrade overall quality if orientation is poor
+    if [ "$orientation_quality" = "POOR" ] && [ "$quality" != "POOR" ]; then
+        quality="ACCEPTABLE"
+    fi
+    
+    log_message "Overall registration quality: $quality"
+    echo "$quality" > "${validation_dir}/quality.txt"
+    
+    # Save extended validation report
     {
-        echo "Transformation Validation Report"
-        echo "================================"
+        echo "Extended Registration Validation Report"
+        echo "======================================"
         echo "Fixed image: $fixed"
         echo "Moving image: $moving"
-        echo "Transform: $transform"
+        echo "Warped image: $warped"
         echo ""
         echo "Intensity-based metrics:"
         echo "  Cross-correlation: $cc"
         echo "  Mutual information: $mi"
         echo "  Normalized cross-correlation: $ncc"
-        
-        if [ -n "$transformed_mask" ] && [ -n "$fixed_mask" ] && [ -f "$fixed_mask" ]; then
-            echo ""
-            echo "Overlap metrics:"
-            echo "  Dice coefficient: $dice"
-            echo "  Jaccard index: $jaccard"
-            echo "  Hausdorff distance: $hausdorff"
-        fi
-        
+        echo ""
+        echo "Orientation Metrics:"
+        echo "  Mean angular deviation: $orient_mean_dev radians"
+        echo "  Orientation quality: $orientation_quality"
+        echo ""
+        echo "Overall quality assessment: $quality"
         echo ""
         echo "Validation completed: $(date)"
-    } > "${output_dir}/validation_report.txt"
+    } > "${validation_dir}/validation_report.txt"
     
-    # Determine overall quality
-    local quality="UNKNOWN"
-    if [ -n "$dice" ]; then
-        if (( $(echo "$dice > 0.8" | bc -l) )); then
-            quality="EXCELLENT"
-        elif (( $(echo "$dice > 0.7" | bc -l) )); then
-            quality="GOOD"
-        elif (( $(echo "$dice > 0.5" | bc -l) )); then
-            quality="ACCEPTABLE"
-        else
-            quality="POOR"
-        fi
-    elif [ -n "$cc" ]; then
-        if (( $(echo "$cc > 0.7" | bc -l) )); then
-            quality="GOOD"
-        elif (( $(echo "$cc > 0.5" | bc -l) )); then
-            quality="ACCEPTABLE"
-        else
-            quality="POOR"
-        fi
-    fi
-    
-    echo "Overall quality assessment: $quality"
-    echo "$quality" > "${output_dir}/quality.txt"
+    # Create visualization for QC
+    visualize_orientation_distortion "$fixed" "${validation_dir}/orientation/orientation_deviation.nii.gz" "${validation_dir}"
     
     return 0
 }
@@ -603,5 +1007,10 @@ export -f calculate_ncc
 export -f check_image_statistics
 export -f qa_validate_dicom_files
 export -f qa_validate_nifti_files
+export -f calculate_orientation_metrics
+export -f analyze_shearing_distortion
+export -f analyze_brainstem_orientation
+export -f visualize_orientation_distortion
+export -f calculate_extended_registration_metrics
 
-log_message "QA module loaded"
+log_message "QA module loaded with orientation distortion capabilities"

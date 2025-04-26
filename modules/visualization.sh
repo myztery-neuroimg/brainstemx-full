@@ -419,6 +419,76 @@ generate_html_report() {
             echo "      </pre>"
         fi
         
+        # Add orientation distortion metrics if available
+        if [ -f "${subject_dir}/validation/registration/orientation_quality.txt" ] || [ -f "${subject_dir}/validation/registration/orientation/orientation_deviation.nii.gz" ]; then
+            echo "      <h3>Orientation Distortion Analysis</h3>"
+            echo "      <table>"
+            echo "        <tr><th>Metric</th><th>Value</th><th>Status</th></tr>"
+            
+            # Check for orientation quality
+            if [ -f "${subject_dir}/validation/registration/orientation_quality.txt" ]; then
+                local orientation_quality=$(cat "${subject_dir}/validation/registration/orientation_quality.txt")
+                local status_class="metric-warning"
+                
+                if [ "$orientation_quality" = "EXCELLENT" ]; then
+                    status_class="metric-good"
+                elif [ "$orientation_quality" = "POOR" ]; then
+                    status_class="metric-bad"
+                fi
+                
+                echo "        <tr><td>Orientation preservation quality</td><td>${orientation_quality}</td><td class='${status_class}'>${orientation_quality}</td></tr>"
+            fi
+            
+            # Check for brainstem-specific orientation metrics
+            if [ -f "${subject_dir}/validation/registration/orientation/brainstem_orientation.csv" ]; then
+                # Skip the header line
+                tail -n +2 "${subject_dir}/validation/registration/orientation/brainstem_orientation.csv" | while IFS=, read -r region mean_angular max_angular std_angular; do
+                    # Determine status class based on configuration thresholds
+                    local status_class="metric-warning"
+                    local status_text="Acceptable"
+                    
+                    if (( $(echo "$mean_angular < $ORIENTATION_EXCELLENT_THRESHOLD" | bc -l) )); then
+                        status_class="metric-good"
+                        status_text="Excellent"
+                    elif (( $(echo "$mean_angular < $ORIENTATION_GOOD_THRESHOLD" | bc -l) )); then
+                        status_class="metric-good"
+                        status_text="Good"
+                    elif (( $(echo "$mean_angular > $ORIENTATION_ACCEPTABLE_THRESHOLD" | bc -l) )); then
+                        status_class="metric-bad"
+                        status_text="Poor"
+                    fi
+                    
+                    echo "        <tr><td>${region} mean angular deviation</td><td>${mean_angular}</td><td class='${status_class}'>${status_text}</td></tr>"
+                done
+            fi
+            
+            # Add shearing information if available
+            if [ -f "${subject_dir}/validation/registration/orientation/shearing_analysis.txt" ]; then
+                local shearing_detected=$(grep "Significant shearing detected" "${subject_dir}/validation/registration/orientation/shearing_analysis.txt" | awk '{print $4}')
+                local status_class="metric-good"
+                local status_text="No significant shearing"
+                
+                if [ "$shearing_detected" = "true" ]; then
+                    status_class="metric-bad"
+                    status_text="Shearing detected"
+                fi
+                
+                echo "        <tr><td>Shearing distortion</td><td>${shearing_detected}</td><td class='${status_class}'>${status_text}</td></tr>"
+            fi
+            
+            echo "      </table>"
+            
+            # Add orientation distortion visualization if available
+            if [ -f "${subject_dir}/validation/registration/orientation_distortion.png" ]; then
+                echo "      <div class='image-container'>"
+                echo "        <div class='image-box'>"
+                echo "          <img src='../validation/registration/orientation_distortion.png' alt='Orientation Distortion Map'>"
+                echo "          <p>Orientation Distortion Map</p>"
+                echo "        </div>"
+                echo "      </div>"
+            fi
+        fi
+        
         echo "    </div>"
         
         # Section 3: Hyperintensity Analysis

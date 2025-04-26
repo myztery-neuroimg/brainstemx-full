@@ -25,10 +25,12 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - N4 bias field correction
 - Brain extraction using ANTs
 - Registration of modalities such as FLAIR/SPACE-FLAIR/DWI/SWI against T1MPRAGE
+- Orientation distortion correction for preserving anatomical structure during registration
 - For neurology: Brainstem and pons segmentation (atlas based and geometric based for sub-regions of the pons)
 - Hyperintensity detection with multiple thresholds
 - Comprehensive QA/validation of each step, with automated sanity checks
-- HTML report generation
+- Advanced orientation distortion analysis with visualization and reporting
+- HTML report generation with detailed metrics and quality assessments
 
 ## Workflow Diagram
 
@@ -141,7 +143,8 @@ Options:
   -o, --output DIR     Output directory (default: ../mri_results)
   -s, --subject ID     Subject ID (default: derived from input directory)
   -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)
-  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)
+                       Affects bias correction, registration quality, and orientation preservation
+  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM, ORIENTATION_TEST) (default: FULL)
   -h, --help           Show this help message and exit
 ```
 
@@ -165,7 +168,7 @@ The pipeline is organized into modular components:
 - **environment.sh**: Environment setup, logging, configuration
 - **import.sh**: DICOM import, metadata extraction, conversion to NIfTI
 - **preprocess.sh**: Multi-axial integration, bias correction, ROI extraction
-- **registration.sh**: T1 to FLAIR (or DWI/SWI/etc) registration
+- **registration.sh**: T1 to FLAIR (or DWI/SWI/etc) registration, orientation distortion correction
 - **segmentation.sh**: Segmentation controller (adapt as needed to your use-case)
 - **analysis.sh**: Hyperintensity detection and analysis
 - **visualization.sh**: QC visualizations, multi-threshold overlays, HTML reports
@@ -202,6 +205,12 @@ You can customize the pipeline by:
 
 1. Creating a custom configuration file based on `config/default_config.sh`
 2. Passing it to the pipeline with the `-c` option
+
+## Additional Documentation
+
+- [Orientation Distortion Correction](docs/orientation-distortion-correction.md): Methods for preserving anatomical orientation during registration, particularly important for regions like the brainstem and pons.
+- [Parallel Processing Implementation](docs/parallel_processing_implementation.md): How to use parallel processing for faster analysis.
+- [Multi-axial Improvements](docs/multiaxis_improvements.md): Handling multi-axial image integration.
 
 ## License
 
