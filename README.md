@@ -1,9 +1,9 @@
 # intensityclustering: Brainstem/Pons MRI Analysis Pipeline ("BrainstemX")
 
-BrainStem X is an end-to-end pipeline designed for precise analysis of the brainstem and pons - critical neuroanatomical regions that traditional neuroimaging pipelines often handle poorly. This pipeline addresses the unique challenges of brainstem imaging with:
+BrainStem X (a Brainstem/Pons specific implementation of intensityclustering) is an end-to-end pipeline designed for precise clustering analysis of subtle T2 hyperintensities/T1 hypointensities in these critical brain neuroanatomical regions. These are regions that traditional neuroimaging pipelines often handle poorly and that can present clinically with very subtle variations below the clinical threshold to human radiologists. This pipeline addresses the unique challenges of brainstem imaging with:
 
 - **Multi-modal integration** across T1/T2/FLAIR/SWI/DWI sequences with cross-modality anomaly detection
-- **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences). N4 bias field correction algorithm is a popular method for correcting low frequency intensity non-uniformity present in MRI image data.
+- **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences).
 - **Precise orientation preservation** critical for analyzing directionally sensitive brainstem microstructure
 - **Real-time cluster analysis** that identifies signal anomalies without manual segmentation bias
 - **Multiple fallback methods** ensuring robust results even with suboptimal input data
@@ -15,15 +15,18 @@ BrainStem X supports analysis of the entire spectrum of available clinical data:
 
 - **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
   - 3D MPRAGE T1-weighted imaging
+  - Optimisations for 3T scanners
   - 3D SPACE/VISTA T2-FLAIR with SAG acquisition
   - Multi-parametric SWI/DWI integration
 
 - **Routine Clinical Protocols**: Robust fallback for standard clinical acquisitions
-  - Thick-slice (3-5mm) 2D axial FLAIR with gaps
+  - Thick-slice (3-5mm) 1.5T 2D axial FLAIR with gaps, along with standard T1/T1-MPR to register against
   - Non-isotropic voxel reconstruction
   - Single-sequence limited protocols
 
-The pipeline extracts DICOM metadata including detailed acquisition parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and registration techniques using research-grade ANTs and FSL libraries and segmentation against cutting-edge atlases. This comprehensive approach enables analysis of datasets from centers with varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
+The pipeline extracts DICOM metadata including detailed acquisition parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and registration techniques using research-grade ANTs and FSL libraries and segmentation against cutting-edge atlases. N4 bias field correction, a popular method for correcting low frequency intensity non-uniformity present in MRI image data, and scanner orientation correction help ensure integrity of your results. 20 validations within the qa module alone ensure consistency and reliability of your results.
+
+This enables analysis of datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
 
 ## Key Features
 
@@ -86,8 +89,12 @@ graph TD
     
     style B fill:#f96,stroke:#333,stroke-width:2px
     style C2 fill:#f96,stroke:#333,stroke-width:2px
-Installation
-bash# Clone the repository
+```
+
+## Installation
+
+```
+# Clone the repository
 git clone https://github.com/yourusername/brainstem-x
 cd brainstem-x
 
@@ -96,7 +103,6 @@ cd brainstem-x
 
 If you don't the script will conveniently tell you
 
-```bash
 [INFO] ==== MRI Processing Dependency Checker ====
 [ERROR] ✗ dcm2niix is not installed or not in PATH
 [INFO] Try: brew install dcm2niix
@@ -130,11 +136,18 @@ If you don't the script will conveniently tell you
 [ERROR] 3 required dependencies are missing.
 ```
 
-# Then install Python requirements
-```bash
+## Then install Python requirements
+
+```
 python -m pip install -r requirements.txt
-Quick Start
-bash# Basic usage with default parameters
+```
+
+Pro-tip: prefereably use `uv` - everything is already packaged for this!
+
+## Quick Start
+
+```
+# Basic usage with default parameters
 ./pipeline.sh -i /path/to/dicom -o /path/to/output -s subject_id
 
 # High quality processing for research use
@@ -143,4 +156,57 @@ bash# Basic usage with default parameters
 # Batch processing multiple subjects
 ./pipeline.sh -p BATCH -i /path/to/base_dir -o /path/to/output_base --subject-list /path/to/subject_list.txt
 ```
+
+## Unique Advantages
+
+Unlike general-purpose neuroimaging tools, BrainStem X provides:
+
+### Specialized Brainstem Focus: Targeted methods for brainstem and pontine lesion detection
+### Acquisition-Specific Processing: Tailored workflows for both research-grade and standard clinical protocols
+### Objective Anomaly Detection: Statistical cluster identification using intensity distribution analysis
+### Multi-modality Integration: Correlative analysis across T1/T2/FLAIR/SWI/DWI sequences
+### Clinical Translation: DICOM backtrace for radiological verification in standard clinical viewers
+### Reliability: Comprehensive validation metrics for registration and segmentation quality
+
+# Acknowledgments 
+
+## Neuroimaging Tools
+
+* ANTs (Advanced Normalization Tools)
+* FSL (FMRIB Software Library)
+* FreeSurfer
+* Convert3D
+* dcm2niix
+* ITK-SNAP
+
+## Atlases & Templates
+
+* Harvard-Oxford Subcortical Structural Atlas
+* Talairach Atlas
+* MNI152 Standard Space Templates
+* SUIT Cerebellar Atlas
+
+## Programming Resources / Libraries (including..)
+
+* Python Neuroimaging Libraries (NiBabel, PyDicom)
+* GNU Parallel
+* Matplotlib & Seaborn
+* NumPy & SciPy
+
+# Independent Development
+
+This project was developed independently without institutional backing
+
+## Citation
+
+If you use BrainStem X in your research, please cite:
+@software{BrainStemX2025},
+  author = Myztery Evaluation c/o LazyEvaluation,
+  title = {BrainStem X: Advanced Brainstem/Pons MRI Analysis Pipeline},
+  year = {2025},
+  url = {https://github.com/myzteryneuro/intensityclustering}
+}
+
+# License
+This project is licensed under the MIT License - see the LICENSE file for details.
 
