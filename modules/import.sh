@@ -16,6 +16,7 @@ unset import_validate_nifti_files
 unset import_process_all_nifti_files_in_dir
 unset import_import_dicom_data
 export RESULTS_DIR="../mri_results"
+set -x 
 # Function to deduplicate identical files
 import_deduplicate_identical_files() {
   local dir="$1"
@@ -79,7 +80,7 @@ import_extract_siemens_metadata() {
   log_message "first_dicom extract: $first_dicom"
 
   mkdir -p "$(dirname $metadata_file)"
-  echo "{\"manufacturer\":\"Unknown\",\"fieldStrength\":3,\"modelName\":\"Unknown\"}" > "$metadata_file"
+  log_message "{\"manufacturer\":\"Unknown\",\"fieldStrength\":3,\"modelName\":\"Unknown\"}" > "$metadata_file" 
 
   # Path to the external Python script
   # Updated path to the correct location in the modules directory
@@ -88,7 +89,7 @@ import_extract_siemens_metadata() {
     # Try a few other common locations
     log_message "Python script not found at: $python_script, trying alternatives..."
     for alt_path in "modules/extract_dicom_metadata.py" "extract_dicom_metadata.py" "../modules/extract_dicom_metadata.py" "./extract_dicom_metadata.py"; do
-      echo "DEBUG: Checking for script at: $alt_path" > /dev/stderr
+      log_message "DEBUG: Checking for script at: $alt_path" 
       if [ -f "$alt_path" ]; then
         python_script="$alt_path"
         log_message "Found script at: $python_script"
@@ -168,22 +169,9 @@ import_validate_dicom_files_new_2() {
   
   # Check for DICOM files using configured patterns
   log_message "Looking for files matching pattern: $DICOM_PRIMARY_PATTERN"
-  sample_dicom=$(ls "$dicom_dir"/${DICOM_PRIMARY_PATTERN} 2>/dev/null | head -1)
+  #log_message $(find "$dicom_dir" -name ${DICOM_PRIMARY_PATTERN} -ls) 
+  dicom_count=$(find "$dicom_dir" -name ${DICOM_PRIMARY_PATTERN} 2>/dev/null | wc -l )
   
-  if [ -f "$sample_dicom" ]; then
-    dicom_count=$(find "$dicom_dir" -mame $DICOM_PRIMARY_PATTERN 2>/dev/null | wc -l)
-    log_message "Found $dicom_count DICOM files with primary pattern. Sample: $sample_dicom"
-  else 
-    # Method 2: Try different common DICOM patterns
-    for pattern in "*.dcm" "IM_*" "Image*" "*.[0-9][0-9][0-9][0-9]" "DICOM*"; do
-      sample_dicom=$(ls "$dicom_dir"/$pattern 2>/dev/null | head -1)
-      if [ -f "$sample_dicom" ]; then
-        dicom_count=$(ls "$dicom_dir"/$pattern 2>/dev/null | wc -l)
-        log_message "Found $dicom_count DICOM files with pattern $pattern"
-        break
-      fi
-    done
-  fi
   
   if [ $dicom_count -eq 0 ]; then
     log_message "ERROR: No DICOM files found in $dicom_dir"
@@ -289,22 +277,22 @@ import_validate_nifti_files() {
 import_dicom_data() {
   local dicom_dir="$1"
   local output_dir="$2"
-  echo "===== ENTERING import_dicom_data =====" > /dev/stderr
-  echo "DEBUG: dicom_dir='$dicom_dir'" > /dev/stderr
-  echo "DEBUG: Checking if directory exists: $dicom_dir" > /dev/stderr
-  test -d "$dicom_dir" && echo "DEBUG: DIRECTORY EXISTS" > /dev/stderr || echo "DEBUG: DIRECTORY DOES NOT EXIST" > /dev/stderr
+  log_message "===== ENTERING import_dicom_data =====" 
+  log_message "DEBUG: dicom_dir='$dicom_dir'" 
+  log_message "DEBUG: Checking if directory exists: $dicom_dir" 
+  test -d "$dicom_dir" && log_message "DEBUG: DIRECTORY EXISTS" || log_message "DEBUG: DIRECTORY DOES NOT EXIST" 
   log_message "** Importing DICOM data from $dicom_dir"
   
   # Validate DICOM files
-  echo "DEBUG: About to call import_validate_dicom_files_new_2" > /dev/stderr
+  log_message "DEBUG: About to call import_validate_dicom_files_new_2" 
   import_validate_dicom_files_new_2 "$dicom_dir" "$output_dir"
-  echo "DEBUG: validate_dicom_files COMPLETED" > /dev/stderr
+  log_message "DEBUG: validate_dicom_files COMPLETED" 
   
   # Extract metadata
-  echo "DEBUG: About to call extract_siemens_metadata" > /dev/stderr 
+  log_message "DEBUG: About to call extract_siemens_metadata" 
   import_extract_siemens_metadata "$dicom_dir"
-  echo "DEBUG: extract_siemens_metadata COMPLETED" > /dev/stderr
-  echo "DEBUG: About to call convert_dicom_to_nifti" > /dev/stderr
+  log_message j"DEBUG: extract_siemens_metadata COMPLETED" 
+  log_message "DEBUG: About to call convert_dicom_to_nifti" 
   
   # Convert DICOM to NIfTI
   import_convert_dicom_to_nifti "$dicom_dir" "$output_dir"
