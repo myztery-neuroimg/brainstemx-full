@@ -15,9 +15,9 @@
 #
 
 # Set strict error handling
-set -e
-set -u
-set -o pipefail
+#set -e
+#set -u
+#set -o pipefail
 
 # Source modules
 source modules/environment.sh
