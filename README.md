@@ -23,7 +23,7 @@ This pipeline processes T1-weighted/3D MPRAGE and T2-SPACE/FLAIR, T2-DWI, SWI an
 3. Detect hyperintensities within those regions using fslstats and cluster - e.g., nth percentil/standard deviations approaches within a segmented region like the brainstem which should be fairly homogenous in signal
 4. Generate comprehensive QA visualizations and reports ensuring pipeline validity
 
-The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing framework, with some additional tools from FSL and Convert3D.
+The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing framework, with additional functionality via the wonderful tools such as Freesurfer, FSL and Convert3D.
 
 ## Features
 
@@ -33,7 +33,7 @@ The pipeline uses ANTs (Advanced Normalization Tools) as the primary processing 
 - N4 bias field correction
 - Multi-axial image integration for 2D sequences to NiFTI format
 - Brain extraction using ANTs
-- Registration of modalities such as FLAIR/SPACE-FLAIR/DWI/SWI against T1MPRAGE
+- Registration of modalities such as FLAIR/SPACE-FLAIR/DWI/SWI against T1-MPRA
 - Orientation distortion correction for preserving anatomical structure during registration
 - For neurology: Brainstem and pons segmentation with multiple fallback methods:
   - Harvard-Oxford atlas-based segmentation (with automatic atlas detection)
