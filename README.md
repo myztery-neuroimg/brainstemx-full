@@ -1,6 +1,8 @@
 # Brainstem/Pons-specific Neuroradiology multi-modal (T1/T2/FLAIR/SWI/DWI) MRI intensity anomaly and clustering
 
-End-to-end pipeline for processing MRI images, with a focus on detailed and adaptable segmentation, hyperintensity detection and clustering in neurological "difficult to get" spots like the brainstem and pons. 
+End-to-end pipeline for processing MRI images, with a focus on detailed and adaptable segmentation, hyperintensity detection and clustering in neurological "difficult to get" spots like the brainstem and pons.
+
+Whilst brainstem specific in this implementation it's built to be completely adaptable e.g., for temporal lobe analysis for typical epilepsy cases.
 
 There are naturally very few specialized pipelines for brainstem subregion analysis with the comprehensiveness I'm providing. 
 The few that are available typically:
