@@ -5,7 +5,7 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **Multi-modal integration** across T1/T2/FLAIR/SWI/DWI sequences with cross-modality anomaly detection
 - **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences).
 - **Precise orientation preservation** critical for analyzing directionally sensitive brainstem microstructure
-- **Real-time cluster analysis** that identifies signal anomalies without manual segmentation bias
+- **Zero-shot/unsupervised cluster analysis** which could identify signal anomalies without manual segmentation or human false negative biases
 - **Multiple fallback methods** ensuring robust results even with suboptimal input data
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
 
