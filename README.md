@@ -28,6 +28,7 @@ The pipeline extracts DICOM metadata including acquisition/scanner parameters, s
 
 This enables analysis of datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
 
+![image](https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1)
 ## Key Features
 
 ### Acquisition-Specific Processing and Registration
@@ -83,6 +84,48 @@ graph TD
 git clone https://github.com/yourusername/brainstem-x
 cd brainstem-x
 
+## Requirements
+
+- ANTs (Advanced Normalization Tools): https://github.com/ANTsX/ANTs/wiki/Installing-ANTs-release-binaries
+- FSL (FMRIB Software Library): https://git.fmrib.ox.ac.uk/fsl/conda/installer
+- Convert3D (c3d) (SourceForge download link for Apple Silicon: https://sourceforge.net/projects/c3d/files/c3d/Nightly/c3d-nightly-MacOS-x86_64.dmg/download or just use Homebrew)
+- dcm2niix (distributed with FreeSurfer): install via homebrew
+- FreeSurfer (optional, for 3D visualization): https://surfer.nmr.mgh.harvard.edu/fswiki/rel7downloads
+- Python 3 (for metadata extraction): use `conda` or preferably `uv` to manage python versions
+- GNU Parallel (via homebrew)
+- MacOS or (untested) Linux OS
+- Python 3.12 (various libraries are unavailable on 3.13 at the time of writing)
+- I reccomend the ITK-SNAP visualisation and manual segmentation tool so that you can compare the autoamted results vs manual segmentation. I also have a separate CNN based segmentation but it doesn't go down to the level that the automated tooling does.
+
+## Installation
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/myztery-neuroimg/intensityclustering
+   cd intensityclustering
+   ```
+
+2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
+
+3. Make the pipeline script executable:
+   ```bash
+   chmod +x pipeline.sh
+   chmod +x modules/*.sh
+   chmod +x tests/*.sh
+   ```
+
+4. Create a python venv and install required packages. I *strongly* recommend to use `uv` instead of `venv` especially to ensure python 3.12
+   ```bash
+   python -m venv venv .
+   source ./bin/activate
+   pip install -r requirements.txt
+   # alternatively:
+   uv init
+   uv python pin #version
+   uv pip install -r requirements.txt
+   uv venv / uv sync
+   ```
+
 # Install dependencies
 # Ensure you have ANTs, FSL, Convert3D, dcm2niix, and FreeSurfer installed
 
@@ -127,7 +170,9 @@ If you don't the script will conveniently tell you
 python -m pip install -r requirements.txt
 ```
 
-Pro-tip: prefereably use `uv` - everything is already packaged for this!
+Pro-tip: prefereably use `uv` - everything is already packaged for this and its much easier.
+
+I will release a docker image some time in the future but bear in mind that GPU acceleration isn't available in Docker on Apple Silicon.
 
 ## Quick Start
 
