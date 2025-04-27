@@ -1,6 +1,6 @@
 # intensityclustering: Brainstem/Pons MRI Analysis Pipeline ("BrainstemX")
 
-BrainStem X (a Brainstem/Pons specific implementation of intensityclustering) is an end-to-end pipeline designed for precise clustering analysis of subtle T2 hyperintensities/T1 hypointensities in these critical brain neuroanatomical regions. These are regions that traditional neuroimaging pipelines often handle poorly and that can present clinically with very subtle variations below the clinical threshold to human radiologists. This pipeline addresses the unique challenges of brainstem imaging with:
+BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an end-to-end pipeline designed for precise analysis of subtle T2/FLAIR hyperintensity/T1 hypointensity clusters in these critical brain neuroanatomical regions. Brainstem regions can present clinically with very subtle variations below the clinical threshold to human radiologists and standard research methods. This pipeline tries to address some the  challenges via:
 
 - **Multi-modal integration** across T1/T2/FLAIR/SWI/DWI sequences with cross-modality anomaly detection
 - **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences).
@@ -11,7 +11,7 @@ BrainStem X (a Brainstem/Pons specific implementation of intensityclustering) is
 
 ## What Makes BrainStem X Different
 
-BrainStem X supports analysis of the entire spectrum of available clinical data:
+BrainStem X supports analysis of a wide spectrum of clinical datasets:
 
 - **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
   - 3D MPRAGE T1-weighted imaging
@@ -24,7 +24,7 @@ BrainStem X supports analysis of the entire spectrum of available clinical data:
   - Non-isotropic voxel reconstruction
   - Single-sequence limited protocols
 
-The pipeline extracts DICOM metadata including detailed acquisition parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and registration techniques using research-grade ANTs and FSL libraries and segmentation against cutting-edge atlases. N4 bias field correction, a popular method for correcting low frequency intensity non-uniformity present in MRI image data, and scanner orientation correction help ensure integrity of your results. 20 validations within the qa module alone ensure consistency and reliability of your results.
+The pipeline extracts DICOM metadata including acquisition/scanner parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and registration techniques using research-grade ANTs and FSL libraries and segmentation against cutting-edge atlases. N4 bias field correction and scanner orientation correction help ensure integrity of your results. 20 validations within the qa module alone ensure consistency and reliability of your results.
 
 This enables analysis of datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
 
@@ -56,21 +56,6 @@ This enables analysis of datasets from scans of varying imaging capabilities and
 - Vendor-specific optimizations for Siemens, Philips, and GE scanners
 - Validated processing across 1.5T and 3T field strengths
 - DICOM backtrace for clinical verification of findings in native viewer format
-
-## Technical Foundation
-
-BrainStem X leverages established neuroimaging tools while extending them for brainstem-specific analysis:
-
-- **ANTs**: Extended with custom orientation preservation constraints
-- **FSL**: Integrated with enhanced cluster analysis thresholding
-- **FreeSurfer**: Utilized for 3D visualization of anomaly distribution
-- **Custom Python modules**: Implemented for cross-modality registration and cluster correlation
-
-### Acquisition-Specific Processing and Registration
-- Detection of 3D isotropic sequences through header metadata analysis
-- Multi-axial integration for 2D sequences with gap interpolation
-- Resolution-specific parameter selection for registration and segmentation
-- Quantitative quality metrics that reflect acquisition limitations
 
 ## Example Workflow
 
@@ -159,7 +144,7 @@ Pro-tip: prefereably use `uv` - everything is already packaged for this!
 
 ## Unique Advantages
 
-Unlike general-purpose neuroimaging tools, BrainStem X provides:
+BrainStem X provides:
 
 ### Specialized Brainstem Focus: Targeted methods for brainstem and pontine lesion detection
 ### Acquisition-Specific Processing: Tailored workflows for both research-grade and standard clinical protocols
@@ -169,6 +154,13 @@ Unlike general-purpose neuroimaging tools, BrainStem X provides:
 ### Reliability: Comprehensive validation metrics for registration and segmentation quality
 
 # Acknowledgments 
+
+BrainStem X leverages established neuroimaging tools while extending them for brainstem-specific analysis:
+
+- **ANTs**: Extended with custom orientation preservation constraints
+- **FSL**: Integrated with enhanced cluster analysis thresholding
+- **FreeSurfer**: Utilized for 3D visualization of anomaly distribution
+- **Custom Python modules**: Implemented for cross-modality registration and cluster correlation
 
 ## Neuroimaging Tools
 
@@ -199,9 +191,9 @@ This project was developed independently without institutional backing
 
 ## Citation
 
-If you use BrainStem X in your research, please cite:
-@software{BrainStemX2025},
-  author = Myztery Evaluation c/o LazyEvaluation,
+If you use BrainStem X in your research, you may cite:
+@software{BrainStemX2025,
+  author = {Myztery Evaluation c/o LazyEvaluation},
   title = {BrainStem X: Advanced Brainstem/Pons MRI Analysis Pipeline},
   year = {2025},
   url = {https://github.com/myzteryneuro/intensityclustering}
@@ -210,3 +202,5 @@ If you use BrainStem X in your research, please cite:
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+# Contributing
+Yes, please! Just submit a PR, all contributions are welcome as are research or clinical feedback about the radiological and technical pipeline foundations! Thanks in advance..
