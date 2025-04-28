@@ -1,6 +1,6 @@
 # intensityclustering: Brainstem/Pons MRI Analysis Pipeline ("BrainstemX")
 
-BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an end-to-end pipeline designed for precise analysis of subtle T2/FLAIR hyperintensity/T1 hypointensity clusters in these critical brain neuroanatomical regions. Brainstem regions can present clinically with very subtle variations below the clinical threshold to human radiologists and standard research methods. This pipeline tries to address some the  challenges via:
+BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an end-to-end pipeline designed for precise analysis of subtle T2/FLAIR hyperintensity/T1 hypointensity clusters in these critical brain neuroanatomical regions. Brainstem regions can present clinically with very subtle variations below the clinical threshold to human radiologists and standard research methods. This pipeline tries to address some the  challenges via
 
 - **Multi-modal integration** across T1/T2/FLAIR/SWI/DWI sequences with cross-modality anomaly detection
 - **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences).
@@ -9,27 +9,34 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **Multiple fallback methods** ensuring robust results even with suboptimal input data
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
 
+## Project status
+
+The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality.
+
 ## What Makes BrainStem X Different
 
-BrainStem X supports analysis of a wide spectrum of clinical datasets:
+BrainStem X supports analysis of a wide variety of clinical neuroimaging MRI datasets:
 
 - **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
   - 3D MPRAGE T1-weighted imaging
-  - Optimisations for 3T scanners
-  - 3D SPACE/VISTA T2-FLAIR with SAG acquisition
-  - Multi-parametric SWI/DWI integration
+  - Optimisations for 3T scanners, accomodations for 1.5T
+  - 3D SPACE/VISTA T2-FLAIR with SAG acquisition where available
+  - Multi-parametric SWI/DWI integration as quantifiable support for T1W/FLAIR clustering results
 
 - **Routine Clinical Protocols**: Robust fallback for standard clinical acquisitions
   - Thick-slice (3-5mm) 1.5T 2D axial FLAIR with gaps, along with standard T1/T1-MPR to register against
-  - Non-isotropic voxel reconstruction
-  - Single-sequence limited protocols
+  - Non-isotropic voxel reconstruction estimation via ANTs
+  - Single-sequence limited protocols e.g., AX FLAIR
+  - Normalisation against MNT space and signal levels agaisnt the baseline of the individual subject
 
-The pipeline extracts DICOM metadata including acquisition/scanner parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and registration techniques using research-grade ANTs and FSL libraries and segmentation against cutting-edge atlases. N4 bias field correction and scanner orientation correction help ensure integrity of your results. 20 validations within the qa module alone ensure consistency and reliability of your results.
+The pipeline extracts DICOM metadata including acquisition/scanner parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and attempts registration techniques using ANTs and FSL libraries and atlas-based segmentation of the brainsteam, dorsal and ventral pons. 
+Configurable N4 bias field correction and scanner orientation correction implementations help ensure integrity of your results. 20 validations within the qa module alone ensure consistency and reliability of your results.
 
-This enables analysis of datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
+These capabilities are included to support analysis of signal intensity actoss datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
 
 ![image](https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1)
-## Key Features
+
+## Features
 
 ### Acquisition-Specific Processing and Registration
 - Detection of 3D isotropic sequences through header metadata analysis
@@ -39,24 +46,26 @@ This enables analysis of datasets from scans of varying imaging capabilities and
 
 ### Advanced Segmentation
 - Harvard-Oxford, Talairach and ANTs segmentation approaches with automatic fallback
-- Precise dorsal/ventral pons division using principal component analysis
-- Geometric approximation fallback when atlas approaches fail
+- Support for SUIT Atlas sub-region segmentation of the Brainstem (I wasnt able to find the SUIT dataset so this likely needs small modifications)
+- Precise dorsal/ventral pons division using principal component analysis eg WM tissue in this anatomical region
+- Geometric approximation of brainsteam architecture as fallback when atlas segmentation approachess fail
+- Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy
 
 ### Cluster Analysis
 - Statistical hyperintensity detection with multiple threshold approaches (1.5-3.0 SD)
 - Cross-modality cluster overlap quantification across MRI sequences
-- Objective anomaly detection independent of manual segmentation bias
+- Pure quantile-bassd anomaly detection specific to subject, independent of manual labelling bias associated with deep learning models
 
 ### Technical Implementation
 - Orientation distortion correction leveraging ANTs transformation frameworks
 - Quantitative registration validation with comprehensive QA metrics
 - Efficient resource utilization through parallel processing
-- 3D visualization of anomalies with comprehensive HTML reporting
+- 3D visualization via standard NiFTi volumes and masks of anomalies with comprehensive HTML reporting
 
 ### Clinical Focus
-- Vendor-specific optimizations for Siemens, Philips, and GE scanners
-- Validated processing across 1.5T and 3T field strengths
-- DICOM backtrace for clinical verification of findings in native viewer format
+- Vendor-specific optimizations for Siemens and Philips scanners (future: implement DICOM-RT and PACS integration as well)
+- Practical configuration support to optimise output validity across 1.5T and 3T field strengths
+- A novel DICOM backtrace for clinical verification of findings in native viewer format, because nothing in post-processing pipelines is proven until you can map it back to source of truth raw scanner output
 
 ## Example Workflow
 
