@@ -79,11 +79,6 @@ graph TD
 
 ## Installation
 
-```
-# Clone the repository
-git clone https://github.com/yourusername/brainstem-x
-cd brainstem-x
-
 ## Requirements
 
 - ANTs (Advanced Normalization Tools): https://github.com/ANTsX/ANTs/wiki/Installing-ANTs-release-binaries
@@ -100,7 +95,7 @@ cd brainstem-x
 ## Installation
 
 1. Clone this repository:
-   ```bash
+   ```
    git clone https://github.com/myztery-neuroimg/intensityclustering
    cd intensityclustering
    ```
