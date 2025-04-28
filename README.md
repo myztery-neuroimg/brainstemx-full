@@ -25,7 +25,7 @@ BrainStem X supports analysis of a wide variety of clinical neuroimaging MRI dat
   - Multi-parametric SWI/DWI integration as quantifiable support for T1W/FLAIR clustering results
 
 - **Routine Clinical Protocols**: Robust fallback for standard clinical acquisitions
-  - Thick-slice (3-5mm) 1.5T 2D axial FLAIR with gaps, along with standard T1/T1-MPR to register against
+  - Thick-slice (3-5mm) 1.5T 2D axial FLAIR with gaps, where we likely have thin slice 3D T1/T1-MPR to register against
   - Non-isotropic voxel reconstruction estimation via ANTs
   - Single-sequence limited protocols e.g., AX FLAIR
   - Normalisation against MNT space and signal levels agaisnt the baseline of the individual subject
