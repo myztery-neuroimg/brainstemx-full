@@ -12,7 +12,7 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 
 ## Project status
 
-The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality.
+The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality. The project is heavily optimised for Apple Metal but there is no technical reason that any Linux based-system should not support the system. Future works including a portable docker implementation via neurodocker.
 
 ## What Makes BrainStem X Different
 
