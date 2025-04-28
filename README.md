@@ -40,7 +40,7 @@ These capabilities are included to support analysis of signal intensity actoss d
 ## Features
 
 ### Acquisition-Specific Processing and Registration
-- Detection of 3D isotropic sequences through header metadata analysis
+- Detection of 3D isotropic sequences through header metadata analysis - slice thicknesses for example, not just scanner specific private headers
 - Multi-axial integration for 2D sequences with gap interpolation
 - Resolution-specific parameter selection for registration and segmentation
 - Quantitative quality metrics that reflect acquisition limitations
