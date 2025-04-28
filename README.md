@@ -6,8 +6,9 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **N4 Bias Field AND slice-acquisiton** correction (e.g., SAG-acquired FLAIR sequences).
 - **Precise orientation preservation** critical for analyzing directionally sensitive brainstem microstructure
 - **Zero-shot/unsupervised cluster analysis** which could identify signal anomalies without manual segmentation or human false negative biases
-- **Multiple fallback methods** ensuring robust results even with suboptimal input data
+- **Multiple fallback methods** at various steps, activated by quantitative quality metrics, adding robustness to results even with suboptimal slice thickness, modalities and IPR
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
+- **Parallel processing** of subjects and optimisation of multithreaded performance and standardised outputs to support larger cohort analysis
 
 ## Project status
 
