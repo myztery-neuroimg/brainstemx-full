@@ -126,7 +126,8 @@ graph TD
 
 If you don't the script will conveniently tell you
 
-[INFO] ==== MRI Processing Dependency Checker ====
+ ``` 
+==== Dependency Checker ====
 [ERROR] ✗ dcm2niix is not installed or not in PATH
 [INFO] Try: brew install dcm2niix
 [INFO] Checking ANTs tools...
