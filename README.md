@@ -123,14 +123,14 @@ graph TD
 2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
 
 3. Make the pipeline script executable:
-   ```bash
+   ```
    chmod +x pipeline.sh
    chmod +x modules/*.sh
    chmod +x tests/*.sh
    ```
 
 4. Create a python venv and install required packages. I *strongly* recommend to use `uv` instead of `venv` especially to ensure python 3.12
-   ```bash
+   ```
    python -m venv venv .
    source ./bin/activate
    pip install -r requirements.txt
@@ -244,23 +244,28 @@ BrainStem X leverages established neuroimaging tools while extending them for br
   ```
   
 * Talairach Atlas
-  ```
+  
+```
   Lancaster JL, Woldorff MG, Parsons LM, Liotti M, Freitas CS, Rainey L, Kochunov PV, Nickerson D, Mikiten SA, Fox PT, "Automated Talairach Atlas labels for functional brain mapping". Human Brain Mapping 10:120-131, 2000. [pdf] [PubMed]
   Lancaster JL, Rainey LH, Summerlin JL, Freitas CS, Fox PT, Evans AC, Toga AW, Mazziotta JC. Automated labeling of the human brain: A preliminary report on the development and evaluation of a forward-transform method. Hum Brain Mapp 5, 238-242, 1997. [pdf]
 ```
 
 * MNI152 Standard Space Templates
 * SUIT Cerebellar Atlas
-  ```
+
+Diedrichsen, J. (2006). A spatially unbiased atlas template of the human cerebellum. Neuroimage, 33, 1, p. 127-138.  pdf format
+Diedrichsen, J., Balsters, J. H., Flavell, J., Cussans, E., & Ramnani, N. (2009). A probabilistic atlas of the human cerebellum. Neuroimage.  pdf format
+Diedrichsen, J., Maderwald, S., Kuper, M., Thurling, M., Rabe, K., Gizewski, E. R., et al. (2011). Imaging the deep cerebellar nuclei: A probabilistic atlas and normalization procedure. Neuroimage.pdf format
+Diedrichsen, J. & Zotow, E. (2015). Surface-based display of volume-averaged cerebellar data. PLoS One, 7, e0133402.  pdf format
 
 ## Programming Resources / Libraries (including..)
 
 * Python Neuroimaging Libraries (NiBabel, PyDicom)
 * GNU Parallel
 
-  ```
+```
   Tange, O. (2022). GNU Parallel 20220822 ('Rushdie'). Zenodo. https://doi.org/10.5281/zenodo.7015730.
-  ```
+```
   
 * Matplotlib & Seaborn
 * NumPy & SciPy
