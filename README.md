@@ -201,6 +201,8 @@ I will release a docker image some time in the future but bear in mind that GPU 
 
 ## Unique Advantages
 
+See docs/comparison-to-sota.md
+
 BrainStem X provides:
 
 ### Specialized Brainstem Focus: Targeted methods for brainstem and pontine lesion detection
