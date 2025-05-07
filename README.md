@@ -264,7 +264,7 @@ Diedrichsen, J. & Zotow, E. (2015). Surface-based display of volume-averaged cer
 * GNU Parallel
 
 ```
-  Tange, O. (2022). GNU Parallel 20220822 ('Rushdie'). Zenodo. https://doi.org/10.5281/zenodo.7015730.
+When using GNU Parallel for processing data in scientific publications, you are required to cite the software. The citation format is: Tange, O. (2022). GNU Parallel 20220822 ('Rushdie'). Zenodo. https://doi.org/10.5281/zenodo.7015730.
 ```
   
 * Matplotlib & Seaborn
