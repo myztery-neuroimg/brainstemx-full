@@ -136,7 +136,7 @@ graph TD
 
 If you don't the script will conveniently tell you
 
- ``` 
+``` 
 ==== Dependency Checker ====
 [ERROR] ✗ dcm2niix is not installed or not in PATH
 [INFO] Try: brew install dcm2niix
@@ -238,16 +238,16 @@ BrainStem X leverages established neuroimaging tools while extending them for br
 
 # Independent Development
 
-This project was developed independently without institutional backing
+This project was developed independently without institutional or any other backing. I'm making this as available as possible to inspire development in this area of research.
 
 ## Citation
 
 If you use BrainStem X in your research, you may cite:
 @software{BrainStemX2025,
-  author = {Myztery Evaluation c/o LazyEvaluation},
+  author = {David Brewster c/o LazyEvaluation},
   title = {BrainStem X: Advanced Brainstem/Pons MRI Analysis Pipeline},
   year = {2025},
-  url = {https://github.com/myzteryneuro/intensityclustering}
+  url = {https://github.com/myzteryneuro/pons.myztery}
 }
 
 # License
