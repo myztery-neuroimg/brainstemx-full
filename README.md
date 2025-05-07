@@ -260,6 +260,11 @@ If you use BrainStem X in your research, you may cite:
   url = {https://github.com/myzteryneuro/pons.myztery}
 }
 
+# Ethics
+
+There's no REAL data here, this is highly manipulated data of the author, there's no ethics but also unfortunately as a result, no absolute truth grounded results to refer back to.
+I want to soon compare with other tooling to see how it compares.
+
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
