@@ -227,6 +227,8 @@ BrainStem X leverages established neuroimaging tools while extending them for br
 
 ## Neuroimaging Tools
 
+* NOTE: Some of these tools have different licences and you must agree or disagree individually with their licence terms.*
+
 * ANTs (Advanced Normalization Tools)
 * FSL (FMRIB Software Library)
 * FreeSurfer
@@ -237,14 +239,29 @@ BrainStem X leverages established neuroimaging tools while extending them for br
 ## Atlases & Templates
 
 * Harvard-Oxford Subcortical Structural Atlas
+  ```
+  Rushmore R.J., Sunderland, K., Carrington H., Chen J., Halle M., Lasso A., Papadimitriou G., Prunier N., Rizzoni E., Vessey B., Wilson-Braun P., Rathi Y., Kubicki M., Bouix S., Yeterian E. and Makris N. (2022) Anatomically curated segmentation of human subcortical structures in high resolution magnetic resonance imaging: An open science approach. Front. Neuroanat. 16:894606. doi:10.3389/fnana.2022.894606
+  ```
+  
 * Talairach Atlas
+  ```
+  Lancaster JL, Woldorff MG, Parsons LM, Liotti M, Freitas CS, Rainey L, Kochunov PV, Nickerson D, Mikiten SA, Fox PT, "Automated Talairach Atlas labels for functional brain mapping". Human Brain Mapping 10:120-131, 2000. [pdf] [PubMed]
+  Lancaster JL, Rainey LH, Summerlin JL, Freitas CS, Fox PT, Evans AC, Toga AW, Mazziotta JC. Automated labeling of the human brain: A preliminary report on the development and evaluation of a forward-transform method. Hum Brain Mapp 5, 238-242, 1997. [pdf]
+```
+
 * MNI152 Standard Space Templates
 * SUIT Cerebellar Atlas
+  ```
 
 ## Programming Resources / Libraries (including..)
 
 * Python Neuroimaging Libraries (NiBabel, PyDicom)
 * GNU Parallel
+
+  ```
+  Tange, O. (2022). GNU Parallel 20220822 ('Rushdie'). Zenodo. https://doi.org/10.5281/zenodo.7015730.
+  ```
+  
 * Matplotlib & Seaborn
 * NumPy & SciPy
 
