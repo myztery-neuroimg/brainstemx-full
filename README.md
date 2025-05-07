@@ -60,8 +60,8 @@ This kind of visualisation with the ability to track back to raw DICOM files and
 ### Cluster Analysis
 - Statistical hyperintensity detection with multiple threshold approaches (1.5-3.0 SD)
 - Cross-modality cluster overlap quantification across MRI sequences
-- Pure quantile-bassd anomaly detection specific to subject, i![Uploading Simulated Cluster Summary Table .png…]()
-ndependent of manual labelling bias associated with deep learning models
+- Pure quantile-bassd anomaly detection specific to subject, independent of manual labelling bias associated with deep learning models
+- This means you can manipulate DICOM files to add clusters, hyperintensities/hypointensities and manually validate the _process_ - every step of its decision making - rather than it being a "black box"
 
 ### Technical Implementation
 - Orientation distortion correction leveraging ANTs transformation frameworks
