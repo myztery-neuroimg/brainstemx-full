@@ -106,8 +106,8 @@ graph TD
 
 1. Clone this repository:
    ```
-   git clone https://github.com/myztery-neuroimg/intensityclustering
-   cd intensityclustering
+   git clone https://github.com/myztery-neuroimg/pons.myztery
+   cd pons.myztery
    ```
 
 2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
@@ -132,7 +132,7 @@ graph TD
    ```
 
 # Install dependencies
-# Ensure you have ANTs, FSL, Convert3D, dcm2niix, and FreeSurfer installed
+# Ensure you have ANTs, FSL, Convert3D, dcm2niix, Parallel and FreeSurfer installed. Conventiently, most are available via `homebrew` (macOS).
 
 If you don't the script will conveniently tell you
 
