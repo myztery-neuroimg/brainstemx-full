@@ -286,11 +286,13 @@ If you use BrainStem X in your research, you may cite:
 
 # Ethics
 
-There's no REAL data here, this is highly manipulated data of the author, there's no ethics but also unfortunately as a result, no absolute truth grounded results to refer back to.
-I want to soon compare with other tooling to see how it compares.
+This is manipulated data of the author, there's no ethics but also unfortunately as a result, no absolute truth grounded results to refer back to.
+I want to soon compare with other tooling including ML based approaches to see how the results compares.
+A Colab worksheet is in the works as well.
 
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.
+INDIVIDUAL PACKAGES, ATLASSES, TOOLS, FRAMEWORKS REFERENCED IN THE PIPELINE STEPS HAVE THEIR OWN LICENCES - YOU ARE RESPONSIBLE FOR ACCEPTING OR DECLINING THOSE. THEY ARE NEVER PRE-INSTALLED AS PART OF MY SOFTWARE.
 
 # Contributing
 Yes, please! Just submit a PR, all contributions are welcome as are research or clinical feedback about the radiological and technical pipeline foundations! Thanks in advance..
