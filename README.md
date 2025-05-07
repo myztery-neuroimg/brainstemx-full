@@ -284,6 +284,16 @@ If you use BrainStem X in your research, you may cite:
   url = {https://github.com/myzteryneuro/pons.myztery}
 }
 
+# Disclaimer
+
+This is a purely exploratory project. It is not clinically validated or necessarily robust or accurate. 
+
+DO NOT RELY ON ANY RESULTS. 
+
+Always seek medical advice on any medical concerns.
+
+The authors will not be held responsible for misuse of the software.
+
 # Ethics
 
 This is manipulated data of the author, there's no ethics but also unfortunately as a result, no absolute truth grounded results to refer back to.
