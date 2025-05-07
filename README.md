@@ -16,6 +16,8 @@ The project is in active development as of April 2025 and whilst many improvemen
 
 ## What Makes BrainStem X Different
 
+Firstly, I should qualify my background is Computer Science and Mathematics. I don't know the inner workings of the brainstem, what "normal" looks like, but I tried to find as many open source datasets as I could. I know there are regions that are typically more intense, even within the dorsal and ventral pons, but that overall this is a relatively homogenous part of the brain, and very hard to visualise. So, real expertise would help a whole bunch here.. but I think computer science and mathematics have a lot to offer the field and so this is my attempt..
+
 BrainStem X supports analysis of a wide variety of clinical neuroimaging MRI datasets:
 
 - **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
