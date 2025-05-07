@@ -10,6 +10,86 @@ try:
 except ImportError:
     nib = None
 
+def load_affines(matrix_paths):
+    affines = []
+    for path in matrix_paths:
+        A = np.loadtxt(path)
+        if A.shape == (3, 4):
+            A = np.vstack([A, [0, 0, 0, 1]])
+        affines.append(np.linalg.inv(A))  # invert here for reverse mapping
+    return affines
+
+def transform_coord(coord, affine_chain):
+    coord = np.array(list(coord) + [1.0])
+    for A in reversed(affine_chain):
+        coord = A @ coord
+    return coord[:3]
+
+def find_matching_slice(ds, target_coord, tolerance=1.5):
+    ipp = np.array(ds.ImagePositionPatient, dtype=float)
+    iop = np.array(ds.ImageOrientationPatient, dtype=float)
+    row, col = iop[:3], iop[3:]
+    normal = np.cross(row, col)
+    diff = target_coord - ipp
+    dist = abs(np.dot(diff, normal))
+    return dist <= tolerance
+
+def pixel_coords(ds, target_coord):
+    ipp = np.array(ds.ImagePositionPatient, dtype=float)
+    iop = np.array(ds.ImageOrientationPatient, dtype=float)
+    row, col = iop[:3], iop[3:]
+    spacing = [float(s) for s in ds.PixelSpacing]
+    vec = target_coord - ipp
+    col_px = int(np.dot(vec, row) / spacing[1])
+    row_px = int(np.dot(vec, col) / spacing[0])
+    return row_px, col_px
+
+def draw_crosshair(img, row, col, color=(255, 0, 0)):
+    draw = ImageDraw.Draw(img)
+    draw.line([(0, row), (img.width - 1, row)], fill=color)
+    draw.line([(col, 0), (col, img.height - 1)], fill=color)
+
+def process_clusters(clusters, affines, dicom_dir, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    output_json = []
+
+    dcm_paths = [
+        os.path.join(dp, f) for dp, _, files in os.walk(dicom_dir)
+        for f in files if f.lower().endswith('.dcm')
+    ]
+
+    for cid, x, y, z in clusters:
+        native = transform_coord((x, y, z), affines)
+
+        for dcm_file in sorted(dcm_paths):
+            try:
+                ds = dcmread(dcm_file)
+                if find_matching_slice(ds, native):
+                    row, col = pixel_coords(ds, native)
+                    pix = ds.pixel_array.astype(np.float32)
+                    pmin, pmax = pix.min(), pix.max()
+                    norm = ((pix - pmin) / (pmax - pmin) * 255).clip(0, 255).astype(np.uint8)
+                    img = Image.fromarray(norm).convert("RGB")
+                    draw_crosshair(img, row, col)
+                    outname = f"{cid}_{os.path.basename(dcm_file)}.png"
+                    outpath = os.path.join(output_dir, outname)
+                    img.save(outpath)
+
+                    output_json.append({
+                        "cluster_id": cid,
+                        "orig_coord_mm": [x, y, z],
+                        "native_coord_mm": native.tolist(),
+                        "dicom_file": dcm_file,
+                        "png": outpath,
+                        "pixel_xy": [int(col), int(row)]
+                    })
+                    break
+            except Exception as e:
+                continue
+
+    with open(os.path.join(output_dir, "cluster_dicom_trace.json"), "w") as jf:
+        json.dump(output_json, jf, indent=2)
+
 def transform_to_scanner(coord, source_affine=None, transform_affine=None):
     """
     Transform a coordinate from source image space to scanner (patient) space.
