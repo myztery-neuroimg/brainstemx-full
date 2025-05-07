@@ -58,11 +58,6 @@ This kind of visualisation with the ability to track back to raw DICOM files and
 - Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy
 
 ### Cluster Analysis
-<img width="661" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/8eb8b020-d004-4e7c-8320-4267408d4641" />
-
-
-
-
 - Statistical hyperintensity detection with multiple threshold approaches (1.5-3.0 SD)
 - Cross-modality cluster overlap quantification across MRI sequences
 - Pure quantile-bassd anomaly detection specific to subject, i![Uploading Simulated Cluster Summary Table .png…]()
