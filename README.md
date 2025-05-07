@@ -35,7 +35,12 @@ Configurable N4 bias field correction and scanner orientation correction impleme
 
 These capabilities are included to support analysis of signal intensity actoss datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
 
-![image](https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1)
+This kind of visualisation with the ability to track back to raw DICOM files and map clusters across modalities could potentially be quite useful, even without machine learning techniques which of course are all the rage nowadays. This is a very much first-principles approach but it uses the very latest techniques and grounded research up to 2023.
+
+<image width="750" alt="Simulated Hyperintensity Cluster on T2-SPACE-FLAIR" src="https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1" />
+
+<img width="500" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/72f2f11f-b19c-41bc-8eda-10997b2e96eb" />
+
 
 ## Features
 
@@ -53,9 +58,15 @@ These capabilities are included to support analysis of signal intensity actoss d
 - Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy
 
 ### Cluster Analysis
+<img width="661" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/8eb8b020-d004-4e7c-8320-4267408d4641" />
+
+
+
+
 - Statistical hyperintensity detection with multiple threshold approaches (1.5-3.0 SD)
 - Cross-modality cluster overlap quantification across MRI sequences
-- Pure quantile-bassd anomaly detection specific to subject, independent of manual labelling bias associated with deep learning models
+- Pure quantile-bassd anomaly detection specific to subject, i![Uploading Simulated Cluster Summary Table .png…]()
+ndependent of manual labelling bias associated with deep learning models
 
 ### Technical Implementation
 - Orientation distortion correction leveraging ANTs transformation frameworks
