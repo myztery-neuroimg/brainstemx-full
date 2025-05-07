@@ -9,7 +9,7 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **Multiple fallback methods** at various steps, activated by quantitative quality metrics, adding robustness to results even with suboptimal slice thickness, modalities and IPR
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
 - **Parallel processing** of subjects and optimisation of multithreaded performance and standardised outputs to support larger cohort analysis
-
+- **Attempts to take state of the art approaches as of 2023/2024 and combine them** - see https://github.com/myztery-neuroimg/pons.myztery/blob/main/docs/sota-comparison.md 
 ## Project status
 
 The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality. The project is heavily optimised for Apple Metal but there is no technical reason that any Linux based-system should not support the system. Future works including a portable docker implementation via neurodocker.
