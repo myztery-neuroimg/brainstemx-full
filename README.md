@@ -222,6 +222,15 @@ BrainStem X leverages established neuroimaging tools while extending them for br
 
 - **ANTs**: Extended with custom orientation preservation constraints
 - **FSL**: Integrated with enhanced cluster analysis thresholding
+
+```
+M.W. Woolrich, S. Jbabdi, B. Patenaude, M. Chappell, S. Makni, T. Behrens, C. Beckmann, M. Jenkinson, S.M. Smith. Bayesian analysis of neuroimaging data in FSL. NeuroImage, 45:S173-86, 2009
+
+S.M. Smith, M. Jenkinson, M.W. Woolrich, C.F. Beckmann, T.E.J. Behrens, H. Johansen-Berg, P.R. Bannister, M. De Luca, I. Drobnjak, D.E. Flitney, R. Niazy, J. Saunders, J. Vickers, Y. Zhang, N. De Stefano, J.M. Brady, and P.M. Matthews. Advances in functional and structural MR image analysis and implementation as FSL. NeuroImage, 23(S1):208-19, 2004
+
+M. Jenkinson, C.F. Beckmann, T.E. Behrens, M.W. Woolrich, S.M. Smith. FSL. NeuroImage, 62:782-90, 2012
+```
+
 - **FreeSurfer**: Utilized for 3D visualization of anomaly distribution
 - **Custom Python modules**: Implemented for cross-modality registration and cluster correlation
 
@@ -230,7 +239,27 @@ BrainStem X leverages established neuroimaging tools while extending them for br
 * NOTE: Some of these tools have different licences and you must agree or disagree individually with their licence terms.*
 
 * ANTs (Advanced Normalization Tools)
+
+@article{tustison_antsx_2021,
+	title = {The {ANTsX} ecosystem for quantitative biological and medical imaging},
+	volume = {11},
+	issn = {2045-2322},
+	url = {https://doi.org/10.1038/s41598-021-87564-6},
+	doi = {10.1038/s41598-021-87564-6},
+	number = {1},
+	journal = {Scientific Reports},
+	author = {Tustison, Nicholas J. and Cook, Philip A. and Holbrook, Andrew J. and Johnson, Hans J. and Muschelli, John and Devenyi, Gabriel A. and Duda, Jeffrey T. and Das, Sandhitsu R. and Cullen, Nicholas C. and Gillen, Daniel L. and Yassa, Michael A. and Stone, James R. and Gee, James C. and Avants, Brian B.},
+	month = apr,
+	year = {2021},
+	pages = {9068},
+}
+
 * FSL (FMRIB Software Library)
+
+```
+Jenkinson M, Beckmann CF, Behrens TE, Woolrich MW, Smith SM. FSL. Neuroimage. 2012;62(2):782-790.
+```
+
 * FreeSurfer
 * Convert3D
 * dcm2niix
