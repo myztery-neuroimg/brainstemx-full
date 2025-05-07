@@ -51,17 +51,19 @@ This kind of visualisation with the ability to track back to raw DICOM files and
 - Multi-axial integration for 2D sequences with gap interpolation
 - Resolution-specific parameter selection for registration and segmentation
 - Quantitative quality metrics that reflect acquisition limitations
+- Pick the highest quality T1 (ideally MPR) and T2-FLAIR (or SWI/DWI/etc) acquisition modality and series automatically
+- Align them to standard space when you need to, otherwise keep at high resolution, and process in float number format so you donb't lose resolution or intoduce noise
 
 ### Advanced Segmentation
-- Harvard-Oxford, Talairach and ANTs segmentation approaches with automatic fallback
-- Support for SUIT Atlas sub-region segmentation of the Brainstem (I wasnt able to find the SUIT dataset so this likely needs small modifications)
-- Precise dorsal/ventral pons division using principal component analysis eg WM tissue in this anatomical region
-- Geometric approximation of brainsteam architecture as fallback when atlas segmentation approachess fail
-- Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy
+- Harvard-Oxford, Talairach, SUIT ATLASes and spaces and ANTs segmentation approaches with a "pseduo" fallback of just splitting the brainstem identified by Harvard atlas into "two" - ventral and dorsal
+- Dorsal/ventral pons division using principal component analysis eg WM tissue in this anatomical region
+- Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy with an extremely "over-the-top" QA module
 
 ### Cluster Analysis
-- Statistical hyperintensity detection with multiple threshold approaches (1.5-3.0 SD)
+- Statistical hyperintensity detection with multiple threshold approaches (1.5-3.0 SD, or whatever you want to configure, from the baseline intensity, and also whatever minimum size).
 - Cross-modality cluster overlap quantification across MRI sequences
+- Smoothing of white-matter regions so you don't just pick up spotty outlier pixels
+- Cross-plane confirmation:- validate via axial, sagital and coronal views that what you're seeing is a real cluster of hyperintense pixels on FLAIR
 - Pure quantile-bassd anomaly detection specific to subject, independent of manual labelling bias associated with deep learning models
 - This means you can manipulate DICOM files to add clusters, hyperintensities/hypointensities and manually validate the _process_ - every step of its decision making - rather than it being a "black box"
 
