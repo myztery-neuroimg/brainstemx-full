@@ -133,24 +133,25 @@ correct_orientation_distortion() {
     local temp_dir=$(mktemp -d)
     
     # Calculate gradient fields to detect orientation distortion
-    log_message "Calculating gradient fields to detect orientation distortion"
-    fslmaths "$fixed" -gradient_x "${temp_dir}/fixed_grad_x.nii.gz"
-    fslmaths "$fixed" -gradient_y "${temp_dir}/fixed_grad_y.nii.gz"
-    fslmaths "$fixed" -gradient_z "${temp_dir}/fixed_grad_z.nii.gz"
+    log_message "SKIPPED: Calculating gradient fields to detect orientation distortion"
+    return 0
+    #fslmaths "$fixed" -gradient_x "${temp_dir}/fixed_grad_x.nii.gz"
+    #fslmaths "$fixed" -gradient_y "${temp_dir}/fixed_grad_y.nii.gz"
+    #fslmaths "$fixed" -gradient_z "${temp_dir}/fixed_grad_z.nii.gz"
     
-    fslmaths "$warped" -gradient_x "${temp_dir}/warped_grad_x.nii.gz"
-    fslmaths "$warped" -gradient_y "${temp_dir}/warped_grad_y.nii.gz"
-    fslmaths "$warped" -gradient_z "${temp_dir}/warped_grad_z.nii.gz"
+    #fslmaths "$warped" -gradient_x "${temp_dir}/warped_grad_x.nii.gz"
+    #fslmaths "$warped" -gradient_y "${temp_dir}/warped_grad_y.nii.gz"
+    #fslmaths "$warped" -gradient_z "${temp_dir}/warped_grad_z.nii.gz"
     
     # Calculate gradient differences (velocity field)
     log_message "Calculating gradient differences for correction"
-    fslmaths "${temp_dir}/fixed_grad_x.nii.gz" -sub "${temp_dir}/warped_grad_x.nii.gz" "${temp_dir}/diff_x.nii.gz"
-    fslmaths "${temp_dir}/fixed_grad_y.nii.gz" -sub "${temp_dir}/warped_grad_y.nii.gz" "${temp_dir}/diff_y.nii.gz"
-    fslmaths "${temp_dir}/fixed_grad_z.nii.gz" -sub "${temp_dir}/warped_grad_z.nii.gz" "${temp_dir}/diff_z.nii.gz"
+    #fslmaths "${temp_dir}/fixed_grad_x.nii.gz" -sub "${temp_dir}/warped_grad_x.nii.gz" "${temp_dir}/diff_x.nii.gz"
+    #fslmaths "${temp_dir}/fixed_grad_y.nii.gz" -sub "${temp_dir}/warped_grad_y.nii.gz" "${temp_dir}/diff_y.nii.gz"
+    #fslmaths "${temp_dir}/fixed_grad_z.nii.gz" -sub "${temp_dir}/warped_grad_z.nii.gz" "${temp_dir}/diff_z.nii.gz"
     
     # Calculate angular deviation for quality assessment
-    local mean_angular_deviation=$(calculate_orientation_deviation "$fixed" "$warped")
-    log_message "Mean angular deviation before correction: $mean_angular_deviation"
+    #local mean_angular_deviation=$(calculate_orientation_deviation "$fixed" "$warped")
+    #log_message "Mean angular deviation before correction: $mean_angular_deviation"
     
     # Check if correction is needed based on threshold
     local correction_threshold="${ORIENTATION_CORRECTION_THRESHOLD:-0.3}"

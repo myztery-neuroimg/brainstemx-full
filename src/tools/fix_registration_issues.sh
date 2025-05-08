@@ -152,9 +152,9 @@ fix_binary_mask_datatypes() {
         local img_val_range=$(fslstats "$img" -R)
         local range_diff=$(echo "$img_val_range" | awk '{print $2 - $1}')
         local is_binary=false
-        if (( $(echo "$range_diff <= 1.01" | bc -l) )); then
-            is_binary=true
-        fi
+        #if (( $(echo "$range_diff <= 1.01" | bc -l) )); then
+        #    is_binary=true
+        #fi
         
         # Get current datatype
         local img_datatype=$(fslinfo "$img" | grep "^data_type" | awk '{print $2}')
@@ -165,9 +165,9 @@ fix_binary_mask_datatypes() {
             log_message "Converting binary mask $img to UINT8"
             fslmaths "$img" -bin "$output_file" -odt int
         elif [ "$is_binary" = false ] && [ "$img_datatype" = "UINT8" ]; then
-            local output_file="${output_dir}/$(basename "$img" .nii.gz)_int16.nii.gz"
-            log_message "Converting non-binary data $img to INT16"
-            fslmaths "$img" "$output_file" -odt int
+            #local output_file="${output_dir}/$(basename "$img" .nii.gz)_int16.nii.gz"
+            #log_message "Converting non-binary data $img to INT16"
+            #fslmaths "$img" "$output_file" -odt int
         fi
     done < <(find_nifti_files "$base_dir")
     

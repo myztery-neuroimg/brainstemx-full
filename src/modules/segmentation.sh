@@ -337,15 +337,42 @@ extract_brainstem_final() {
     }
     fi
     
-    # Extract pons from brainstem
-    log_message "Extracting pons from brainstem..."
-    extract_pons_from_brainstem "$brainstem_file" "$pons_file"
+    # Check if we have the new SUIT-based segmentation available
+    if [ -f "$(dirname "$0")/segment_pons_and_brainstem.sh" ] && [ -n "$SUIT_DIR" ]; then
+        log_message "Using advanced SUIT-based segmentation for better pons subdivision..."
+        
+        # Source the new script
+        source "$(dirname "$0")/segment_pons_and_brainstem.sh"
+        
+        # Run the comprehensive segmentation with SUIT and Juelich atlas
+        segment_brainstem_comprehensive "$input_file" "$input_basename"
+        segmentation_success=$?
+        
+        if [ $segmentation_success -ne 0 ]; then
+            log_formatted "WARNING" "Advanced segmentation failed, falling back to basic methods"
+            
+            # Extract pons from brainstem using basic method
+            log_message "Extracting pons from brainstem using legacy method..."
+            extract_pons_from_brainstem "$brainstem_file" "$pons_file"
+            
+            # Divide pons into dorsal and ventral regions
+            log_message "Dividing pons into dorsal and ventral regions using legacy method..."
+            divide_pons "$pons_file" "$dorsal_pons_file" "$ventral_pons_file"
+        fi
+    else
+        # Use legacy methods if SUIT is not available
+        log_message "SUIT-based segmentation not available, using legacy methods..."
+        
+        # Extract pons from brainstem
+        log_message "Extracting pons from brainstem..."
+        extract_pons_from_brainstem "$brainstem_file" "$pons_file"
+        
+        # Divide pons into dorsal and ventral regions
+        log_message "Dividing pons into dorsal and ventral regions..."
+        divide_pons "$pons_file" "$dorsal_pons_file" "$ventral_pons_file"
+    fi
     
-    # Divide pons into dorsal and ventral regions
-    log_message "Dividing pons into dorsal and ventral regions..."
-    divide_pons "$pons_file" "$dorsal_pons_file" "$ventral_pons_file"
-    
-    # Validate segmentation
+    # Validate segmentation (this works with either method)
     log_message "Validating segmentation..."
     validate_segmentation "$input_file" "$brainstem_file" "$pons_file" "$dorsal_pons_file" "$ventral_pons_file"
     
@@ -729,6 +756,15 @@ export -f extract_pons_from_brainstem
 export -f divide_pons
 export -f validate_segmentation
 export -f segment_tissues
+# Export new SUIT-based segmentation function if the script exists
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/segment_pons_and_brainstem.sh" ]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/segment_pons_and_brainstem.sh"
+    export -f segment_brainstem_comprehensive
+    log_message "SUIT-based brainstem segmentation loaded"
+    # Make the script executable
+    chmod +x "$(dirname "${BASH_SOURCE[0]}")/segment_pons_and_brainstem.sh"
+    chmod +x "$(dirname "${BASH_SOURCE[0]}")/segment_pons_suitlib.py"
+fi
 # These functions are already exported from environment.sh
 # export -f log_diagnostic execute_with_logging
 
