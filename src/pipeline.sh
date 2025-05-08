@@ -275,27 +275,26 @@ run_pipeline() {
   log_message "Analyzing DICOM headers for scan selection..."
   analyze_dicom_headers "$SRC_DIR" "${RESULTS_DIR}/metadata/dicom_header_analysis.txt"
   
-  # Use intelligent scan selection based on quality metrics instead of just taking the first file
-  log_message "Selecting best T1 scan based on quality metrics..."
-  local t1_file=$(select_best_scan "T1" "T1_MPRAGE_SAG_*.nii.gz" "$EXTRACT_DIR")
+  # Use intelligent scan selection based on quality metrics and selection mode
+  log_message "Selecting best T1 scan using mode: ${T1_SELECTION_MODE:-highest_resolution}..."
+  local t1_file=$(select_best_scan "T1" "T1_MPRAGE_SAG_*.nii.gz" "$EXTRACT_DIR" "" "${T1_SELECTION_MODE:-highest_resolution}")
   
   # If not found with specific pattern, try more general pattern
   if [ -z "$t1_file" ]; then
     log_message "T1 not found with specific pattern, trying more general search"
-    t1_file=$(select_best_scan "T1" "T1_*.nii.gz" "$EXTRACT_DIR")
+    t1_file=$(select_best_scan "T1" "T1_*.nii.gz" "$EXTRACT_DIR" "" "${T1_SELECTION_MODE:-highest_resolution}")
   fi
   
-  # Now select FLAIR scan with the T1 as reference
-  # Our new algorithm prioritizes higher resolution FLAIR over exact pixdim matching
-  log_message "Selecting best FLAIR scan based on quality metrics and resolution..."
+  # Now select FLAIR scan with the T1 as reference based on selection mode
+  log_message "Selecting best FLAIR scan using mode: ${FLAIR_SELECTION_MODE:-registration_optimized}..."
   log_message "T1 reference: $t1_file"
   
-  local flair_file=$(select_best_scan "FLAIR" "T2_SPACE_FLAIR_Sag_CS_*.nii.gz" "$EXTRACT_DIR" "$t1_file")
+  local flair_file=$(select_best_scan "FLAIR" "T2_SPACE_FLAIR_Sag_CS_*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
   
   # If not found with specific pattern, try more general pattern
   if [ -z "$flair_file" ]; then
     log_message "FLAIR not found with specific pattern, trying more general search"
-    flair_file=$(select_best_scan "FLAIR" "*FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file")
+    flair_file=$(select_best_scan "FLAIR" "*FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
   fi
   
   # Log detailed resolution information about selected scans

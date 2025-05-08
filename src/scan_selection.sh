@@ -191,6 +191,92 @@ calculate_pixdim_similarity() {
     echo "$similarity"
 }
 
+# Function to calculate voxel aspect ratio (used for registration compatibility)
+calculate_voxel_aspect_ratio() {
+    local scan="$1"
+    
+    # Extract pixel dimensions
+    local scan_info=$(fslinfo "$scan" 2>/dev/null)
+    
+    if [[ -z "$scan_info" ]]; then
+        echo "1:1:1"  # Default if we can't get info
+        return
+    fi
+    
+    # Extract pixel dimensions
+    local pixdims=($(echo "$scan_info" | grep -E "^pixdim[1-3]" | awk '{print $2}'))
+    
+    # Normalize to smallest dimension to get ratio
+    local min_dim=$(echo "${pixdims[0]} ${pixdims[1]} ${pixdims[2]}" | tr ' ' '\n' | sort -n | head -1)
+    
+    # Calculate ratios (avoid division by zero)
+    if (( $(echo "$min_dim == 0" | bc -l) )); then
+        min_dim=0.001
+    fi
+    
+    local ratio1=$(echo "scale=3; ${pixdims[0]} / $min_dim" | bc)
+    local ratio2=$(echo "scale=3; ${pixdims[1]} / $min_dim" | bc)
+    local ratio3=$(echo "scale=3; ${pixdims[2]} / $min_dim" | bc)
+    
+    echo "$ratio1:$ratio2:$ratio3"
+}
+
+# Function to calculate aspect ratio similarity between two scans
+calculate_aspect_ratio_similarity() {
+    local scan1="$1"
+    local scan2="$2"
+    
+    # Get aspect ratios
+    local ratio1=$(calculate_voxel_aspect_ratio "$scan1")
+    local ratio2=$(calculate_voxel_aspect_ratio "$scan2")
+    
+    # Extract individual ratios
+    IFS=':' read -r s1_r1 s1_r2 s1_r3 <<< "$ratio1"
+    IFS=':' read -r s2_r1 s2_r2 s2_r3 <<< "$ratio2"
+    
+    # Calculate differences between aspect ratios
+    local diff1=$(echo "scale=6; ($s1_r1 - $s2_r1)^2" | bc)
+    local diff2=$(echo "scale=6; ($s1_r2 - $s2_r2)^2" | bc)
+    local diff3=$(echo "scale=6; ($s1_r3 - $s2_r3)^2" | bc)
+    
+    # Calculate Euclidean distance between ratios
+    local distance=$(echo "scale=6; sqrt($diff1 + $diff2 + $diff3)" | bc)
+    
+    # Convert to similarity score (0-100), closer aspect ratios = higher score
+    # A perfect match (distance=0) gives maximum score (100)
+    local similarity=$(echo "scale=2; 100 / (1 + 10 * $distance)" | bc)
+    
+    echo "$similarity"
+}
+
+# Function to check for exact dimension match
+check_exact_dimension_match() {
+    local scan1="$1"
+    local scan2="$2"
+    
+    # Extract dimensions
+    local scan1_info=$(fslinfo "$scan1" 2>/dev/null)
+    local scan2_info=$(fslinfo "$scan2" 2>/dev/null)
+    
+    if [[ -z "$scan1_info" || -z "$scan2_info" ]]; then
+        echo "0"  # No match if we can't get info
+        return
+    fi
+    
+    # Extract dimensions
+    local scan1_dims=($(echo "$scan1_info" | grep -E "^dim[1-3]" | awk '{print $2}'))
+    local scan2_dims=($(echo "$scan2_info" | grep -E "^dim[1-3]" | awk '{print $2}'))
+    
+    # Check if dimensions match exactly
+    if [[ "${scan1_dims[0]}" -eq "${scan2_dims[0]}" &&
+          "${scan1_dims[1]}" -eq "${scan2_dims[1]}" &&
+          "${scan1_dims[2]}" -eq "${scan2_dims[2]}" ]]; then
+        echo "100"  # Perfect match
+    else
+        echo "0"    # No match
+    fi
+}
+
 # Function to calculate average resolution (smaller value = higher resolution)
 calculate_average_resolution() {
     local scan="$1"
@@ -212,14 +298,15 @@ calculate_average_resolution() {
     echo "$avg_res"
 }
 
-# Function to select best scan based on quality metrics
+# Function to select best scan based on quality metrics with multiple selection modes
 select_best_scan() {
     local scan_type="$1"  # T1, FLAIR, etc.
     local scan_pattern="$2"  # File pattern (e.g., "T1_*.nii.gz")
     local directory="$3"  # Directory to search in
     local reference_scan="${4:-}"  # Optional reference scan to match resolution with
+    local selection_mode="${5:-registration_optimized}"  # Selection mode (highest_resolution, registration_optimized, matched_dimensions, interactive)
     
-    log_message "Selecting best $scan_type scan matching pattern '$scan_pattern' in $directory"
+    log_message "Selecting best $scan_type scan matching pattern '$scan_pattern' in $directory (mode: $selection_mode)"
     
     # Find all matching scans
     local scans=($(find "$directory" -name "$scan_pattern" | sort))
@@ -240,53 +327,230 @@ select_best_scan() {
     # Create a temporary file to store scores
     local temp_file=$(mktemp)
     
-    # For FLAIR scans, consider both quality and resolution
-    if [ "$scan_type" = "FLAIR" ] && [ -n "$reference_scan" ]; then
-        log_message "Using resolution-based selection for FLAIR with reference to T1: $reference_scan"
-        
-        for scan in "${scans[@]}"; do
-            # Get base quality score
-            local quality_score=$(evaluate_scan_quality "$scan" "$scan_type")
-            
-            # Calculate average resolution (smaller is better)
-            local avg_res=$(calculate_average_resolution "$scan")
-            
-            # Convert to resolution score (smaller pixdim = higher score)
-            local res_score=$(echo "scale=2; 50 / ($avg_res + 0.001)" | bc)
-            
-            # Resolution match with reference is less important than having high resolution
-            # Calculate pixdim similarity but weight it less than resolution
-            local similarity_score=0
-            if [ -n "$reference_scan" ]; then
-                similarity_score=$(calculate_pixdim_similarity "$scan" "$reference_scan")
-                # Reduce weight of similarity - we want higher resolution FLAIR
-                similarity_score=$(echo "scale=2; $similarity_score / 5" | bc)
-            fi
-            
-            # Combine scores with higher weight on resolution quality
-            local final_score=$(echo "scale=2; $quality_score + $res_score * 2 + $similarity_score" | bc)
-            
-            # Get acquisition type for display
-            local acq_type="Unknown"
-            local json_file="${scan%.nii.gz}.json"
-            if [ -f "$json_file" ] && command -v jq &>/dev/null; then
-                acq_type=$(jq -r '.ImageType // empty' "$json_file" 2>/dev/null | grep -E "ORIGINAL|DERIVED" | head -1 || echo "Unknown")
-            elif [ -f "$json_file" ]; then
-                acq_type=$(grep -E "ORIGINAL|DERIVED" "$json_file" | head -1 | sed 's/.*"\(ORIGINAL\|DERIVED\)".*/\1/' || echo "Unknown")
-            fi
+    # Create array to store scan info for interactive mode
+    local scan_info_array=()
 
-            log_message "Scan: $scan, Acquisition: $acq_type, Quality: $quality_score, Res: $avg_res mm (Score: $res_score), Similarity: $similarity_score, Final: $final_score"
+    # Process each scan based on selection mode
+    for scan in "${scans[@]}"; do
+        # Calculate common metrics
+        local quality_score=$(evaluate_scan_quality "$scan" "$scan_type")
+        local avg_res=$(calculate_average_resolution "$scan")
+        local res_score=$(echo "scale=2; 50 / ($avg_res + 0.001)" | bc)
+        
+        # Get acquisition type
+        local acq_type="Unknown"
+        local json_file="${scan%.nii.gz}.json"
+        if [ -f "$json_file" ] && command -v jq &>/dev/null; then
+            acq_type=$(jq -r '.ImageType // empty' "$json_file" 2>/dev/null | grep -E "ORIGINAL|DERIVED" | head -1 || echo "Unknown")
+        elif [ -f "$json_file" ]; then
+            acq_type=$(grep -E "ORIGINAL|DERIVED" "$json_file" | head -1 | sed 's/.*"\(ORIGINAL\|DERIVED\)".*/\1/' || echo "Unknown")
+        fi
+
+        # Initialize scores for different modes
+        local aspect_ratio_score=0
+        local dimension_match_score=0
+        local final_score=0
+        local aspect_ratio=""
+        local ref_aspect_ratio=""
+        
+        # Calculate special scores if reference scan is provided
+        if [ -n "$reference_scan" ]; then
+            aspect_ratio_score=$(calculate_aspect_ratio_similarity "$scan" "$reference_scan")
+            dimension_match_score=$(check_exact_dimension_match "$scan" "$reference_scan")
+            
+            # Get aspect ratio information for display
+            aspect_ratio=$(calculate_voxel_aspect_ratio "$scan")
+            ref_aspect_ratio=$(calculate_voxel_aspect_ratio "$reference_scan")
+        fi
+
+        # Calculate final score based on selection mode
+        case "$selection_mode" in
+            "original")
+                # Strongly prioritize ORIGINAL acquisitions above all else
+                # Apply a massive bonus to ORIGINAL scans to ensure they're selected
+                if [[ "$acq_type" == *"ORIGINAL"* ]]; then
+                    # Start with a very high base score for ORIGINAL scans
+                    final_score=1000
+                    # Add quality metrics as tie-breakers between ORIGINAL scans
+                    final_score=$(echo "scale=2; $final_score + $quality_score + $res_score" | bc)
+                    log_message "  ORIGINAL acquisition priority mode: massive bonus applied"
+                else
+                    # Very low score for DERIVED scans in this mode
+                    final_score=$(echo "scale=2; $quality_score / 10" | bc)
+                    log_message "  ORIGINAL acquisition priority mode: DERIVED scan downgraded"
+                fi
+                ;;
+                
+            "highest_resolution")
+                # Prioritize high resolution (original behavior)
+                final_score=$(echo "scale=2; $quality_score + $res_score * 2" | bc)
+                ;;
+                
+            "registration_optimized")
+                # Prioritize aspect ratio similarity for registration
+                if [ -n "$reference_scan" ]; then
+                    final_score=$(echo "scale=2; $quality_score + $res_score + $aspect_ratio_score * 2" | bc)
+                else
+                    final_score=$(echo "scale=2; $quality_score + $res_score * 2" | bc)
+                fi
+                ;;
+                
+            "matched_dimensions")
+                # Prioritize exact dimension matches
+                if [ -n "$reference_scan" ]; then
+                    final_score=$(echo "scale=2; $quality_score + $dimension_match_score * 3" | bc)
+                else
+                    final_score=$(echo "scale=2; $quality_score + $res_score" | bc)
+                fi
+                ;;
+                
+            "interactive"|*)
+                # For interactive mode, calculate balanced score for initial sorting
+                if [ -n "$reference_scan" ]; then
+                    final_score=$(echo "scale=2; $quality_score + $res_score + $aspect_ratio_score" | bc)
+                else
+                    final_score=$(echo "scale=2; $quality_score + $res_score" | bc)
+                fi
+                ;;
+        esac
+
+        # Store detailed scan info for display in interactive mode
+        if [ "$selection_mode" = "interactive" ]; then
+            # Get dimensions for display
+            local dims=($(fslinfo "$scan" | grep -E "^dim[1-3]" | awk '{print $2}'))
+            local pixdims=($(fslinfo "$scan" | grep -E "^pixdim[1-3]" | awk '{print $2}'))
+            
+            # Create info string with all details
+            local info_str="$final_score|$scan|$acq_type|${dims[0]}x${dims[1]}x${dims[2]}|${pixdims[0]}x${pixdims[1]}x${pixdims[2]}|$quality_score|$res_score"
+            
+            # Add reference-based metrics if available
+            if [ -n "$reference_scan" ]; then
+                info_str="$info_str|$aspect_ratio_score|$dimension_match_score|$aspect_ratio"
+            fi
+            
+            scan_info_array+=("$info_str")
+        fi
+
+        # For non-interactive modes, write scores to temp file
+        if [ "$selection_mode" != "interactive" ]; then
+            # Log detailed scan information
+            if [ -n "$reference_scan" ]; then
+                log_message "Scan: $scan, Acquisition: $acq_type, Quality: $quality_score, Res: $avg_res mm (Score: $res_score), Aspect Ratio: $aspect_ratio, Similarity: $aspect_ratio_score, Dim Match: $dimension_match_score, Final: $final_score"
+            else
+                log_message "Scan: $scan, Acquisition: $acq_type, Quality: $quality_score, Res: $avg_res mm (Score: $res_score), Final: $final_score"
+            fi
+            
+            # Write score to temp file
             echo "$final_score $scan" >> "$temp_file"
+        fi
+    done
+    
+    # Handle interactive mode
+    if [ "$selection_mode" = "interactive" ]; then
+        # Sort scan info by score in descending order
+        IFS=$'\n' sorted_scans=($(sort -t '|' -k1,1nr <<<"${scan_info_array[*]}"))
+        unset IFS
+        
+        # Display scan options with information
+        log_formatted "INFO" "===== INTERACTIVE SCAN SELECTION ====="
+        log_message "Please select the best $scan_type scan from the following options:"
+        echo ""
+        echo "------------------------------------------------------------------------------------------------------------------------"
+        echo "                                            SCAN OPTIONS                                                                 "
+        echo "------------------------------------------------------------------------------------------------------------------------"
+        
+        # Display header line
+        if [ -n "$reference_scan" ]; then
+            printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s | %-20s\n" \
+                "#" "Filename" "Type" "Dimensions" "Voxel Size (mm)" "Score" "Aspect Ratio"
+        else
+            printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s\n" \
+                "#" "Filename" "Type" "Dimensions" "Voxel Size (mm)" "Score"
+        fi
+        
+        echo "------------------------------------------------------------------------------------------------------------------------"
+        
+        # Display each scan option
+        local i=1
+        for info in "${sorted_scans[@]}"; do
+            IFS='|' read -r score scan acq_type dims voxel_size quality_score res_score aspect_ratio_score dimension_match_score aspect_ratio <<< "$info"
+            
+            # Format basename to shorten display
+            local basename=$(basename "$scan")
+            
+            if [ -n "$reference_scan" ]; then
+                printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s | %-20s\n" \
+                    "$i" "$basename" "$acq_type" "$dims" "$voxel_size" "$score" "$aspect_ratio"
+            else
+                printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s\n" \
+                    "$i" "$basename" "$acq_type" "$dims" "$voxel_size" "$score"
+            fi
+            
+            i=$((i+1))
         done
-    # For T1 scans, just use quality score
-    else
-        for scan in "${scans[@]}"; do
-            log_message "Evaluating scan: $scan"
-            local score=$(evaluate_scan_quality "$scan" "$scan_type")
-            echo "$score $scan" >> "$temp_file"
-        done
+        echo "------------------------------------------------------------------------------------------------------------------------"
+        
+        # Add recommendation based on mode
+        local recommended_idx=1  # Default to highest score
+        
+        echo ""
+        echo "Reference scan: $(basename "$reference_scan")"
+        echo "Recommendations:"
+        echo "- For highest resolution: Option 1"
+        
+        # Find best aspect ratio match
+        if [ -n "$reference_scan" ]; then
+            local best_reg_idx=1
+            local max_aspect_score=0
+            i=1
+            for info in "${sorted_scans[@]}"; do
+                IFS='|' read -r score scan acq_type dims voxel_size quality_score res_score aspect_ratio_score dimension_match_score aspect_ratio <<< "$info"
+                if (( $(echo "$aspect_ratio_score > $max_aspect_score" | bc -l) )); then
+                    max_aspect_score=$aspect_ratio_score
+                    best_reg_idx=$i
+                fi
+                i=$((i+1))
+            done
+            echo "- For best registration compatibility: Option $best_reg_idx"
+            
+            # Find exact dimension match if any
+            local exact_match_idx=0
+            i=1
+            for info in "${sorted_scans[@]}"; do
+                IFS='|' read -r score scan acq_type dims voxel_size quality_score res_score aspect_ratio_score dimension_match_score aspect_ratio <<< "$info"
+                if (( $(echo "$dimension_match_score > 50" | bc -l) )); then
+                    exact_match_idx=$i
+                    break
+                fi
+                i=$((i+1))
+            done
+            
+            if [ $exact_match_idx -ne 0 ]; then
+                echo "- For exact dimension matching: Option $exact_match_idx"
+            fi
+        fi
+        
+        # Prompt user for selection
+        echo ""
+        echo -n "Enter selection (1-${#sorted_scans[@]}): "
+        read -r selection
+        
+        # Validate selection
+        if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#sorted_scans[@]}" ]; then
+            log_formatted "WARNING" "Invalid selection. Using highest scored option (1)."
+            selection=1
+        fi
+        
+        # Get selected scan
+        IFS='|' read -r score selected_scan rest <<< "${sorted_scans[$((selection-1))]}"
+        log_formatted "SUCCESS" "Selected scan: $selected_scan"
+        
+        # Return selected scan
+        echo "$selected_scan"
+        return 0
     fi
     
+    # For non-interactive modes, sort and select the best scan
     # Sort by score (descending) and select the best one
     local best_scan=$(sort -rn "$temp_file" | head -1 | cut -d' ' -f2-)
     local best_score=$(sort -rn "$temp_file" | head -1 | cut -d' ' -f1)
@@ -302,8 +566,16 @@ select_best_scan() {
     elif [ -f "$best_json" ]; then
         best_acq_type=$(grep -E "ORIGINAL|DERIVED" "$best_json" | head -1 | sed 's/.*"\(ORIGINAL\|DERIVED\)".*/\1/' || echo "Unknown")
     fi
+    
+    # Get voxel aspect ratio if reference provided
+    local aspect_info=""
+    if [ -n "$reference_scan" ]; then
+        local aspect_ratio=$(calculate_voxel_aspect_ratio "$best_scan")
+        local aspect_score=$(calculate_aspect_ratio_similarity "$best_scan" "$reference_scan")
+        aspect_info=", Aspect Ratio: $aspect_ratio, Similarity: $aspect_score"
+    fi
 
-    log_formatted "SUCCESS" "Selected best $scan_type scan with score $best_score: $best_scan ($best_acq_type)"
+    log_formatted "SUCCESS" "Selected best $scan_type scan with score $best_score: $best_scan ($best_acq_type)$aspect_info"
     
     # Return the path to the best scan
     echo "$best_scan"
@@ -358,7 +630,10 @@ analyze_dicom_headers() {
 export -f evaluate_scan_quality
 export -f calculate_pixdim_similarity
 export -f calculate_average_resolution
+export -f calculate_voxel_aspect_ratio
+export -f calculate_aspect_ratio_similarity
+export -f check_exact_dimension_match
 export -f select_best_scan
 export -f analyze_dicom_headers
 
-log_message "Scan selection module loaded with enhanced resolution matching"
+log_message "Scan selection module loaded with enhanced registration-aware selection modes"

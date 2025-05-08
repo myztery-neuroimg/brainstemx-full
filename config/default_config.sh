@@ -152,6 +152,17 @@ export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS.*.nii.gz"
 export RESAMPLE_TO_ISOTROPIC=0
 export ISOTROPIC_SPACING=1.0
 
+# Scan selection options
+# Available modes:
+#   original - ONLY consider ORIGINAL acquisitions, ignore DERIVED scans
+#   highest_resolution - Prioritize scans with highest resolution (default)
+#   registration_optimized - Prioritize scans with aspect ratios similar to reference
+#   matched_dimensions - Prioritize scans with exact dimensions matching reference
+#   interactive - Show available scans and prompt for manual selection
+export SCAN_SELECTION_MODE="original"
+export T1_SELECTION_MODE="original"    # For T1, always prefer ORIGINAL acquisitions
+export FLAIR_SELECTION_MODE="original"  # For FLAIR, always prefer ORIGINAL"  as we want to eliminate noise from the pipeline for brainstem lesions
+
 # Advanced registration options
 
 # Auto-register all modalities to T1 (if false, only FLAIR is registered)
