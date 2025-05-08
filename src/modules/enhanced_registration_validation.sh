@@ -129,38 +129,96 @@ standardize_image_format() {
         log_message "Using reference datatype: $datatype"
     fi
     
-    # Determine best datatype for content - binary masks should use UINT8, other data needs more precision
+    # IMPROVED BINARY MASK DETECTION
+    # Check if file is a binary mask using multiple criteria
     local is_binary=false
-    local unique_values=$(fslstats "$image" -R | awk '{print $2 - $1}')
-    if (( $(echo "$unique_values <= 1.01" | bc -l) )); then
-        log_message "Image appears to be binary (mask) with range: $unique_values"
-        is_binary=true
+    local filename=$(basename "$image")
+    
+    # 1. First check: Does the filename contain mask-related keywords?
+    if [[ "$filename" =~ (mask|bin|binary|brain_mask|seg|label) ]]; then
+        log_message "Filename suggests this might be a binary mask: $filename"
+        
+        # 2. Second check: Verify with intensity statistics
+        local range=$(fslstats "$image" -R)
+        local min_val=$(echo "$range" | awk '{print $1}')
+        local max_val=$(echo "$range" | awk '{print $2}')
+        local unique_values=$(echo "$max_val - $min_val" | bc)
+        
+        # 3. Check unique values and range
+        if (( $(echo "$unique_values <= 1.01" | bc -l) )); then
+            # Likely a 0-1 binary mask
+            is_binary=true
+            log_message "File appears to be a binary 0-1 mask (range: $min_val to $max_val)"
+        elif (( $(echo "$min_val >= -0.01" | bc -l) )) && (( $(echo "$max_val <= 5.01" | bc -l) )); then
+            # Check if we have very few unique values (segmentation or probability mask)
+            local num_unique=$(fslstats "$image" -H 10 0 10 | awk '{sum+=$1} END {print NR}')
+            
+            if [ "$num_unique" -lt 7 ]; then
+                is_binary=true
+                log_message "File appears to be a segmentation mask with $num_unique unique values"
+            else
+                is_binary=false
+                log_message "File has multiple intensity values ($num_unique), treating as intensity image"
+            fi
+        else
+            is_binary=false
+            log_message "File intensity range suggests this is NOT a binary mask: $min_val to $max_val"
+        fi
+    else
+        # Not likely a mask based on filename
+        is_binary=false
+        log_message "Filename does not suggest a binary mask: $filename"
     fi
     
-    # Perform datatype conversion if needed, with special handling for masks
-    local img_datatype=$(fslinfo "$image" | grep "^data_type" | awk '{print $2}')
-    
-    # Choose appropriate datatype based on content
-    local target_datatype="$datatype"
-    if [ "$is_binary" = true ] && [ "$datatype" != "UINT8" ]; then
-        log_message "Image is binary, using UINT8 datatype instead of $datatype"
-        target_datatype="UINT8"
-    elif [ "$is_binary" = false ]; then
-        # For intensity data (like FLAIR and T1), preserve FLOAT32 for best precision
-        if [ "$img_datatype" = "FLOAT32" ]; then
-            log_message "Preserving FLOAT32 datatype for intensity data"
-            target_datatype="FLOAT32"
-        elif [ "$img_datatype" = "UINT8" ] || [ "$img_datatype" = "INT16" ]; then
-            log_message "Upgrading intensity data to FLOAT32 for better precision"
-            target_datatype="FLOAT32"
+    # Explicitly check for known intensity images by name
+    if [[ "$filename" =~ (T1|MPRAGE|FLAIR|T2|DWI|SWI|EPI|_brain) ]] && ! [[ "$filename" =~ (mask) ]]; then
+        # Override the binary detection for actual image data types
+        if [ "$is_binary" = "true" ]; then
+            log_message "Overriding binary detection: file name suggests this is an actual image volume"
+            is_binary=false
         fi
     fi
     
+    # Special handling for BrainExtraction files that are NOT binary masks
+    if [[ "$filename" =~ BrainExtraction ]] && ! [[ "$filename" =~ (Mask|Template|Prior|BrainFace|CSF) ]]; then
+        is_binary=false
+        log_message "BrainExtraction file that's not a mask, treating as intensity image"
+    fi
+    
+    # Choose appropriate datatype based on content
+    local target_datatype
+    if [ "$is_binary" = "true" ]; then
+        # Binary masks should be UINT8 for efficiency
+        target_datatype="UINT8"
+        log_message "Image is a binary or segmentation mask, using UINT8 datatype"
+    else
+        # For intensity data (like FLAIR and T1), preserve the original datatype or use FLOAT32
+        local orig_datatype=$(fslinfo "$image" | grep "^data_type" | awk '{print $2}')
+        
+        if [ "$orig_datatype" = "FLOAT32" ] || [ "$orig_datatype" = "FLOAT64" ]; then
+            # Preserve floating point for intensity data
+            target_datatype="$orig_datatype"
+            log_message "Preserving original float datatype: $orig_datatype"
+        elif [[ "$filename" =~ (T1|MPRAGE|FLAIR|T2|DWI|SWI|EPI) ]]; then
+            # Use FLOAT32 for actual image data that wasn't already float
+            target_datatype="FLOAT32"
+            log_message "Image appears to be an intensity image, converting to FLOAT32"
+        else
+            # Default to INT16 for other data
+            target_datatype="INT16"
+            log_message "Using INT16 for unclassified non-binary image"
+        fi
+    fi
+    
+    # Get current datatype of the image
+    local img_datatype=$(fslinfo "$image" | grep "^data_type" | awk '{print $2}')
+    
+    # Convert datatype if needed
     if [ "$img_datatype" != "$target_datatype" ]; then
         log_message "Converting datatype from $img_datatype to $target_datatype"
         
         # Map datatype string to FSL datatype number
-        local datatype_num=0
+        local datatype_num
         case "$target_datatype" in
             "UINT8")   datatype_num=2  ;;
             "INT8")    datatype_num=2  ;;
@@ -171,15 +229,18 @@ standardize_image_format() {
             *)         datatype_num=4  ;; # Default to INT16
         esac
         
-        # Convert datatype
+        # Convert datatype with detailed logging
+        log_message "Running: fslmaths $image -dt $datatype_num $output"
         fslmaths "$image" -dt "$datatype_num" "$output"
     else
-        log_message "Datatype already matches reference: $datatype"
+        log_message "Datatype already matches target ($target_datatype), copying file"
         cp "$image" "$output"
     fi
     
     if [ -f "$output" ]; then
-        log_formatted "SUCCESS" "Image format standardized: $output"
+        # Verify the operation was successful
+        local final_datatype=$(fslinfo "$output" | grep "^data_type" | awk '{print $2}')
+        log_formatted "SUCCESS" "Image format standardized: $output (datatype: $final_datatype)"
         return 0
     else
         log_formatted "ERROR" "Failed to standardize image format"
@@ -978,5 +1039,124 @@ export -f run_comprehensive_analysis
 export -f validate_coordinate_space
 export -f standardize_image_format
 export -f register_to_standard_with_validation
+
+# Function to verify expected outputs from a pipeline step
+verify_pipeline_step_outputs() {
+    local step_name="$1"       # Name of the pipeline step (e.g., "registration", "segmentation")
+    local output_dir="$2"      # Directory containing the outputs
+    local modality="$3"        # Modality being processed (e.g., "T1", "FLAIR")
+    local min_expected="${4:-1}"  # Minimum number of expected .nii.gz files
+    
+    log_formatted "INFO" "===== VERIFYING OUTPUTS FOR $step_name ($modality) ====="
+    log_message "Output directory: $output_dir"
+    log_message "Minimum expected files: $min_expected"
+    
+    # Check if directory exists
+    if [ ! -d "$output_dir" ]; then
+        log_formatted "ERROR" "Output directory does not exist: $output_dir"
+        return 1
+    fi
+    
+    # Count .nii.gz files
+    local file_count=$(find "$output_dir" -name "*.nii.gz" -type f | wc -l)
+    log_message "Found $file_count .nii.gz files in $output_dir"
+    
+    # Check if we have enough files
+    if [ "$file_count" -lt "$min_expected" ]; then
+        log_formatted "ERROR" "Insufficient output files: found $file_count, expected at least $min_expected"
+        return 1
+    fi
+    
+    # Check file datatypes
+    log_message "Checking file datatypes..."
+    local error_count=0
+    
+    for file in $(find "$output_dir" -name "*.nii.gz" -type f); do
+        local filename=$(basename "$file")
+        local datatype=$(fslinfo "$file" | grep "^data_type" | awk '{print $2}')
+        
+        # Verify datatype is appropriate
+        if [[ "$filename" =~ (mask|bin|binary|Brain_Extraction_Mask) ]]; then
+            # Binary masks should be UINT8
+            if [ "$datatype" != "UINT8" ]; then
+                log_formatted "WARNING" "Binary mask $filename has incorrect datatype: $datatype (expected UINT8)"
+                error_count=$((error_count + 1))
+            fi
+        elif [[ "$filename" =~ (T1|MPRAGE|FLAIR|T2|DWI|SWI|EPI|brain) ]] && ! [[ "$filename" =~ (mask) ]]; then
+            # Intensity images should not be UINT8
+            if [ "$datatype" = "UINT8" ]; then
+                log_formatted "ERROR" "Intensity image $filename has incorrect datatype: UINT8"
+                error_count=$((error_count + 1))
+            fi
+        fi
+        
+        log_message "File: $filename, Datatype: $datatype"
+    done
+    
+    if [ "$error_count" -gt 0 ]; then
+        log_formatted "WARNING" "Found $error_count datatype issues in output files"
+    else
+        log_formatted "SUCCESS" "All output files have appropriate datatypes"
+    fi
+    
+    # Generate additional step-specific checks based on the step name
+    case "$step_name" in
+        "brain_extraction")
+            # Check for brain mask
+            if ! find "$output_dir" -name "*brain_mask.nii.gz" -type f | grep -q .; then
+                log_formatted "WARNING" "No brain mask file found in brain extraction outputs"
+                error_count=$((error_count + 1))
+            fi
+            
+            # Check for extracted brain
+            if ! find "$output_dir" -name "*brain.nii.gz" -type f | grep -q .; then
+                log_formatted "WARNING" "No extracted brain file found in brain extraction outputs"
+                error_count=$((error_count + 1))
+            fi
+            ;;
+            
+        "registration")
+            # Check for warped file
+            if ! find "$output_dir" -name "*Warped.nii.gz" -type f | grep -q .; then
+                log_formatted "WARNING" "No warped file found in registration outputs"
+                error_count=$((error_count + 1))
+            fi
+            
+            # Check for transform file
+            if ! find "$output_dir" -name "*GenericAffine.mat" -type f | grep -q .; then
+                log_formatted "WARNING" "No transform file found in registration outputs"
+                error_count=$((error_count + 1))
+            fi
+            ;;
+            
+        "segmentation")
+            # Check for segmentation outputs
+            if ! find "$output_dir" -name "*seg*.nii.gz" -type f | grep -q .; then
+                log_formatted "WARNING" "No segmentation file found in segmentation outputs"
+                error_count=$((error_count + 1))
+            fi
+            ;;
+            
+        "bias_corrected")
+            # Check for bias corrected image
+            if ! find "$output_dir" -name "*n4*.nii.gz" -type f | grep -q .; then
+                log_formatted "WARNING" "No bias-corrected file found in outputs"
+                error_count=$((error_count + 1))
+            fi
+            ;;
+    esac
+    
+    # Return success if no errors, otherwise return error count
+    if [ "$error_count" -eq 0 ]; then
+        log_formatted "SUCCESS" "All expected outputs for $step_name ($modality) are present and valid"
+        return 0
+    else
+        log_formatted "WARNING" "Found $error_count issues with $step_name ($modality) outputs"
+        return "$error_count"
+    fi
+}
+
+# Export verification function
+export -f verify_pipeline_step_outputs
 
 log_message "Enhanced registration validation module loaded with coordinate space validation"

@@ -163,3 +163,21 @@ export AUTO_DETECT_RESOLUTION=true
 
 # Additional vendor-specific optimizations are applied automatically
 # based on the metadata extracted during import (field strength, manufacturer, model)
+
+# ------------------------------------------------------------------------------
+# Orientation and Datatype Parameters
+# ------------------------------------------------------------------------------
+
+# Orientation correction settings
+export ORIENTATION_CORRECTION_ENABLED=false   # Disable automatic orientation correction
+export ORIENTATION_VALIDATION_ENABLED=false   # Disable validation
+export HALT_ON_ORIENTATION_MISMATCH=true      # Halt pipeline on orientation mismatch (if validation enabled)
+
+# Expected orientation for validation
+export EXPECTED_QFORM_X="Left-to-Right"
+export EXPECTED_QFORM_Y="Posterior-to-Anterior"
+export EXPECTED_QFORM_Z="Inferior-to-Superior"
+
+# Datatype configuration
+export PRESERVE_INTENSITY_IMAGES_DATATYPE=true  # Keep intensity images as FLOAT32
+export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
