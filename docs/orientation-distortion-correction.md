@@ -18,7 +18,7 @@ Orientation distortion correction is controlled by the following parameters in `
 
 ```bash
 # Enable or disable orientation preservation in registration
-export ORIENTATION_PRESERVATION_ENABLED=true
+export ORIENTATION_PRESERVATION_ENABLED=false  # Default to disabled due to gradient operation compatibility issues
 ```
 
 ### Topology Preservation Parameters
@@ -123,7 +123,7 @@ The orientation preservation parameters are linked to the existing quality prese
 ### HIGH Quality Preset (Default)
 ```bash
 # Orientation preservation parameters for HIGH quality (strict preservation)
-export ORIENTATION_PRESERVATION_ENABLED=true
+export ORIENTATION_PRESERVATION_ENABLED=false  # Default to disabled due to gradient operation compatibility issues
 export TOPOLOGY_CONSTRAINT_WEIGHT=0.5
 export TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
 export JACOBIAN_REGULARIZATION_WEIGHT=1.0
@@ -140,7 +140,7 @@ export SHEARING_DETECTION_THRESHOLD=0.04
 ### MEDIUM Quality Preset
 ```bash
 # Orientation preservation parameters for MEDIUM quality (balanced)
-export ORIENTATION_PRESERVATION_ENABLED=true
+export ORIENTATION_PRESERVATION_ENABLED=false  # Default to disabled due to gradient operation compatibility issues
 export TOPOLOGY_CONSTRAINT_WEIGHT=0.3
 export TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
 export JACOBIAN_REGULARIZATION_WEIGHT=0.7
@@ -294,6 +294,23 @@ The orientation preservation is integrated into the main pipeline workflow. When
 - For faster processing of less orientation-critical regions, use the LOW quality preset
 - For examining the impact of orientation preservation, run the ORIENTATION_TEST pipeline
 - Adjust the threshold parameters if you notice over-correction or under-correction
+
+## Known Issues
+
+### FSL Gradient Operation Compatibility
+
+The orientation correction module relies on FSL's gradient operations (`fslmaths -gradient_x/y/z`), which may not be supported in all FSL installations. This affects:
+
+- Anatomically-constrained registration (lines 198-200)
+- Post-registration correction (lines 218-219)
+- Orientation deviation calculations
+
+If you encounter errors related to these gradient operations, please refer to the detailed documentation in `docs/fslmaths-gradient-issue.md`, which:
+- Describes the issue in detail
+- Explores alternative approaches
+- Provides a possible implementation plan using Python and nibabel
+
+This issue is currently documented but not yet implemented.
 
 ## Technical Background
 
