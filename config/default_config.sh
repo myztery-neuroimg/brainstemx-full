@@ -32,14 +32,14 @@ export MAX_CPU_INTENSIVE_JOBS=1
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
 export N4_PRESET_LOW="20x20x25,0.0001,150,4"
 #export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
-export N4_PRESET_HIGH="100x100x100x50,0.0000001,500,2"
-export N4_PRESET_MEDIUM="100x100x100x50,0.0000001,500,2"
+export N4_PRESET_HIGH="200x200x200x50,0.0000001,1000,2"
+export N4_PRESET_MEDIUM="500x500x500x50,0.00000901,2000,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
 
 export PARALLEL_JOBS=0
 
 # DICOM-specific parallel processing (only affects DICOM import)
-export DICOM_IMPORT_PARALLEL=22
+export DICOM_IMPORT_PARALLEL=12
 
 export QUALITY_PRESET="HIGH"
 # Set default N4_PARAMS by QUALITY_PRESET
@@ -75,8 +75,8 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
-export ANTS_THREADS=24                 # Number of threads for ANTs processing
-export REG_PRECISION=1                 # Registration precision (higher = more accurate but slower)
+export ANTS_THREADS=12                 # Number of threads for ANTs processing
+export REG_PRECISION=4                 # Registration precision (higher = more accurate but slower)
 
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
