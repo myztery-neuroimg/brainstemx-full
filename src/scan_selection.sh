@@ -73,6 +73,46 @@ evaluate_scan_quality() {
     if (( $(echo "$voxel_score > 30" | bc -l) )); then voxel_score=30; fi
     log_message "  Voxel size score: $voxel_score"
     
+    # Check acquisition metadata (ORIGINAL vs DERIVED) from JSON sidecar
+    local acq_type_score=0
+    local json_file="${scan_path%.nii.gz}.json"
+    
+    if [ -f "$json_file" ]; then
+        log_message "  Checking acquisition metadata in $json_file"
+        
+        # Check if jq is available
+        if command -v jq &>/dev/null; then
+            # Look for ORIGINAL or DERIVED in ImageType field
+            local acq_type=$(jq -r '.ImageType // empty' "$json_file" 2>/dev/null | grep -E "ORIGINAL|DERIVED" | head -1)
+            
+            if [ -n "$acq_type" ]; then
+                log_message "  Acquisition type: $acq_type"
+                
+                # Give significant bonus to ORIGINAL acquisitions
+                if [[ "$acq_type" == *"ORIGINAL"* ]]; then
+                    acq_type_score=30
+                    log_message "  ORIGINAL acquisition bonus: +30"
+                else
+                    log_message "  DERIVED acquisition (no bonus)"
+                fi
+            else
+                log_message "  Could not determine acquisition type from JSON"
+            fi
+        else
+            # Fallback to grep if jq is not available
+            if grep -q "ORIGINAL" "$json_file"; then
+                acq_type_score=30
+                log_message "  ORIGINAL acquisition detected (fallback method): +30"
+            elif grep -q "DERIVED" "$json_file"; then
+                log_message "  DERIVED acquisition detected (fallback method)"
+            else
+                log_message "  Could not determine acquisition type"
+            fi
+        fi
+    else
+        log_message "  No JSON metadata file found: ${json_file}"
+    fi
+    
     # Add additional metrics if available
     local snr_score=0
     if [ "$scan_type" = "T1" ]; then
@@ -113,7 +153,7 @@ evaluate_scan_quality() {
     fi
     
     # Calculate final score
-    score=$(echo "scale=2; $file_size_score + $dim_score + $voxel_score + $snr_score" | bc)
+    score=$(echo "scale=2; $file_size_score + $dim_score + $voxel_score + $snr_score + $acq_type_score" | bc)
     log_formatted "INFO" "Final quality score for $scan_path: $score"
     
     echo "$score"
@@ -226,7 +266,16 @@ select_best_scan() {
             # Combine scores with higher weight on resolution quality
             local final_score=$(echo "scale=2; $quality_score + $res_score * 2 + $similarity_score" | bc)
             
-            log_message "Scan: $scan, Quality: $quality_score, Res: $avg_res mm (Score: $res_score), Similarity: $similarity_score, Final: $final_score"
+            # Get acquisition type for display
+            local acq_type="Unknown"
+            local json_file="${scan%.nii.gz}.json"
+            if [ -f "$json_file" ] && command -v jq &>/dev/null; then
+                acq_type=$(jq -r '.ImageType // empty' "$json_file" 2>/dev/null | grep -E "ORIGINAL|DERIVED" | head -1 || echo "Unknown")
+            elif [ -f "$json_file" ]; then
+                acq_type=$(grep -E "ORIGINAL|DERIVED" "$json_file" | head -1 | sed 's/.*"\(ORIGINAL\|DERIVED\)".*/\1/' || echo "Unknown")
+            fi
+
+            log_message "Scan: $scan, Acquisition: $acq_type, Quality: $quality_score, Res: $avg_res mm (Score: $res_score), Similarity: $similarity_score, Final: $final_score"
             echo "$final_score $scan" >> "$temp_file"
         done
     # For T1 scans, just use quality score
@@ -245,7 +294,16 @@ select_best_scan() {
     # Clean up
     rm -f "$temp_file"
     
-    log_formatted "SUCCESS" "Selected best $scan_type scan with score $best_score: $best_scan"
+    # Get acquisition type for the best scan
+    local best_acq_type="Unknown"
+    local best_json="${best_scan%.nii.gz}.json"
+    if [ -f "$best_json" ] && command -v jq &>/dev/null; then
+        best_acq_type=$(jq -r '.ImageType // empty' "$best_json" 2>/dev/null | grep -E "ORIGINAL|DERIVED" | head -1 || echo "Unknown")
+    elif [ -f "$best_json" ]; then
+        best_acq_type=$(grep -E "ORIGINAL|DERIVED" "$best_json" | head -1 | sed 's/.*"\(ORIGINAL\|DERIVED\)".*/\1/' || echo "Unknown")
+    fi
+
+    log_formatted "SUCCESS" "Selected best $scan_type scan with score $best_score: $best_scan ($best_acq_type)"
     
     # Return the path to the best scan
     echo "$best_scan"
