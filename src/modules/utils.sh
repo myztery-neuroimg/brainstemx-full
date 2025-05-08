@@ -3,8 +3,18 @@
 # utils.sh - Utility functions for the brain MRI processing pipeline
 #
 
-# Create a wrapper function to execute ANTs commands with controlled output
-execute_ants_command() {
+# Legacy wrapper function for ANTs commands - only kept for backwards compatibility
+# Use the enhanced version from environment.sh for new code
+#
+# NOTE: This function is deprecated and will be removed in a future version.
+# Please use the execute_ants_command from environment.sh which provides:
+# - Better progress indication
+# - Step descriptions
+# - Execution time tracking
+# - Visualization suggestions
+legacy_execute_ants_command() {
+    log_formatted "WARNING" "Using legacy_execute_ants_command - please update to new version from environment.sh"
+    
     local log_prefix="$1"
     shift
     
@@ -43,6 +53,6 @@ execute_ants_command() {
 }
 
 # Export functions
-export -f execute_ants_command
+export -f legacy_execute_ants_command
 
 log_message "Utilities module loaded"

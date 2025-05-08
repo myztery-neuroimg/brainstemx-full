@@ -115,14 +115,22 @@ perform_brain_extraction() {
   
   log_message "Running brain extraction on: $(basename "$input_file")"
   
-  # Run ANTs brain extraction with diagnostic output filtering
-  log_message "Running ANTs brain extraction with diagnostic output filtering"
+  # Run ANTs brain extraction with enhanced command execution
+  log_message "Running ANTs brain extraction"
   
-  # Build the command
-  local brain_cmd="antsBrainExtraction.sh -d 3 -a \"$input_file\" -k 1 -o \"$output_prefix\" -e \"$TEMPLATE_DIR/$EXTRACTION_TEMPLATE\" -m \"$TEMPLATE_DIR/$PROBABILITY_MASK\" -f \"$TEMPLATE_DIR/$REGISTRATION_MASK\""
+  # Determine ANTs bin path
+  local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
   
-  # Execute with filtering to hide diagnostic output
-  execute_with_logging "$brain_cmd" "brain_extraction"
+  # Execute brain extraction using enhanced ANTs command execution
+  execute_ants_command "brain_extraction" "Brain extraction to remove skull and non-brain tissue" \
+    ${ants_bin}/antsBrainExtraction.sh \
+    -d 3 \
+    -a "$input_file" \
+    -k 1 \
+    -o "$output_prefix" \
+    -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+    -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+    -f "$TEMPLATE_DIR/$REGISTRATION_MASK"
     
   # Validate output files
   local brain_file="${output_prefix}BrainExtractionBrain.nii.gz"
@@ -477,14 +485,22 @@ process_n4_correction() {
   local bspl=${params[2]}
   local shrk=${params[3]}
 
-  # Run N4 bias correction with diagnostic output filtering
-  log_message "Running N4 bias correction with diagnostic output filtering"
+  # Run N4 bias correction with our enhanced ANTs command function
+  log_message "Running N4 bias correction"
   
-  # Build the command
-  local n4_cmd="N4BiasFieldCorrection -d 3 -i \"$file\" -x \"$brain_mask\" -o \"$output_file\" -b \"[$bspl]\" -s \"$shrk\" -c \"[$iters,$conv]\""
+  # Determine ANTs bin path
+  local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
   
-  # Execute with filtering
-  execute_with_logging "$n4_cmd" "n4_bias_correction"
+  # Execute N4 using enhanced ANTs command execution
+  execute_ants_command "n4_bias_correction" "Non-uniform intensity (bias field) correction" \
+    ${ants_bin}/N4BiasFieldCorrection \
+    -d 3 \
+    -i "$file" \
+    -x "$brain_mask" \
+    -o "$output_file" \
+    -b "[$bspl]" \
+    -s "$shrk" \
+    -c "[$iters,$conv]"
 
   # Validate output file
   validate_nifti "$output_file" "N4 bias-corrected image"
@@ -530,13 +546,20 @@ standardize_dimensions() {
     target_dims="${x_pix}x${y_pix}x${z_pix}"
   fi
 
-  log_message "Resampling to $target_dims mm resolution with diagnostic output filtering"
+  log_message "Resampling to $target_dims mm resolution"
   
-  # Build the resample command
-  local resample_cmd="ResampleImage 3 \"$input_file\" \"$output_file\" \"$target_dims\" 0 4"
+  # Determine ANTs bin path
+  local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
   
-  # Execute with filtering
-  execute_with_logging "$resample_cmd" "resample_image"
+  # Execute resampling using enhanced ANTs command execution
+  execute_ants_command "resample_image" "Resampling image to standardized dimensions ($target_dims mm)" \
+    ${ants_bin}/ResampleImage \
+    3 \
+    "$input_file" \
+    "$output_file" \
+    "$target_dims" \
+    0 \
+    4
 
   # Validate output file
   validate_nifti "$output_file" "Standardized image"
