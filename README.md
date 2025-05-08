@@ -78,6 +78,10 @@ This kind of visualisation with the ability to track back to raw DICOM files and
 - Practical configuration support to optimise output validity across 1.5T and 3T field strengths
 - A novel DICOM backtrace for clinical verification of findings in native viewer format, because nothing in post-processing pipelines is proven until you can map it back to source of truth raw scanner output
 
+### Disclaimer
+
+This is a purely exploratory research project to understand the capabilities of existing tools in advanced pipelines in identifiying specific types of computationally "noticable" but clinically non-obvious anomalies. It is not clinically validated or necessarily robust or accurate and decisions and interpretations should always be made by qualified medical staff. 
+
 ## Example Workflow
 
 ```mermaid
@@ -142,19 +146,19 @@ graph TD
    ```
 
 # Install dependencies
-# Ensure you have ANTs, FSL, Convert3D, dcm2niix, Parallel and FreeSurfer installed. Conventiently, most are available via `homebrew` (macOS).
 
-If you don't the script will conveniently tell you
+Ensure you have ANTs, FSL, Convert3D, dcm2niix, Parallel and FreeSurfer installed. 
+Most are available via `homebrew` (macOS). If you don't the script will conveniently tell you
 
 ``` 
 ==== Dependency Checker ====
 [ERROR] ✗ dcm2niix is not installed or not in PATH
 [INFO] Try: brew install dcm2niix
 [INFO] Checking ANTs tools...
-[SUCCESS] ✓ ANTs (antsRegistrationSyN.sh) is installed (/Users/davidbrewster/ants/bin/antsRegistrationSyN.sh)
-[SUCCESS] ✓ ANTs (N4BiasFieldCorrection) is installed (/Users/davidbrewster/ants/bin/N4BiasFieldCorrection)
-[SUCCESS] ✓ ANTs (antsApplyTransforms) is installed (/Users/davidbrewster/ants/bin/antsApplyTransforms)
-[SUCCESS] ✓ ANTs (antsBrainExtraction.sh) is installed (/Users/davidbrewster/ants/bin/antsBrainExtraction.sh)
+[SUCCESS] ✓ ANTs (antsRegistrationSyN.sh) is installed (/Users/username/ants/bin/antsRegistrationSyN.sh)
+[SUCCESS] ✓ ANTs (N4BiasFieldCorrection) is installed (/Users/username/ants/bin/N4BiasFieldCorrection)
+[SUCCESS] ✓ ANTs (antsApplyTransforms) is installed (/Users/username/ants/bin/antsApplyTransforms)
+[SUCCESS] ✓ ANTs (antsBrainExtraction.sh) is installed (/Users/username/ants/bin/antsBrainExtraction.sh)
 [INFO] Checking FSL...
 [ERROR] ✗ FSL (fslinfo) is not installed or not in PATH
 [ERROR] ✗ FSL (fslstats) is not installed or not in PATH
@@ -307,21 +311,11 @@ This project was developed independently without institutional or any other back
 
 If you use BrainStem X in your research, you may cite:
 @software{BrainStemX2025,
-  author = {David Brewster c/o LazyEvaluation},
+  author = {D.J. Brewster c/o LazyEvaluation},
   title = {BrainStem X: Advanced Brainstem/Pons MRI Analysis Pipeline},
   year = {2025},
   url = {https://github.com/myzteryneuro/pons.myztery}
 }
-
-# Disclaimer
-
-This is a purely exploratory project. It is not clinically validated or necessarily robust or accurate. 
-
-DO NOT RELY ON ANY RESULTS. 
-
-Always seek medical advice on any medical concerns.
-
-The authors will not be held responsible for misuse of the software.
 
 # Ethics
 
