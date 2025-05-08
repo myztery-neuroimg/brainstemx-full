@@ -258,6 +258,12 @@ export ANTS_BIN="${ANTS_PATH}/bin"
 # Log ANTs paths for debugging
 log_message "ANTs paths: ANTS_PATH=$ANTS_PATH, ANTS_BIN=$ANTS_BIN"
 
+# Set SUIT directory for cerebellum and brainstem segmentation
+export SUIT_DIR="${SUIT_DIR:-$HOME/SUIT}"
+# Replace tilde with $HOME if present
+export SUIT_DIR="${SUIT_DIR/#\~/$HOME}"
+log_message "SUIT directory: SUIT_DIR=$SUIT_DIR"
+
 export LOG_DIR="${RESULTS_DIR}/logs"
 mkdir -p "$LOG_DIR"
 mkdir -p "$RESULTS_DIR"

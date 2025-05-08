@@ -531,9 +531,9 @@ select_best_scan() {
         fi
         
         # Prompt user for selection
-        echo ""
-        echo -n "Enter selection (1-${#sorted_scans[@]}): "
-        read -r selection
+        #echo ""
+        #echo -n "Enter selection (1-${#sorted_scans[@]}): "
+        #read -r selection
         
         # Validate selection
         if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#sorted_scans[@]}" ]; then
@@ -567,15 +567,26 @@ select_best_scan() {
         best_acq_type=$(grep -E "ORIGINAL|DERIVED" "$best_json" | head -1 | sed 's/.*"\(ORIGINAL\|DERIVED\)".*/\1/' || echo "Unknown")
     fi
     
-    # Get voxel aspect ratio if reference provided
+    # Get voxel aspect ratio and selection mode details for output
     local aspect_info=""
+    local mode_info=" using mode '$selection_mode'"
+    
     if [ -n "$reference_scan" ]; then
         local aspect_ratio=$(calculate_voxel_aspect_ratio "$best_scan")
         local aspect_score=$(calculate_aspect_ratio_similarity "$best_scan" "$reference_scan")
         aspect_info=", Aspect Ratio: $aspect_ratio, Similarity: $aspect_score"
     fi
+    
+    # Add selection mode-specific details
+    if [[ "$selection_mode" == "original" ]]; then
+        if [[ "$best_acq_type" == *"ORIGINAL"* ]]; then
+            mode_info=" using ORIGINAL-only mode (ORIGINAL acquisition found)"
+        else
+            mode_info=" using ORIGINAL-only mode (WARNING: no ORIGINAL acquisition found)"
+        fi
+    fi
 
-    log_formatted "SUCCESS" "Selected best $scan_type scan with score $best_score: $best_scan ($best_acq_type)$aspect_info"
+    log_formatted "SUCCESS" "Selected best $scan_type scan with score $best_score: $best_scan ($best_acq_type)$aspect_info$mode_info"
     
     # Return the path to the best scan
     echo "$best_scan"

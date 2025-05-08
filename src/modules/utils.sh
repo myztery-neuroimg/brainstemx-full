@@ -38,15 +38,11 @@ legacy_execute_ants_command() {
     if [ $status -eq 0 ]; then
         log_formatted "SUCCESS" "ANTs command completed successfully."
         log_message "Summary (last 3 lines):"
-        tail -n 3 "$filtered_log" | while read -r line; do
-            log_message "  $line"
-        done
+        tail -n 3 "$filtered_log" 
     else
         log_formatted "ERROR" "ANTs command failed with status $status"
         log_message "Error summary (last 5 lines):"
-        tail -n 5 "$filtered_log" | while read -r line; do
-            log_formatted "ERROR" "  $line"
-        done
+        tail -n 5 "$filtered_log" 
     fi
     
     return $status
