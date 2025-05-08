@@ -148,6 +148,7 @@ graph TD
 # Install dependencies
 
 Ensure you have ANTs, FSL, Convert3D, dcm2niix, Parallel and FreeSurfer installed. 
+* NOTE: Some of these tools and ATLASes have different licences and you must agree or disagree individually with their licence terms.*
 Most are available via `homebrew` (macOS). If you don't the script will conveniently tell you
 
 ``` 
@@ -211,20 +212,27 @@ I will release a docker image some time in the future but bear in mind that GPU 
 
 See docs/comparison-to-sota.md
 
-BrainStem X provides:
-
-### Specialized Brainstem Focus: Targeted methods for brainstem and pontine lesion detection
-### Acquisition-Specific Processing: Tailored workflows for both research-grade and standard clinical protocols
-### Objective Anomaly Detection: Statistical cluster identification using intensity distribution analysis
-### Multi-modality Integration: Correlative analysis across T1/T2/FLAIR/SWI/DWI sequences
-### Clinical Translation: DICOM backtrace for radiological verification in standard clinical viewers
-### Reliability: Comprehensive validation metrics for registration and segmentation quality
-
 # Acknowledgments 
 
-BrainStem X leverages established neuroimaging tools while extending them for brainstem-specific analysis:
+BrainStem X leverages established neuroimaging tools, reinventing very little but combining some of these excellent projects:
 
 - **ANTs**: Extended with custom orientation preservation constraints
+
+@article{tustison_antsx_2021,
+	title = {The {ANTsX} ecosystem for quantitative biological and medical imaging},
+	volume = {11},
+	issn = {2045-2322},
+	url = {https://doi.org/10.1038/s41598-021-87564-6},
+	doi = {10.1038/s41598-021-87564-6},
+	abstract = {The Advanced Normalizations Tools ecosystem, known as ANTsX, consists of multiple open-source software libraries which house top-performing algorithms used worldwide by scientific and research communities for processing and analyzing biological and medical imaging data. The base software library, ANTs, is built upon, and contributes to, the NIH-sponsored Insight Toolkit. Founded in 2008 with the highly regarded Symmetric Normalization image registration framework, the ANTs library has since grown to include additional functionality. Recent enhancements include statistical, visualization, and deep learning capabilities through interfacing with both the R statistical project (ANTsR) and Python (ANTsPy). Additionally, the corresponding deep learning extensions ANTsRNet and ANTsPyNet (built on the popular TensorFlow/Keras libraries) contain several popular network architectures and trained models for specific applications. One such comprehensive application is a deep learning analog for generating cortical thickness data from structural T1-weighted brain MRI, both cross-sectionally and longitudinally. These pipelines significantly improve computational efficiency and provide comparable-to-superior accuracy over multiple criteria relative to the existing ANTs workflows and simultaneously illustrate the importance of the comprehensive ANTsX approach as a framework for medical image analysis.},
+	number = {1},
+	journal = {Scientific Reports},
+	author = {Tustison, Nicholas J. and Cook, Philip A. and Holbrook, Andrew J. and Johnson, Hans J. and Muschelli, John and Devenyi, Gabriel A. and Duda, Jeffrey T. and Das, Sandhitsu R. and Cullen, Nicholas C. and Gillen, Daniel L. and Yassa, Michael A. and Stone, James R. and Gee, James C. and Avants, Brian B.},
+	month = apr,
+	year = {2021},
+	pages = {9068},
+}
+
 - **FSL**: Integrated with enhanced cluster analysis thresholding
 
 ```
@@ -238,33 +246,6 @@ M. Jenkinson, C.F. Beckmann, T.E. Behrens, M.W. Woolrich, S.M. Smith. FSL. Neuro
 - **FreeSurfer**: Utilized for 3D visualization of anomaly distribution
 - **Custom Python modules**: Implemented for cross-modality registration and cluster correlation
 
-## Neuroimaging Tools
-
-* NOTE: Some of these tools have different licences and you must agree or disagree individually with their licence terms.*
-
-* ANTs (Advanced Normalization Tools)
-
-@article{tustison_antsx_2021,
-	title = {The {ANTsX} ecosystem for quantitative biological and medical imaging},
-	volume = {11},
-	issn = {2045-2322},
-	url = {https://doi.org/10.1038/s41598-021-87564-6},
-	doi = {10.1038/s41598-021-87564-6},
-	number = {1},
-	journal = {Scientific Reports},
-	author = {Tustison, Nicholas J. and Cook, Philip A. and Holbrook, Andrew J. and Johnson, Hans J. and Muschelli, John and Devenyi, Gabriel A. and Duda, Jeffrey T. and Das, Sandhitsu R. and Cullen, Nicholas C. and Gillen, Daniel L. and Yassa, Michael A. and Stone, James R. and Gee, James C. and Avants, Brian B.},
-	month = apr,
-	year = {2021},
-	pages = {9068},
-}
-
-* FSL (FMRIB Software Library)
-
-```
-Jenkinson M, Beckmann CF, Behrens TE, Woolrich MW, Smith SM. FSL. Neuroimage. 2012;62(2):782-790.
-```
-
-* FreeSurfer
 * Convert3D
 * dcm2niix
 * ITK-SNAP
@@ -286,14 +267,16 @@ Jenkinson M, Beckmann CF, Behrens TE, Woolrich MW, Smith SM. FSL. Neuroimage. 20
 * MNI152 Standard Space Templates
 * SUIT Cerebellar Atlas
 
+```
 Diedrichsen, J. (2006). A spatially unbiased atlas template of the human cerebellum. Neuroimage, 33, 1, p. 127-138.  pdf format
 Diedrichsen, J., Balsters, J. H., Flavell, J., Cussans, E., & Ramnani, N. (2009). A probabilistic atlas of the human cerebellum. Neuroimage.  pdf format
 Diedrichsen, J., Maderwald, S., Kuper, M., Thurling, M., Rabe, K., Gizewski, E. R., et al. (2011). Imaging the deep cerebellar nuclei: A probabilistic atlas and normalization procedure. Neuroimage.pdf format
 Diedrichsen, J. & Zotow, E. (2015). Surface-based display of volume-averaged cerebellar data. PLoS One, 7, e0133402.  pdf format
+```
 
 ## Programming Resources / Libraries (including..)
 
-* Python Neuroimaging Libraries (NiBabel, PyDicom)
+* Python Neuroimaging Libraries (NiBabel, PyDicom, antspyx, may others)
 * GNU Parallel
 
 ```
@@ -325,7 +308,9 @@ A Colab worksheet is in the works as well.
 
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.
-INDIVIDUAL PACKAGES, ATLASSES, TOOLS, FRAMEWORKS REFERENCED IN THE PIPELINE STEPS HAVE THEIR OWN LICENCES - YOU ARE RESPONSIBLE FOR ACCEPTING OR DECLINING THOSE. THEY ARE NEVER PRE-INSTALLED AS PART OF MY SOFTWARE.
+
+INDIVIDUAL PACKAGES, ATLASSES, TOOLS, FRAMEWORKS REFERENCED IN THE THIS PROJECT OFTEN HAVE THEIR OWN LICENCES, SOME OF WHICH ARE MORE RESTRICTIVE (e.g., no Commercial usage). 
+YOU ARE RESPONSIBLE FOR ACCEPTING OR DECLINING THOSE. THEY ARE NEVER BUNDLED WITH MY PROJECT NOT PRE-INSTALLED AS PART OF MY SOFTWARE.
 
 # Contributing
 Yes, please! Just submit a PR, all contributions are welcome as are research or clinical feedback about the radiological and technical pipeline foundations! Thanks in advance..
