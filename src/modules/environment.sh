@@ -89,34 +89,132 @@ execute_with_logging() {
   return ${PIPESTATUS[0]}
 }
 
-# Function specifically for ANTs commands without escaping issues
+# Function specifically for ANTs commands with enhanced explanations
 execute_ants_command() {
   local log_prefix="${1:-ants_cmd}"
+  local step_description="${2:-ANTs processing step}"  # New parameter for step description
   local diagnostic_log="${LOG_DIR}/${log_prefix}_diagnostic.log"
-  local cmd=("${@:2}") # Get all arguments except the first one as the command
+  local cmd=("${@:3}") # Get all arguments except the first two as the command
   
   # Create diagnostic log directory if needed
   mkdir -p "$LOG_DIR"
   
-  # Log the command that will be executed
-  log_message "Executing ANTs command: ${cmd[*]} (diagnostic output redirected to $diagnostic_log)"
+  # IMPROVEMENT: Better description of what's happening
+  log_formatted "INFO" "==== $step_description ===="
+  log_message "Running: ${cmd[0]} (full details in log file)"
+  log_message "Diagnostic output saved to: $diagnostic_log"
   
-  # Improved filtering to handle all diagnostic patterns from ANTs
-  # This captures both "2DIAGNOSTIC" and "DIAGNOSTIC" messages
-  # It will also filter out the Euler3DTransform registration diagnostics
-  # Execute command directly without eval:
-  "${cmd[@]}" > >(grep -v -E "^(2)?DIAGNOSTIC|convergenceValue|metricValue|ITERATION_TIME" | tee -a "$LOG_FILE") 2> >(tee -a "$diagnostic_log" >&2)
+  # Show primary parameters in a simplified form if available
+  local cmd_str="${cmd[*]}"
+  if [[ "$cmd_str" == *"-d "* ]]; then
+    local dim=$(echo "$cmd_str" | grep -o -- "-d [0-9]" | cut -d ' ' -f 2)
+    log_message "Processing ${dim}D image data"
+  fi
   
-  local status=${PIPESTATUS[0]}
+  # Extract common parameters for better visibility
+  [[ "$cmd_str" == *"-f "* ]] && log_message "Fixed (reference) image: $(echo "$cmd_str" | grep -o -- "-f [^ ]*" | cut -d ' ' -f 2)"
+  [[ "$cmd_str" == *"-m "* ]] && log_message "Moving (source) image: $(echo "$cmd_str" | grep -o -- "-m [^ ]*" | cut -d ' ' -f 2)"
+  [[ "$cmd_str" == *"-o "* ]] && log_message "Output prefix: $(echo "$cmd_str" | grep -o -- "-o [^ ]*" | cut -d ' ' -f 2)"
+  
+  # Create named pipes for better output handling
+  local stdout_pipe=$(mktemp -u)
+  local stderr_pipe=$(mktemp -u)
+  mkfifo "$stdout_pipe"
+  mkfifo "$stderr_pipe"
+  
+  # Enhanced progress tracking
+  local start_time=$(date +%s)
+  
+  # Print initial progress indicator
+  echo -n "Progress: " >&2
+  
+  # Start background processes to handle output
+  # This improved filter removes verbose registration output and shows progress
+  (
+    # Progress indicator counter
+    local line_count=0
+    local major_step=""
+    
+    while IFS= read -r line; do
+      # Check for major step changes to provide better feedback
+      if echo "$line" | grep -q "Running.*Transform registration"; then
+        major_step=$(echo "$line" | sed -E 's/.*Running (.*)Transform registration.*/\1/')
+        echo -e "\n${BLUE}[PROGRESS]${NC} Starting $major_step registration phase" >&2
+        echo -n "Progress: " >&2
+        line_count=0
+      fi
+      
+      # Filter out diagnostic and verbose registration messages
+      if ! echo "$line" | grep -qE "^(2)?DIAGNOSTIC|^XXDIAGNOSTIC|convergenceValue|metricValue|ITERATION_TIME|Running.*Transform registration|DIAGNOSTIC|CurrentIteration"; then
+        echo "$line" | tee -a "$LOG_FILE"
+      else
+        # Print a dot to show progress without the verbose output
+        line_count=$((line_count + 1))
+        if [ $((line_count % 10)) -eq 0 ]; then
+          echo -n "." >&2
+        fi
+        # Still save the diagnostic info to the log file
+        echo "$line" >> "$diagnostic_log"
+      fi
+    done
+  ) < "$stdout_pipe" &
+  local stdout_pid=$!
+  
+  tee -a "$diagnostic_log" < "$stderr_pipe" >&2 &
+  local stderr_pid=$!
+  
+  # Execute command directly without eval with improved output redirection
+  "${cmd[@]}" > "$stdout_pipe" 2> "$stderr_pipe"
+  local status=$?
+  
+  # Wait for output handling processes to complete
+  wait $stdout_pid
+  wait $stderr_pid
+  
+  # Calculate elapsed time
+  local end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+  local minutes=$((elapsed / 60))
+  local seconds=$((elapsed % 60))
+  
+  # Add newline to separate progress dots from completion message
+  echo "" >&2
   
   # Add better status reporting after command completes
   if [ $status -eq 0 ]; then
-    log_formatted "SUCCESS" "ANTs command completed successfully"
+    log_formatted "SUCCESS" "$step_description completed successfully (${minutes}m ${seconds}s)"
+    
+    # Look for output files to suggest visualization
+    if [[ "$cmd_str" == *"-o "* ]]; then
+      local output_prefix=$(echo "$cmd_str" | grep -o -- "-o [^ ]*" | cut -d ' ' -f 2)
+      
+      # For brain extraction
+      if [[ "$step_description" == *"brain extraction"* ]] && [[ -f "${output_prefix}BrainExtractionBrain.nii.gz" ]]; then
+        log_formatted "INFO" "--------------------------------------------------------"
+        log_formatted "INFO" "VISUALIZATION SUGGESTION"
+        log_message "To view the extracted brain, run:"
+        log_message "  freeview ${output_prefix}BrainExtractionBrain.nii.gz ${output_prefix}BrainExtractionMask.nii.gz"
+        log_formatted "INFO" "--------------------------------------------------------"
+      
+      # For registration
+      elif [[ "$step_description" == *"registration"* ]] && [[ -f "${output_prefix}Warped.nii.gz" ]]; then
+        local fixed_img=$(echo "$cmd_str" | grep -o -- "-f [^ ]*" | cut -d ' ' -f 2)
+        log_formatted "INFO" "--------------------------------------------------------"
+        log_formatted "INFO" "VISUALIZATION SUGGESTION"
+        log_message "To check registration quality, run:"
+        log_message "  freeview ${output_prefix}Warped.nii.gz $fixed_img"
+        log_formatted "INFO" "--------------------------------------------------------"
+      fi
+    fi
+    
   else
-    log_formatted "ERROR" "ANTs command failed with status $status"
+    log_formatted "ERROR" "$step_description failed with status $status after ${minutes}m ${seconds}s"
     # Extract important error lines from the diagnostic log
-    tail -n 10 "$diagnostic_log" | grep -v -E "^(2)?DIAGNOSTIC|convergenceValue" | tail -n 3
+    tail -n 10 "$diagnostic_log" | grep -v -E "^(2)?DIAGNOSTIC|^XXDIAGNOSTIC|convergenceValue" | tail -n 3
   fi
+  
+  # Remove named pipes
+  rm -f "$stdout_pipe" "$stderr_pipe"
   
   # Return the exit code of the command
   return $status

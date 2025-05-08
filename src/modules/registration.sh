@@ -357,7 +357,7 @@ register_modality_to_t1() {
             log_message "Running ANTs registration with direct command execution"
             
             # Execute ANTs command directly without eval issues
-            execute_ants_command "ants_registration" \
+            execute_ants_command "ants_registration" "T1-to-$modality_name white matter guided registration" \
               ${ants_bin}/antsRegistrationSyN.sh \
               -d 3 \
               -f "$t1_file" \
@@ -393,7 +393,7 @@ register_modality_to_t1() {
                 log_message "Running fallback registration with direct command execution"
                 
                 # Execute ANTs fallback command directly
-                execute_ants_command "ants_fallback_registration" \
+                execute_ants_command "ants_fallback_registration" "Fallback direct registration without WM guidance" \
                   ${ants_bin}/antsRegistrationSyN.sh \
                   -d 3 \
                   -f "$t1_file" \
@@ -431,7 +431,7 @@ register_modality_to_t1() {
         log_message "Running ANTs registration with cost function masking, filtering diagnostic output"
         
         # Execute ANTs masked command directly
-        execute_ants_command "ants_masked_registration" \
+        execute_ants_command "ants_masked_registration" "Registration with outer ribbon mask for boundary alignment" \
           ${ants_bin}/antsRegistrationSyN.sh \
           -d 3 \
           -f "$t1_file" \
@@ -447,7 +447,7 @@ register_modality_to_t1() {
         if [ $? -ne 0 ]; then
             log_formatted "WARNING" "ANTs registration with cost function masking failed, falling back to standard registration"
             # Fall back to standard registration
-            execute_ants_command "ants_standard_registration" \
+            execute_ants_command "ants_standard_registration" "Standard registration without mask constraints" \
               ${ants_bin}/antsRegistrationSyN.sh \
               -d 3 \
               -f "$t1_file" \
@@ -473,7 +473,7 @@ register_modality_to_t1() {
             log_message "This approach still leverages ANTs' powerful symmetric normalization algorithm"
             
             # Execute standard registration directly with the new method
-            execute_ants_command "ants_standard_registration" \
+            execute_ants_command "ants_standard_registration" "Standard ANTs SyN registration without guidance" \
               ${ants_bin}/antsRegistrationSyN.sh \
               -d 3 \
               -f "$t1_file" \
@@ -539,7 +539,7 @@ register_modality_to_t1() {
             
             local emerg_start_time=$(date +%s)
             # Execute using direct command execution instead of string with quotes
-            execute_ants_command "ants_emergency_method1" \
+            execute_ants_command "ants_emergency_method1" "Emergency registration with aggressive SyN transform" \
               ${ants_bin}/antsRegistrationSyNQuick.sh \
               -d 3 \
               -f "$t1_file" \
@@ -565,7 +565,7 @@ register_modality_to_t1() {
                 log_message "Command: ${ants_bin}/antsRegistrationSyNQuick.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"${emergency_dir}/method2\" -n \"$ANTS_THREADS\" -p f"
                 
                 # Execute method 2 using direct command approach
-                execute_ants_command "ants_emergency_method2" \
+                execute_ants_command "ants_emergency_method2" "Emergency registration with standard SyNQuick" \
                   ${ants_bin}/antsRegistrationSyNQuick.sh \
                   -d 3 \
                   -f "$t1_file" \
@@ -590,7 +590,7 @@ register_modality_to_t1() {
                     log_message "Command: ${ants_bin}/antsRegistrationSyNQuick.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"${emergency_dir}/method3\" -n \"$ANTS_THREADS\" -p f -t a"
                     
                     # Execute method 3 using direct command approach
-                    execute_ants_command "ants_emergency_method3" \
+                    execute_ants_command "ants_emergency_method3" "Emergency registration with affine-only transform" \
                       ${ants_bin}/antsRegistrationSyNQuick.sh \
                       -d 3 \
                       -f "$t1_file" \
@@ -1305,7 +1305,7 @@ perform_wm_guided_initialization() {
         log_message "Using ANTs for white matter-guided initialization"
         
         # Execute ANTs command via the utility function
-        execute_ants_command "ants_wm_init" \
+        execute_ants_command "ants_wm_init" "White matter guided initialization for accurate boundary alignment" \
             ${ants_bin}/antsRegistration \
             --dimensionality 3 \
             --float 0 \

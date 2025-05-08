@@ -25,7 +25,7 @@ register_with_topology_preservation() {
     local constraint_field="${TOPOLOGY_CONSTRAINT_FIELD:-1x1x1}"
     
     # Use ANTs SyN with restricting deformation field
-    execute_ants_command "orientation_preserving_registration" \
+    execute_ants_command "orientation_preserving_registration" "Topology-preserving registration to maintain anatomical orientation" \
       ${ants_bin}/antsRegistrationSyN.sh \
       -d 3 \
       -f "$fixed" \
@@ -89,7 +89,7 @@ register_with_anatomical_constraints() {
     local regularization_weight="${REGULARIZATION_GRADIENT_FIELD_WEIGHT:-0.5}"
     
     # Run registration with orientation constraints
-    execute_ants_command "anatomically_constrained_registration" \
+    execute_ants_command "anatomically_constrained_registration" "Registration with anatomical constraints to preserve critical structures" \
       ${ants_bin}/antsRegistrationSyN.sh \
       -d 3 \
       -f "$fixed" \

@@ -729,6 +729,7 @@ export -f extract_pons_from_brainstem
 export -f divide_pons
 export -f validate_segmentation
 export -f segment_tissues
-export -f log_diagnostic execute_with_logging
+# These functions are already exported from environment.sh
+# export -f log_diagnostic execute_with_logging
 
 log_message "Segmentation module loaded"
