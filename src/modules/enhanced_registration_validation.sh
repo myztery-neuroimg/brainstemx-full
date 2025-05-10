@@ -96,7 +96,17 @@ validate_coordinate_space() {
            (( $(echo "$voxel_diff >= 0.01" | bc -l) )); then
             echo "  REGISTRATION REQUIRED: Images are in different coordinate spaces"
             echo "  Recommended registration command:"
-            echo "    flirt -in $image -ref $reference -out ${output_dir}/$(basename "$image" .nii.gz)_reg.nii.gz -dof 12"
+            echo "    mkdir -p $(dirname ${output_dir}/$(basename "$image" .nii.gz)_reg.nii.gz)"
+            echo "    execute_ants_command \"direct_syn\" \"Direct ANTs SyN registration without WM guidance\" \\"
+            echo "      antsRegistrationSyN.sh \\"
+            echo "      -d 3 \\"
+            echo "      -f $reference \\"
+            echo "      -m $image \\"
+            echo "      -o ${output_dir}/$(basename "$image" .nii.gz)_reg_ \\"
+            echo "      -t s \\"
+            echo "      -n 12 \\"
+            echo "      -p f \\"
+            echo "      -x MI"
         else
             echo "  NO REGISTRATION NEEDED: Images are already in compatible spaces"
         fi
@@ -300,24 +310,32 @@ register_to_standard_with_validation() {
     # Run the registration if needed
     if [ "$already_in_mni" = "false" ]; then
         log_message "Running registration to MNI space with standardized image..."
-        # Use ANTs SyN for better accuracy if available
-        if command -v antsRegistrationSyNQuick.sh &>/dev/null; then
-            log_message "Using ANTs SyN for MNI registration (higher accuracy)"
-            antsRegistrationSyNQuick.sh -d 3 -f "$reference" -m "$std_image" -o "$(dirname "$output")/ants_" -t s
-            
-            # Check if ANTs registration produced output
-            if [ -f "$(dirname "$output")/ants_Warped.nii.gz" ]; then
-                cp "$(dirname "$output")/ants_Warped.nii.gz" "$output"
-                cp "$(dirname "$output")/ants_0GenericAffine.mat" "$transform"
-                log_message "ANTs registration successful, using ANTs output"
-            else
-                # Fall back to FLIRT if ANTs fails
-                log_formatted "WARNING" "ANTs registration failed, falling back to FLIRT"
-                flirt -in "$std_image" -ref "$reference" -out "$output" -omat "$transform" -dof 12
-            fi
+        # Create output directory if needed
+        mkdir -p "$(dirname "$output")"
+        
+        # Always use ANTs SyN with the execute_ants_command function for proper logging
+        log_message "Using ANTs SyN with execute_ants_command for registration"
+        
+        # Execute ANTs registration with proper logging and error handling
+        execute_ants_command "direct_syn" "Direct ANTs SyN registration without WM guidance" \
+          antsRegistrationSyN.sh \
+          -d 3 \
+          -f "$reference" \
+          -m "$std_image" \
+          -o "$(dirname "$output")/direct_syn_" \
+          -t s \
+          -n 12 \
+          -p f \
+          -x MI
+        
+        # Check if ANTs registration produced output
+        if [ -f "$(dirname "$output")/direct_syn_Warped.nii.gz" ]; then
+            cp "$(dirname "$output")/direct_syn_Warped.nii.gz" "$output"
+            cp "$(dirname "$output")/direct_syn_0GenericAffine.mat" "$transform"
+            log_message "ANTs registration successful, using ANTs output"
         else
-            # Use FLIRT if ANTs is not available
-            log_message "Using FLIRT for MNI registration"
+            # Fall back to FLIRT if ANTs fails (should rarely happen)
+            log_formatted "WARNING" "ANTs registration failed, falling back to FLIRT"
             flirt -in "$std_image" -ref "$reference" -out "$output" -omat "$transform" -dof 12
         fi
     fi

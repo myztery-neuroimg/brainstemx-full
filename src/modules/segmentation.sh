@@ -9,6 +9,12 @@
 # - Segmentation QA integration
 #
 
+# Export new SUIT-based segmentation function if the script exists
+if [ -f "$(dirname $0})/segment_pons_and_brainstem.sh" ]; then
+    source "$(dirname $0})/segment_pons_and_brainstem.sh"
+    log_message "SUIT-based brainstem segmentation loaded"
+fi      
+
 # Function to extract brainstem in standard space
 extract_brainstem_standardspace() {
     # Check if input file exists
@@ -342,7 +348,7 @@ extract_brainstem_final() {
         log_message "Using advanced SUIT-based segmentation for better pons subdivision..."
         
         # Source the new script
-        source "$(dirname "$0")/segment_pons_and_brainstem.sh"
+        source "$(dirname $0)/segment_pons_and_brainstem.sh"
         
         # Run the comprehensive segmentation with SUIT and Juelich atlas
         segment_brainstem_comprehensive "$input_file" "$input_basename"
@@ -756,15 +762,6 @@ export -f extract_pons_from_brainstem
 export -f divide_pons
 export -f validate_segmentation
 export -f segment_tissues
-# Export new SUIT-based segmentation function if the script exists
-if [ -f "$(dirname "${BASH_SOURCE[0]}")/segment_pons_and_brainstem.sh" ]; then
-    source "$(dirname "${BASH_SOURCE[0]}")/segment_pons_and_brainstem.sh"
-    export -f segment_brainstem_comprehensive
-    log_message "SUIT-based brainstem segmentation loaded"
-    # Make the script executable
-    chmod +x "$(dirname "${BASH_SOURCE[0]}")/segment_pons_and_brainstem.sh"
-    chmod +x "$(dirname "${BASH_SOURCE[0]}")/segment_pons_suitlib.py"
-fi
 # These functions are already exported from environment.sh
 # export -f log_diagnostic execute_with_logging
 
