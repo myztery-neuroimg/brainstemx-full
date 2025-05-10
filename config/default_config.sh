@@ -75,8 +75,8 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
-export ANTS_THREADS=48                 # Number of threads for ANTs processing
-export REG_PRECISION=4                 # Registration precision (higher = more accurate but slower)
+export ANTS_THREADS=32                 # Number of threads for ANTs processing
+export REG_PRECISION=3                 # Registration precision (higher = more accurate but slower)
 
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
@@ -84,7 +84,7 @@ export REG_PRECISION=4                 # Registration precision (higher = more a
 
 # Hyperintensity detection
 export THRESHOLD_WM_SD_MULTIPLIER=1.25 #Standard deviations from local norm
-export MIN_HYPERINTENSITY_SIZE=2
+export MIN_HYPERINTENSITY_SIZE=4
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3

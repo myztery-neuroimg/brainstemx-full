@@ -288,7 +288,7 @@ QUALITY_PRESET="HIGH"
 if [ -d "$ANTS_BIN" ]; then
   export PATH="$PATH:${ANTS_BIN}"
   log_formatted "INFO" "Added ANTs bin directory to PATH: $ANTS_BIN"
-  export ANTS_THREADS=40
+  export ANTS_THREADS=28
   # Set ANTs/ITK threading variables for proper parallelization
   export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="$ANTS_THREADS"
   export OMP_NUM_THREADS="$ANTS_THREADS"

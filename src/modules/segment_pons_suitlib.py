@@ -24,7 +24,7 @@ from typing import Dict, Tuple, List, Optional, Union, Any
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -96,8 +96,8 @@ class BrainstemSegmentation:
         # Run the reorientation script
         logger.info("Running SUIT reorientation script...")
         env = os.environ.copy()
-        env["SUIT_DIR"] = str(self.suit_dir)
-        
+        #env["SUIT_DIR"] = str(self.suit_dir)
+        self.suit_dir = env["SUIT_DIR"] 
         try:
             subprocess.run(
                 ["bash", str(reorient_script)], 
@@ -145,7 +145,7 @@ class BrainstemSegmentation:
         # If reoriented templates failed, try original templates
         if not reoriented_loaded:
             logger.warning("Reoriented templates not available, checking for original templates")
-            if suit_templates['suit_original'].exists() and suit_templates['suit_t1_original'].exists():
+            if suit_templates['suit'].exists() and suit_templates['t1'].exists():
                 try:
                     # Store as primary templates
                     templates['suit'] = ants.image_read(str(suit_templates['suit_original']))

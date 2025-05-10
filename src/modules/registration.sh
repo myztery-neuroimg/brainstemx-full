@@ -259,6 +259,7 @@ register_modality_to_t1() {
                         if [ -s "${out_prefix}_wm_init_itk.txt" ]; then
                             log_formatted "SUCCESS" "Created simplified identity transform file"
                         else
+                            log_formatted "WARNING" "Did not create simplified identity transform file with itk"
                             transform_converted=false
                         fi
                     fi
@@ -295,8 +296,8 @@ register_modality_to_t1() {
             local c3d_output
             {
                 c3d_output=$(
-                    ulimit -v 4000000  # Limit virtual memory to ~4GB
-                    timeout 60 c3d_affine_tool -ref "$t1_file" -src "$modality_file" \
+                    ulimit -v 8000000  # Limit virtual memory to ~8GB
+                    c3d_affine_tool -ref "$t1_file" -src "$modality_file" \
                         -fsl2ras -oitk "${out_prefix}_wm_init_itk.txt" "$ants_wm_init_matrix" 2>&1
                 )
             }

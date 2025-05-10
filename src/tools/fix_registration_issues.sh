@@ -165,9 +165,9 @@ fix_binary_mask_datatypes() {
             log_message "Converting binary mask $img to UINT8"
             fslmaths "$img" -bin "$output_file" -odt int
         elif [ "$is_binary" = false ] && [ "$img_datatype" = "UINT8" ]; then
-            #local output_file="${output_dir}/$(basename "$img" .nii.gz)_int16.nii.gz"
-            #log_message "Converting non-binary data $img to INT16"
-            #fslmaths "$img" "$output_file" -odt int
+            local output_file="${output_dir}/$(basename "$img" .nii.gz)_int16.nii.gz"
+            log_message "Not Converting non-binary data $img to INT16"
+            fslmaths "$img" "$output_file" -odt int
         fi
     done < <(find_nifti_files "$base_dir")
     
