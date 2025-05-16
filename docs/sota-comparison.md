@@ -22,8 +22,8 @@ BrainStem X extracts and analyzes multiple DICOM header fields beyond spatial pa
 
 Several implementations exceed current standards:
 
-** Field Strength Detection: The pipeline extracts MRI field strength to adjust processing parameters.
-** Vendor-Specific Optimizations: The detect_scanner_manufacturer() function analyzes DICOM headers to apply vendor-specific optimizations:
+- **Field Strength Detection**: The pipeline extracts MRI field strength to adjust processing parameters.
+- **Vendor-Specific Optimizations**: The detect_scanner_manufacturer() function analyzes DICOM headers to apply vendor-specific optimizations:
 
 # Acquisition Plane Analysis
 
@@ -41,29 +41,28 @@ local max_diff=$(echo "scale=3; m=($pixdim1-$pixdim2); if(m<0) m=-m;
                 if(m>n) { if(m>o) m else o } else { if(n>o) n else o }" | bc -l)
 ```
 
-# Comparison to SOTA
+## Comparison to SOTA
 
 Current research is exploring deep learning approaches for bias field correction (e.g., Moyer et al., 2019), but N4 remains the most widely validated method. BrainStem X's implementation aligns with best practices by combining N4 with brain masking. The adaptation of parameters by field strength is particularly valuable, as 3T MRI typically exhibits stronger bias field effects than 1.5T.
 The field-strength and sequence-specific parameter optimization represents an advance over typical implementations that use fixed parameters for all acquisitions. This approach is particularly important for brainstem analysis where slight variations in signal intensity can significantly impact lesion detection.
 
-## Shear Detection and Orientation Preservation
+# Shear Detection and Orientation Preservation
 A notable innovation in BrainStem X is its comprehensive approach to orientation distortion detection and correction, which is particularly crucial for the directionally organized brainstem.
 
 ## Standard Approach
-Most neuroimaging pipelines apply standard affine and non-linear registration without explicit consideration of orientation preservation. BrainStem X implements:
+Most neuroimaging pipelines apply standard affine and non-linear registration without explicit consideration of orientation preservation. 
 
-### Shearing Distortion Analysis
-
-The pipeline analyzes transformation matrices to detect shearing distortions that could affect anatomical interpretation:
+BrainStem X analyzes transformation matrices to detect shearing distortions that could affect anatomical interpretation:
 - Calculate relative transform
 - Check for orthogonality (deviation indicates shearing)
 - Calculate individual shear components
 
-## Orientation-preservation
-
-* Comparison to SOTA
+## Comparison to SOTA
 The orientation preservation techniques in BrainStem X represent a significant advance over standard neuroimaging pipelines. While diffeomorphic registration (SyN in ANTs) preserves topology in general, the explicit monitoring and correction of orientation distortion is uncommon in typical neuroimaging workflows.
-Research on orientation preservation in medical image registration has focused on preserving specific anatomical features (e.g., Zhang et al., 2019). BrainStem X's approach aligns with these advanced techniques and implements them specifically for brainstem analysis, where maintaining the correct orientation of fiber tracts is crucial for accurate interpretation.
+Research on orientation preservation in medical image registration has focused on preserving specific anatomical features (e.g., Zhang et al., 2019). 
+
+BrainStem X's approach aligns with these advanced techniques and implements them specifically for brainstem analysis, where maintaining the correct orientation of fiber tracts is crucial for accurate interpretation.
+
 The shearing detection and orientation correction techniques are particularly valuable for brainstem analysis, as standard registration approaches can introduce subtle distortions that significantly impact the interpretation of directionally organized brainstem structures.
 
 # Brain Extraction Methodology
