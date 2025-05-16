@@ -9,43 +9,13 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **Multiple fallback methods** at various steps, activated by quantitative quality metrics, adding robustness to results even with suboptimal slice thickness, modalities and IPR
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
 - **Parallel processing** of subjects and optimisation of multithreaded performance and standardised outputs to support larger cohort analysis
-- **Attempts to take state of the art approaches as of 2023/2024 and combine them** - see https://github.com/myztery-neuroimg/brainstemx-full/blob/main/docs/sota-comparison.md 
+- **Modern approach** Attempts to take modern non-ML analytics approaches as of 2023/2024 and combine them, see https://github.com/myztery-neuroimg/brainstemx-full/blob/main/docs/sota-comparison.md 
 
 ## Project status
 
 The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality. The project is heavily optimised for Apple Metal but there is no technical reason that any Linux based-system should not support the system. Future works including a portable docker implementation via neurodocker.
 
-For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx
-
-## What Makes BrainStem X Different
-
-Firstly, I should qualify my background is Computer Science and Mathematics. I don't know the inner workings of the brainstem, what "normal" looks like, but I tried to find as many open source datasets as I could. I know there are regions that are typically more intense, even within the dorsal and ventral pons, but that overall this is a relatively homogenous part of the brain, and very hard to visualise. So, real expertise would help a whole bunch here.. but I think computer science and mathematics have a lot to offer the field and so this is my attempt..
-
-BrainStem X supports analysis of a wide variety of clinical neuroimaging MRI datasets:
-
-- **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
-  - 3D MPRAGE T1-weighted imaging
-  - Optimisations for 3T scanners, accomodations for 1.5T
-  - 3D SPACE/VISTA T2-FLAIR with SAG acquisition where available
-  - Multi-parametric SWI/DWI integration as quantifiable support for T1W/FLAIR clustering results
-
-- **Routine Clinical Protocols**: Robust fallback for standard clinical acquisitions
-  - Thick-slice (3-5mm) 1.5T 2D axial FLAIR with gaps, where we likely have thin slice 3D T1/T1-MPR to register against
-  - Non-isotropic voxel reconstruction estimation via ANTs
-  - Single-sequence limited protocols e.g., AX FLAIR
-  - Normalisation against MNT space and signal levels agaisnt the baseline of the individual subject
-
-The pipeline extracts DICOM metadata including acquisition/scanner parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and attempts registration techniques using ANTs and FSL libraries and atlas-based segmentation of the brainsteam, dorsal and ventral pons. 
-Configurable N4 bias field correction and scanner orientation correction implementations help ensure integrity of your results. 20 validations within the qa module alone ensure consistency and reliability of your results.
-
-These capabilities are included to support analysis of signal intensity actoss datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
-
-This kind of visualisation with the ability to track back to raw DICOM files and map clusters across modalities could potentially be quite useful, even without machine learning techniques which of course are all the rage nowadays. This is a very much first-principles approach but it uses the very latest techniques and grounded research up to 2023.
-
-<image width="400" alt="Simulated Hyperintensity Cluster on T2-SPACE-FLAIR" src="https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1" />
-
-<img width="540" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/72f2f11f-b19c-41bc-8eda-10997b2e96eb" />
-
+For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx (currently a very immature implementation, in progress).
 
 ## Features
 
@@ -81,9 +51,32 @@ This kind of visualisation with the ability to track back to raw DICOM files and
 - Practical configuration support to optimise output validity across 1.5T and 3T field strengths
 - A novel DICOM backtrace for clinical verification of findings in native viewer format, because nothing in post-processing pipelines is proven until you can map it back to source of truth raw scanner output
 
-### Disclaimer
+## Data compatibility 
+BrainStem X supports analysis of a wide variety of clinical neuroimaging MRI datasets:
 
-This is a purely exploratory research project to understand the capabilities of existing tools in advanced pipelines in identifiying specific types of computationally "noticable" but clinically non-obvious anomalies. It is not clinically validated or necessarily robust or accurate and decisions and interpretations should always be made by qualified medical staff. 
+- **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
+  - 3D MPRAGE T1-weighted imaging
+  - Optimisations for 3T scanners, accomodations for 1.5T
+  - 3D SPACE/VISTA T2-FLAIR with SAG acquisition where available
+  - Multi-parametric SWI/DWI integration as quantifiable support for T1W/FLAIR clustering results
+
+- **Routine Clinical Protocols**: Robust fallback for standard clinical acquisitions
+  - Thick-slice (3-5mm) 1.5T 2D axial FLAIR with gaps, where we likely have thin slice 3D T1/T1-MPR to register against
+  - Non-isotropic voxel reconstruction estimation via ANTs
+  - Single-sequence limited protocols e.g., AX FLAIR
+  - Normalisation against MNT space and signal levels agaisnt the baseline of the individual subject
+
+The pipeline extracts DICOM metadata including acquisition/scanner parameters, slice thickness, and orientation/modality/dimensionality to apply consistent, reliable, and transparent transformations, normalizations, and attempts registration techniques using ANTs and FSL libraries and atlas-based segmentation of the brainsteam, dorsal and ventral pons. 
+Configurable N4 bias field correction and scanner orientation correction implementations help ensure integrity of the results. 20 validations within the qa module alone ensure consistency and reliability of your results.
+
+These capabilities are included to support analysis of signal intensity actoss datasets from scans of varying imaging capabilities and protocols, making BrainStem X particularly effective for multi-center studies and retrospective analyses of existing clinical data.
+
+This kind of visualisation with the ability to track back to raw DICOM files and map clusters across modalities could potentially be quite useful, even without machine learning techniques which of course are all the rage nowadays. This is a very much first-principles approach but it uses the very latest techniques and grounded research up to 2023.
+
+<image width="400" alt="Simulated Hyperintensity Cluster on T2-SPACE-FLAIR" src="https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1" />
+
+<img width="540" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/72f2f11f-b19c-41bc-8eda-10997b2e96eb" />
+
 
 ## Example Workflow
 
@@ -243,7 +236,11 @@ BrainStem X leverages established neuroimaging tools, reinventing very little bu
 
 This project was developed independently without institutional or any other backing. I'm making this as available as possible to inspire development in this area of research.
 
-## Citation
+I should qualify my background is Computer Science and Mathematics. I don't know the inner workings of the brainstem, what "normal" looks like, but I tried to find as many open source datasets as I could and relied on AI assistance in the radioneurological details, my expertise is in glueing things together. Real neuroradiological expertise would help a whole bunch here.. but I think computer science and mathematics have a lot to offer the field in terms of processing pipelines that put it all together and so this is our naive attempt.
+
+This is a purely exploratory research project to understand the capabilities of existing tools in advanced pipelines in identifiying specific types of computationally "noticable" but clinically non-obvious anomalies. It is not clinically validated or necessarily robust or accurate and decisions and interpretations should always be made by qualified medical staff. 
+
+# Citation
 
 If you use BrainStem X in your research, you may cite:
 
@@ -257,7 +254,7 @@ If you use BrainStem X in your research, you may cite:
 ```
 
 # License
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is released under the MIT License - see the LICENSE file for details.
 
 Note: 
 - Please review the licence terms of dependencies when setting up the environment for brainstemx.
@@ -265,6 +262,5 @@ Note:
 - We have attempted where possible to minimise individual dependencies or provide alternatives (pluggable atlasses, for example); however, in practice some of these dependencies are going to be absolutely required as noted in the installation script and for convenience, in the output above.
 
 # Contributing
-Yes, please! Submit a PR or comment on the repository page if you like, all contributions are welcome.
-In particular, any neuroresearch related feedback about the neurological, radiological and computational/technical pipeline foundations would be amazing and will be cited if used to progress the project. 
-Thanks in advance!
+- Yes, please! Submit a PR or comment on the repository page if you like, all contributions are welcome.
+- In particular, any neuroresearch related feedback about the neurological, radiological and computational/technical pipeline foundations would be amazing and will be cited if used to progress the project.
