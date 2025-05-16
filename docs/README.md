@@ -1,4 +1,4 @@
-# intensityclustering: Brainstem/Pons MRI Analysis Pipeline ("BrainstemX")
+# brainstemx-full: Brainstem/Pons MRI Analysis Pipeline
 
 BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an end-to-end pipeline designed for precise analysis of subtle T2/FLAIR hyperintensity/T1 hypointensity clusters in these critical brain neuroanatomical regions. Brainstem regions can present clinically with very subtle variations below the clinical threshold to human radiologists and standard research methods. This pipeline tries to address some the  challenges via
 
@@ -9,7 +9,7 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **Multiple fallback methods** at various steps, activated by quantitative quality metrics, adding robustness to results even with suboptimal slice thickness, modalities and IPR
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
 - **Parallel processing** of subjects and optimisation of multithreaded performance and standardised outputs to support larger cohort analysis
-- **Attempts to take state of the art approaches as of 2023/2024 and combine them** - see https://github.com/myztery-neuroimg/pons.myztery/blob/main/docs/sota-comparison.md 
+- **Attempts to take state of the art approaches as of 2023/2024 and combine them** - see https://github.com/myztery-neuroimg/brainstemx-full/blob/main/docs/sota-comparison.md 
 ## Project status
 
 The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality. The project is heavily optimised for Apple Metal but there is no technical reason that any Linux based-system should not support the system. Future works including a portable docker implementation via neurodocker.
@@ -120,8 +120,8 @@ graph TD
 
 1. Clone this repository:
    ```
-   git clone https://github.com/myztery-neuroimg/pons.myztery
-   cd pons.myztery
+   git clone https://github.com/myztery-neuroimg/brainstemx-full
+   cd brainstemx-full
    ```
 
 2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
@@ -294,10 +294,10 @@ This project was developed independently without institutional or any other back
 
 If you use BrainStem X in your research, you may cite:
 @software{BrainStemX2025,
-  author = {D.J. Brewster c/o LazyEvaluation},
+  author = {D.J. Brewster},
   title = {BrainStem X: Advanced Brainstem/Pons MRI Analysis Pipeline},
   year = {2025},
-  url = {https://github.com/myzteryneuro/pons.myztery}
+  url = {https://github.com/myztery-neuroimg/brainstemx-full}
 }
 
 # Ethics
@@ -309,8 +309,12 @@ A Colab worksheet is in the works as well.
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-INDIVIDUAL PACKAGES, ATLASSES, TOOLS, FRAMEWORKS REFERENCED IN THE THIS PROJECT OFTEN HAVE THEIR OWN LICENCES, SOME OF WHICH ARE MORE RESTRICTIVE (e.g., no Commercial usage). 
-YOU ARE RESPONSIBLE FOR ACCEPTING OR DECLINING THOSE. THEY ARE NEVER BUNDLED WITH MY PROJECT NOT PRE-INSTALLED AS PART OF MY SOFTWARE.
+Note: 
+- INDIVIDUAL PACKAGES, ANATOMICAL BRAIN ATLASSES, TOOLS, FRAMEWORKS REFERENCED IN THE THIS PROJECT OFTEN HAVE THEIR OWN LICENCES, SOME OF WHICH ARE MORE RESTRICTIVE (e.g., no Commercial usage). 
+- Users must accept responsibility for installing and accepting the licence terms of those projects individually.
+- We have attempted where possible to minimise individual dependencies or provide alternatives (pluggable atlasses, for example); however, in practice some of these dependencies are going to be absolutely required, please review them individually!
 
 # Contributing
-Yes, please! Just submit a PR, all contributions are welcome as are research or clinical feedback about the radiological and technical pipeline foundations! Thanks in advance..
+Yes, please! Submit a PR or comment on the repository page if you like, all contributions are welcome.
+In particular, any neuroresearch related feedback about the neurological, radiological and computational/technical pipeline foundations would be amazing and will be cited if used to progress the project. 
+Thanks in advance!
