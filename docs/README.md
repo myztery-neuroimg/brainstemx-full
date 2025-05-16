@@ -10,9 +10,12 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 - **DICOM backtrace capability** for clinical validation of findings in native scanner format
 - **Parallel processing** of subjects and optimisation of multithreaded performance and standardised outputs to support larger cohort analysis
 - **Attempts to take state of the art approaches as of 2023/2024 and combine them** - see https://github.com/myztery-neuroimg/brainstemx-full/blob/main/docs/sota-comparison.md 
+
 ## Project status
 
 The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality. The project is heavily optimised for Apple Metal but there is no technical reason that any Linux based-system should not support the system. Future works including a portable docker implementation via neurodocker.
+
+For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx
 
 ## What Makes BrainStem X Different
 
@@ -39,9 +42,9 @@ These capabilities are included to support analysis of signal intensity actoss d
 
 This kind of visualisation with the ability to track back to raw DICOM files and map clusters across modalities could potentially be quite useful, even without machine learning techniques which of course are all the rage nowadays. This is a very much first-principles approach but it uses the very latest techniques and grounded research up to 2023.
 
-<image width="750" alt="Simulated Hyperintensity Cluster on T2-SPACE-FLAIR" src="https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1" />
+<image width="400" alt="Simulated Hyperintensity Cluster on T2-SPACE-FLAIR" src="https://github.com/user-attachments/assets/5dc95c74-e270-47cf-aad5-9afaf70c85c1" />
 
-<img width="800" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/72f2f11f-b19c-41bc-8eda-10997b2e96eb" />
+<img width="540" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/72f2f11f-b19c-41bc-8eda-10997b2e96eb" />
 
 
 ## Features
