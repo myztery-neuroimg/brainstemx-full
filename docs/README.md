@@ -13,9 +13,9 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 
 ## Project status
 
-The project is in active development as of April 2025 and whilst many improvements are in the works, already offers some helpful functionality. The project is heavily optimised for Apple Metal but there is no technical reason that any Linux based-system should not support the system. Future works including a portable docker implementation via neurodocker.
+The project is in active development as of May 2025. Whilst many improvements are in the works, we hope it already offers some helpful functionality. Future works including a platform portable docker implementation via neurodocker.
 
-For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx (currently a very immature implementation, in progress).
+For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx (currently a very immature implementation and work in progress).
 
 ## Features
 
@@ -51,7 +51,7 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 - Practical configuration support to optimise output validity across 1.5T and 3T field strengths
 - A novel DICOM backtrace for clinical verification of findings in native viewer format, because nothing in post-processing pipelines is proven until you can map it back to source of truth raw scanner output
 
-## Data compatibility 
+### Data compatibility 
 BrainStem X supports analysis of a wide variety of clinical neuroimaging MRI datasets:
 
 - **High-end Research Protocols**: Optimized for 3D isotropic thin-slice acquisitions (1mm³ voxels)
@@ -77,8 +77,7 @@ This kind of visualisation with the ability to track back to raw DICOM files and
 
 <img width="540" alt="Simulated Cluster Summary Table " src="https://github.com/user-attachments/assets/72f2f11f-b19c-41bc-8eda-10997b2e96eb" />
 
-
-## Example Workflow
+### Example Workflow
 
 ```mermaid
 graph TD
@@ -99,7 +98,7 @@ graph TD
 
 ## Installation
 
-## Requirements
+### Requirements
 
 - ANTs (Advanced Normalization Tools): https://github.com/ANTsX/ANTs/wiki/Installing-ANTs-release-binaries
 - FSL (FMRIB Software Library): https://git.fmrib.ox.ac.uk/fsl/conda/installer
@@ -112,36 +111,7 @@ graph TD
 - Python 3.12 (various libraries are unavailable on 3.13 at the time of writing)
 - I reccomend the ITK-SNAP visualisation and manual segmentation tool so that you can compare the autoamted results vs manual segmentation. I also have a separate CNN based segmentation but it doesn't go down to the level that the automated tooling does.
 
-## Installation
-
-1. Clone this repository:
-   ```
-   git clone https://github.com/myztery-neuroimg/brainstemx-full
-   cd brainstemx-full
-   ```
-
-2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
-
-3. Make the pipeline script executable:
-   ```
-   chmod +x pipeline.sh
-   chmod +x modules/*.sh
-   chmod +x tests/*.sh
-   ```
-
-4. Create a python venv and install required packages. I *strongly* recommend to use `uv` instead of `venv` especially to ensure python 3.12
-   ```
-   python -m venv venv .
-   source ./bin/activate
-   pip install -r requirements.txt
-   # alternatively:
-   uv init
-   uv python pin #version
-   uv pip install -r requirements.txt
-   uv venv / uv sync
-   ```
-
-# Install dependencies
+### Install dependencies
 
 Ensure you have ANTs, FSL, Convert3D, dcm2niix, Parallel and FreeSurfer installed. 
 * NOTE: Some of these tools and ATLASes have different licences and you must agree or disagree individually with their licence terms.*
@@ -181,7 +151,7 @@ Most are available via `homebrew` (macOS). If you don't the script will convenie
 [ERROR] 3 required dependencies are missing.
 ```
 
-## Then install Python requirements
+### Python dependencies
 
 ```
 python -m pip install -r requirements.txt
@@ -191,7 +161,36 @@ Pro-tip: prefereably use `uv` - everything is already packaged for this and its 
 
 I will release a docker image some time in the future but bear in mind that GPU acceleration isn't available in Docker on Apple Silicon.
 
-## Quick Start
+### Setup
+
+1. Clone this repository:
+   ```
+   git clone https://github.com/myztery-neuroimg/brainstemx-full
+   cd brainstemx-full
+   ```
+
+2. Ensure all dependencies are installed and in your PATH. The easiest way to do this is either run tests/integration.sh or run_pipeline.sh.
+
+3. Make the pipeline script executable:
+   ```
+   chmod +x pipeline.sh
+   chmod +x modules/*.sh
+   chmod +x tests/*.sh
+   ```
+
+4. Create a python venv and install required packages. I *strongly* recommend to use `uv` instead of `venv` especially to ensure python 3.12
+   ```
+   python -m venv venv .
+   source ./bin/activate
+   pip install -r requirements.txt
+   # alternatively:
+   uv init
+   uv python pin #version
+   uv pip install -r requirements.txt
+   uv venv / uv sync
+   ```
+
+### Quick Start
 
 ```
 # Basic usage with default parameters
@@ -204,11 +203,7 @@ I will release a docker image some time in the future but bear in mind that GPU 
 ./pipeline.sh -p BATCH -i /path/to/base_dir -o /path/to/output_base --subject-list /path/to/subject_list.txt
 ```
 
-## Unique Advantages
-
-See docs/comparison-to-sota.md
-
-# Acknowledgments 
+## Acknowledgments 
 
 BrainStem X leverages established neuroimaging tools, reinventing very little but combining some of these excellent projects:
 
@@ -220,19 +215,19 @@ BrainStem X leverages established neuroimaging tools, reinventing very little bu
 - **dcm2niix**
 - **ITK-SNAP**
 
-## Atlases & Templates
+### Atlases & Templates
 
 - Harvard-Oxford Subcortical Structural Atlas
 - Talairach Atlas 
 - MNI152 Standard Space Templates
 
-## Programming Resources / Libraries (including..)
+### Programming Resources / Libraries (including..)
 - Python Neuroimaging Libraries (NiBabel, PyDicom, antspyx)
 - GNU Parallel  
 - Matplotlib & Seaborn
 - NumPy & SciPy
 
-# Independent Development
+## Independent Development
 
 This project was developed independently without institutional or any other backing. I'm making this as available as possible to inspire development in this area of research.
 
@@ -240,9 +235,15 @@ I should qualify my background is Computer Science and Mathematics. I don't know
 
 This is a purely exploratory research project to understand the capabilities of existing tools in advanced pipelines in identifiying specific types of computationally "noticable" but clinically non-obvious anomalies. It is not clinically validated or necessarily robust or accurate and decisions and interpretations should always be made by qualified medical staff. 
 
-# Citation
+## License
+This project is released under the MIT License - see the LICENSE file for details.
 
-If you use BrainStem X in your research, you may cite:
+Note: 
+- Please review the licence terms of dependencies when setting up the environment for brainstemx.
+- Users must accept responsibility for installing and accepting the licence terms of those projects individually.
+- We have attempted where possible to minimise individual dependencies or provide alternatives (pluggable atlasses, for example); however, in practice some of these dependencies are going to be absolutely required as noted in the installation script and for convenience, in the output above.
+
+If you use BrainStem X in your research, feel free to cite:
 
 ```
 @software{BrainStemX2025,
@@ -253,14 +254,6 @@ If you use BrainStem X in your research, you may cite:
 }
 ```
 
-# License
-This project is released under the MIT License - see the LICENSE file for details.
-
-Note: 
-- Please review the licence terms of dependencies when setting up the environment for brainstemx.
-- Users must accept responsibility for installing and accepting the licence terms of those projects individually.
-- We have attempted where possible to minimise individual dependencies or provide alternatives (pluggable atlasses, for example); however, in practice some of these dependencies are going to be absolutely required as noted in the installation script and for convenience, in the output above.
-
-# Contributing
+## Contributing
 - Yes, please! Submit a PR or comment on the repository page if you like, all contributions are welcome.
 - In particular, any neuroresearch related feedback about the neurological, radiological and computational/technical pipeline foundations would be amazing and will be cited if used to progress the project.
