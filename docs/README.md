@@ -216,75 +216,25 @@ See docs/comparison-to-sota.md
 
 BrainStem X leverages established neuroimaging tools, reinventing very little but combining some of these excellent projects:
 
-- **ANTs**: Extended with custom orientation preservation constraints
-
-@article{tustison_antsx_2021,
-	title = {The {ANTsX} ecosystem for quantitative biological and medical imaging},
-	volume = {11},
-	issn = {2045-2322},
-	url = {https://doi.org/10.1038/s41598-021-87564-6},
-	doi = {10.1038/s41598-021-87564-6},
-	abstract = {The Advanced Normalizations Tools ecosystem, known as ANTsX, consists of multiple open-source software libraries which house top-performing algorithms used worldwide by scientific and research communities for processing and analyzing biological and medical imaging data. The base software library, ANTs, is built upon, and contributes to, the NIH-sponsored Insight Toolkit. Founded in 2008 with the highly regarded Symmetric Normalization image registration framework, the ANTs library has since grown to include additional functionality. Recent enhancements include statistical, visualization, and deep learning capabilities through interfacing with both the R statistical project (ANTsR) and Python (ANTsPy). Additionally, the corresponding deep learning extensions ANTsRNet and ANTsPyNet (built on the popular TensorFlow/Keras libraries) contain several popular network architectures and trained models for specific applications. One such comprehensive application is a deep learning analog for generating cortical thickness data from structural T1-weighted brain MRI, both cross-sectionally and longitudinally. These pipelines significantly improve computational efficiency and provide comparable-to-superior accuracy over multiple criteria relative to the existing ANTs workflows and simultaneously illustrate the importance of the comprehensive ANTsX approach as a framework for medical image analysis.},
-	number = {1},
-	journal = {Scientific Reports},
-	author = {Tustison, Nicholas J. and Cook, Philip A. and Holbrook, Andrew J. and Johnson, Hans J. and Muschelli, John and Devenyi, Gabriel A. and Duda, Jeffrey T. and Das, Sandhitsu R. and Cullen, Nicholas C. and Gillen, Daniel L. and Yassa, Michael A. and Stone, James R. and Gee, James C. and Avants, Brian B.},
-	month = apr,
-	year = {2021},
-	pages = {9068},
-}
-
+- **ANTs**: Advanced Normalizations Tools ecosystem - highly incorporated in the pipeline
 - **FSL**: Integrated with enhanced cluster analysis thresholding
-
-```
-M.W. Woolrich, S. Jbabdi, B. Patenaude, M. Chappell, S. Makni, T. Behrens, C. Beckmann, M. Jenkinson, S.M. Smith. Bayesian analysis of neuroimaging data in FSL. NeuroImage, 45:S173-86, 2009
-
-S.M. Smith, M. Jenkinson, M.W. Woolrich, C.F. Beckmann, T.E.J. Behrens, H. Johansen-Berg, P.R. Bannister, M. De Luca, I. Drobnjak, D.E. Flitney, R. Niazy, J. Saunders, J. Vickers, Y. Zhang, N. De Stefano, J.M. Brady, and P.M. Matthews. Advances in functional and structural MR image analysis and implementation as FSL. NeuroImage, 23(S1):208-19, 2004
-
-M. Jenkinson, C.F. Beckmann, T.E. Behrens, M.W. Woolrich, S.M. Smith. FSL. NeuroImage, 62:782-90, 2012
-```
-
 - **FreeSurfer**: Utilized for 3D visualization of anomaly distribution
 - **Custom Python modules**: Implemented for cross-modality registration and cluster correlation
-
-* Convert3D
-* dcm2niix
-* ITK-SNAP
+- **Convert3D**
+- **dcm2niix**
+- **ITK-SNAP**
 
 ## Atlases & Templates
 
-* Harvard-Oxford Subcortical Structural Atlas
-  ```
-  Rushmore R.J., Sunderland, K., Carrington H., Chen J., Halle M., Lasso A., Papadimitriou G., Prunier N., Rizzoni E., Vessey B., Wilson-Braun P., Rathi Y., Kubicki M., Bouix S., Yeterian E. and Makris N. (2022) Anatomically curated segmentation of human subcortical structures in high resolution magnetic resonance imaging: An open science approach. Front. Neuroanat. 16:894606. doi:10.3389/fnana.2022.894606
-  ```
-  
-* Talairach Atlas
-  
-```
-  Lancaster JL, Woldorff MG, Parsons LM, Liotti M, Freitas CS, Rainey L, Kochunov PV, Nickerson D, Mikiten SA, Fox PT, "Automated Talairach Atlas labels for functional brain mapping". Human Brain Mapping 10:120-131, 2000. [pdf] [PubMed]
-  Lancaster JL, Rainey LH, Summerlin JL, Freitas CS, Fox PT, Evans AC, Toga AW, Mazziotta JC. Automated labeling of the human brain: A preliminary report on the development and evaluation of a forward-transform method. Hum Brain Mapp 5, 238-242, 1997. [pdf]
-```
-
-* MNI152 Standard Space Templates
-* SUIT Cerebellar Atlas
-
-```
-Diedrichsen, J. (2006). A spatially unbiased atlas template of the human cerebellum. Neuroimage, 33, 1, p. 127-138.  pdf format
-Diedrichsen, J., Balsters, J. H., Flavell, J., Cussans, E., & Ramnani, N. (2009). A probabilistic atlas of the human cerebellum. Neuroimage.  pdf format
-Diedrichsen, J., Maderwald, S., Kuper, M., Thurling, M., Rabe, K., Gizewski, E. R., et al. (2011). Imaging the deep cerebellar nuclei: A probabilistic atlas and normalization procedure. Neuroimage.pdf format
-Diedrichsen, J. & Zotow, E. (2015). Surface-based display of volume-averaged cerebellar data. PLoS One, 7, e0133402.  pdf format
-```
+- Harvard-Oxford Subcortical Structural Atlas
+- Talairach Atlas 
+- MNI152 Standard Space Templates
 
 ## Programming Resources / Libraries (including..)
-
-* Python Neuroimaging Libraries (NiBabel, PyDicom, antspyx, may others)
-* GNU Parallel
-
-```
-When using GNU Parallel for processing data in scientific publications, you are required to cite the software. The citation format is: Tange, O. (2022). GNU Parallel 20220822 ('Rushdie'). Zenodo. https://doi.org/10.5281/zenodo.7015730.
-```
-  
-* Matplotlib & Seaborn
-* NumPy & SciPy
+- Python Neuroimaging Libraries (NiBabel, PyDicom, antspyx)
+- GNU Parallel  
+- Matplotlib & Seaborn
+- NumPy & SciPy
 
 # Independent Development
 
@@ -293,26 +243,23 @@ This project was developed independently without institutional or any other back
 ## Citation
 
 If you use BrainStem X in your research, you may cite:
+
+```
 @software{BrainStemX2025,
   author = {D.J. Brewster},
   title = {BrainStem X: Advanced Brainstem/Pons MRI Analysis Pipeline},
   year = {2025},
   url = {https://github.com/myztery-neuroimg/brainstemx-full}
 }
-
-# Ethics
-
-This is manipulated data of the author, there's no ethics but also unfortunately as a result, no absolute truth grounded results to refer back to.
-I want to soon compare with other tooling including ML based approaches to see how the results compares.
-A Colab worksheet is in the works as well.
+```
 
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 Note: 
-- INDIVIDUAL PACKAGES, ANATOMICAL BRAIN ATLASSES, TOOLS, FRAMEWORKS REFERENCED IN THE THIS PROJECT OFTEN HAVE THEIR OWN LICENCES, SOME OF WHICH ARE MORE RESTRICTIVE (e.g., no Commercial usage). 
+- Please review the licence terms of dependencies when setting up the environment for brainstemx.
 - Users must accept responsibility for installing and accepting the licence terms of those projects individually.
-- We have attempted where possible to minimise individual dependencies or provide alternatives (pluggable atlasses, for example); however, in practice some of these dependencies are going to be absolutely required, please review them individually!
+- We have attempted where possible to minimise individual dependencies or provide alternatives (pluggable atlasses, for example); however, in practice some of these dependencies are going to be absolutely required as noted in the installation script and for convenience, in the output above.
 
 # Contributing
 Yes, please! Submit a PR or comment on the repository page if you like, all contributions are welcome.
