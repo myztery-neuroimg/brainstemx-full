@@ -68,7 +68,7 @@ dependencies = [
     "tornado==6.5.0",
     "typing-extensions==4.13.1",
     "tzdata==2025.2",
-    "urllib3==2.3.0",
+    "urllib3==2.4.0",
     "watchdog==6.0.0 ; sys_platform != 'darwin'",
     "webcolors==24.11.1",
 ]
