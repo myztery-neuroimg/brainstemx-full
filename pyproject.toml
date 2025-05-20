@@ -26,7 +26,7 @@ dependencies = [
     "jinja2==3.1.6",
     "joblib==1.4.2",
     "jsonschema==4.23.0",
-    "jsonschema-specifications==2024.10.1",
+    "jsonschema-specifications==2025.4.1",
     "kiwisolver==1.4.8",
     "markupsafe==3.0.2",
     "matplotlib==3.10.1",
