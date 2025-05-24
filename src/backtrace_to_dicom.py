@@ -3,7 +3,7 @@ import csv
 import numpy as np
 import pydicom
 from pydicom import dcmread
-from PIL import Image
+from PIL import Image, ImageDraw
 
 try:
     import nibabel as nib  # for NIfTI loading if needed

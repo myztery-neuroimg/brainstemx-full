@@ -7,8 +7,8 @@
 #
 
 # Source modules
-source modules/environment.sh
-source modules/preprocess.sh
+source src/modules/environment.sh
+source src/modules/preprocess.sh
 
 # Print header
 echo "=== Parallel Processing Test ==="
