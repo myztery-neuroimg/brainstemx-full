@@ -23,7 +23,7 @@ export RESULTS_DIR="../mri_results"
 # Pipeline Parameters / Presets
 # ------------------------------------------------------------------------------
 export PROCESSING_DATATYPE="float"  # internal float
-export UTPUT_DATATYPE="int"        # final int16
+export OUTPUT_DATATYPE="int"        # final int16
 
 # Quality settings (LOW, MEDIUM, HIGH)
 export QUALITY_PRESET="HIGH"
