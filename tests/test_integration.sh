@@ -7,7 +7,7 @@
 #
 
 # Source modules
-source modules/environment.sh
+source src/modules/environment.sh
 
 # Print header
 echo "=== Module Integration Test ==="
