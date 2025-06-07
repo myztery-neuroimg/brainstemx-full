@@ -1,114 +1,105 @@
 # Brain MRI Segmentation Analysis
 
-## Overview
-This document provides a detailed analysis of the segmentation.sh script, which implements a comprehensive brain MRI segmentation pipeline.
+## Recent Segmentation Improvements (June 2025)
+- Corrected Harvard-Oxford atlas selection to index 7 (brainstem only).
+- Switched MNI→native transform to trilinear interpolation + 0.5 thresholding.
+- Unified file naming for T1 and FLAIR intensity outputs.
+- Applied same interpolation fix to Juelich pons segmentation.
+- Generated separate FLAIR intensity masks for segmentation QA.
 
-## Architecture
-```mermaid
-graph TD
-    A[Input MRI] --> B[File Discovery]
-    B --> C{Segmentation Method}
-    C --> D[Standard Space]
-    C --> E[Talairach]
-    C --> F[ANTs]
-    C --> G[Juelich Atlas]
-    D --> H[Brainstem Extraction]
-    E --> H
-    F --> H
-    G --> H
-    H --> I[Pons Subdivision]
-    I --> J[Validation]
-    J --> K[Output Segmentation]
-```
+## Introduction & Purpose
+The segmentation modules (`segmentation.sh` and `segment_juelich.sh`) perform atlas-based brainstem and pons segmentation in T1 native space, leveraging FSL and ANTs tools. This document outlines workflows, dependencies, outputs, and validation steps.
 
-## Key Components
+## Pipeline Dependencies
+- FSL: `fslmaths`, `flirt`, `fslstats`
+- ANTs: `antsApplyTransforms`
+- Python 3 (NiBabel, optional for custom scripts)
 
-### 1. File Discovery & Mapping
-- Scans directories for segmentation outputs
-- Creates standardized symbolic links
-- Handles compatibility with different atlas outputs
-- Creates placeholder files for missing subdivisions
+## Harvard-Oxford Brainstem Segmentation Workflow
+1. Brainstem mask in MNI space:
+   ```bash
+   fslmaths $OXFORD_ATLAS -thr 7 -uthr 7 -bin brainstem_std_mask.nii.gz
+   ```
+2. Transform mask to T1 native space (trilinear interpolation):
+   ```bash
+   flirt -in brainstem_std_mask.nii.gz \
+         -ref T1.nii.gz \
+         -applyxfm -init std2t1.mat \
+         -interp trilinear \
+         brainstem_native_float.nii.gz
+   fslmaths brainstem_native_float.nii.gz \
+            -thr 0.5 -bin \
+            brainstem_mask.nii.gz
+   ```
+3. Extract T1 intensities:
+   ```bash
+   fslmaths T1.nii.gz -mas brainstem_mask.nii.gz \
+            brainstem_t1_intensity.nii.gz
+   ```
+4. (Optional) Extract FLAIR intensities:
+   ```bash
+   fslmaths FLAIR.nii.gz -mas brainstem_mask.nii.gz \
+            brainstem_flair_intensity.nii.gz
+   ```
 
-### 2. Standard Space Segmentation
-- Uses Harvard-Oxford subcortical atlas
-- Implements multiple brainstem index detection strategies
-- Creates brainstem mask using FSL tools
-- Transforms mask back to native space
+## Juelich Pons Segmentation Workflow
+1. Pons priors in MNI space (label 1 = pons):
+   ```bash
+   fslmaths $JUELICH_ATLAS -thr 1 -uthr 1 -bin pons_std_mask.nii.gz
+   ```
+2. Transform mask to T1 native space:
+   ```bash
+   flirt -in pons_std_mask.nii.gz \
+         -ref T1.nii.gz \
+         -applyxfm -init std2t1.mat \
+         -interp trilinear \
+         pons_native_float.nii.gz
+   fslmaths pons_native_float.nii.gz \
+            -thr 0.5 -bin \
+            pons_mask.nii.gz
+   ```
+3. Subdivide pons into dorsal/ventral:
+   ```bash
+   # Example: split along principal axis
+   python split_pons.py \
+          --input pons_mask.nii.gz \
+          --output-dir pons
+   ```
 
-### 3. Talairach Space Segmentation
-- Uses FSL/FIRST for Talairach-based segmentation
-- Creates approximate brainstem masks when templates are missing
-- Implements brain extraction and registration workflow
+## Interpolation & Thresholding Methods
+- Trilinear interpolation preserves partial volumes when resampling binary masks.  
+- Threshold at 0.5 converts floating masks to binary while including >50% voxels.
 
-### 4. ANTs Segmentation
-- Uses ANTs for brain extraction and registration
-- Creates brainstem prior based on anatomical location
-- Applies prior to original image space
-
-### 5. Final Segmentation Workflow
-- Tries multiple methods in priority order (ANTs > Standard > Talairach)
-- Falls back to primitive approximation if all methods fail
-- Creates comprehensive pons subdivisions
-- Validates results across all methods
-
-### 6. Pons Subdivision
-- Creates dorsal/ventral pons subdivisions
-- Uses empty masks when atlas doesn't support subdivisions
-- Maintains pipeline compatibility with placeholder files
-
-### 7. Validation System
-- Calculates volumes for all structures
-- Checks volume ratios against expected ranges
-- Generates visualization overlays for manual inspection
-
-### 8. Tissue Segmentation (Atropos)
-```mermaid
-graph TD
-    A[Input MRI] --> B[Brain Extraction]
-    B --> C[Atropos Segmentation]
-    C --> D[Thresholding]
-    D --> E[Validation]
-    E --> F[Output Tissue Maps]
-```
-
-#### Implementation Details
-- **Brain Extraction**: Uses previously created brain mask
-- **Atropos Segmentation**: 
-  ```bash
-  Atropos -d 3 \
-    -a "[input]" \
-    -x "[brain_mask]" \
-    -o "[output_seg.nii.gz, output_prob%02d.nii.gz]" \
-    -c "[${ATROPOS_CONVERGENCE}]" \
-    -m "${ATROPOS_MRF}" \
-    -i "${ATROPOS_INIT_METHOD}[${ATROPOS_T1_CLASSES}]" \
-    -k Gaussian
-  ```
-- **Thresholding**: Converts probabilistic segmentation to binary masks
-- **Validation**: 
-  - Calculates absolute volumes (mm³) for each tissue type
-  - Compares against expected anatomical ranges:
-    - CSF: 10-20%
-    - GM: 40-50%
-    - WM: 30-40%
-
-#### Output Structure
-```
+## Output File Structure
+```text
 segmentation/
-└── tissue/
-    ├── [basename]_seg.nii.gz        # Combined segmentation
-    ├── [basename]_prob01.nii.gz    # CSF probability map
-    ├── [basename]_prob02.nii.gz    # GM probability map
-    ├── [basename]_prob03.nii.gz    # WM probability map
-    ├── [basename]_csf.nii.gz       # Binary CSF mask
-    ├── [basename]_gm.nii.gz        # Binary GM mask
-    ├── [basename]_wm.nii.gz        # Binary WM mask
-    └── [basename]_segmentation_report.txt  # Validation metrics
+├── brainstem_mask.nii.gz
+├── brainstem_t1_intensity.nii.gz
+├── brainstem_flair_intensity.nii.gz
+├── pons/
+│   ├── dorsal_pons_mask.nii.gz
+│   └── ventral_pons_mask.nii.gz
+├── combined_segmentation_label.nii.gz
+└── segmentation_report.txt
 ```
 
-## Key Features
-- **Multiple Atlas Support**: Integrates Harvard-Oxford, Talairach, Juelich, and ANTs approaches
-- **Robust Error Handling**: Comprehensive validation at each step
-- **QA Integration**: Automated validation reports with volume statistics
-- **Backward Compatibility**: Creates symbolic links with expected filenames
-- **Adaptive Processing**: Multiple brainstem index detection strategies
+## Validation & Volume Checks
+- Use `fslstats -V` to compute voxel counts and volumes:
+   ```bash
+   fslstats brainstem_mask.nii.gz -V
+   fslstats pons_mask.nii.gz -V
+   ```
+- Expected volumes:
+  - Brainstem: ~2,000–5,000 voxels (~8–20 mL)  
+  - Pons: ~500–1,000 voxels (~2–4 mL)  
+- Pons-to-brainstem ratio should be within ~0.2–0.5.
+
+## Example CLI Usage
+```bash
+./segmentation.sh \
+  -i T1.nii.gz \
+  -f FLAIR.nii.gz \
+  -m std2t1.mat \
+  -o segmentation
+```
+- Outputs masks, intensities, and a report in `segmentation/`.
