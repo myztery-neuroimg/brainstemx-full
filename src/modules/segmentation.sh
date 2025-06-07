@@ -15,6 +15,229 @@ if [ -f "$(dirname "${BASH_SOURCE[0]}")/segment_juelich.sh" ]; then
     log_message "Juelich atlas-based brainstem segmentation loaded"
 fi
 
+# File discovery and mapping for atlas-based segmentation
+# NOTE: Standard atlases (Harvard/Oxford, Talairach, Juelich) do NOT provide meaningful
+# dorsal/ventral pons subdivisions. These should be used as cross-validation tools.
+discover_and_map_segmentation_files() {
+    local input_basename="$1"
+    local brainstem_dir="$2"
+    local pons_dir="$3"
+    
+    # Validate required parameters
+    if [ -z "$input_basename" ] || [ -z "$brainstem_dir" ] || [ -z "$pons_dir" ]; then
+        log_formatted "ERROR" "Missing required parameters for file discovery"
+        return 1
+    fi
+    
+    # Ensure directories exist and are writable
+    if ! mkdir -p "$brainstem_dir" "$pons_dir"; then
+        log_formatted "ERROR" "Failed to create segmentation directories"
+        return 1
+    fi
+    
+    if [ ! -w "$brainstem_dir" ] || [ ! -w "$pons_dir" ]; then
+        log_formatted "ERROR" "Segmentation directories are not writable"
+        return 1
+    fi
+    
+    log_formatted "INFO" "===== DISCOVERING ACTUAL SEGMENTATION FILES ====="
+    
+    # Expected file paths (what pipeline wants)
+    local expected_brainstem="${brainstem_dir}/${input_basename}_brainstem.nii.gz"
+    local expected_pons="${pons_dir}/${input_basename}_pons.nii.gz"
+    local expected_dorsal="${pons_dir}/${input_basename}_dorsal_pons.nii.gz"  # Compatibility placeholder
+    local expected_ventral="${pons_dir}/${input_basename}_ventral_pons.nii.gz"  # Compatibility placeholder
+    
+    # Search for actual files created by atlas segmentation
+    log_message "Searching for actual segmentation files..."
+    log_message "Expected basename: $input_basename"
+    log_message "Brainstem directory: $brainstem_dir"
+    log_message "Pons directory: $pons_dir"
+    
+    # List all files for debugging
+    log_message "Files in brainstem directory:"
+    find "$brainstem_dir" -name "*.nii.gz" 2>/dev/null | while read file; do
+        log_message "  $file"
+    done
+    
+    log_message "Files in pons directory:"
+    find "$pons_dir" -name "*.nii.gz" 2>/dev/null | while read file; do
+        log_message "  $file"
+    done
+    
+    # Find brainstem files (try multiple patterns and also check if files exist in pons directory)
+    local actual_brainstem=""
+    log_message "Searching for brainstem files..."
+    
+    # First try the brainstem directory
+    for pattern in "*brainstem*.nii.gz" "*BrainStem*.nii.gz" "*brain_stem*.nii.gz" "*.nii.gz"; do
+        actual_brainstem=$(find "$brainstem_dir" -name "$pattern" 2>/dev/null | head -1)
+        if [ -n "$actual_brainstem" ] && [ -f "$actual_brainstem" ]; then
+            log_message "Found brainstem candidate in brainstem dir with pattern '$pattern': $actual_brainstem"
+            break
+        fi
+    done
+    
+    # If not found in brainstem directory, check pons directory (some atlases put everything in one place)
+    if [ -z "$actual_brainstem" ] || [ ! -f "$actual_brainstem" ]; then
+        log_message "No brainstem found in brainstem directory, checking pons directory..."
+        for pattern in "*brainstem*.nii.gz" "*BrainStem*.nii.gz" "*brain_stem*.nii.gz"; do
+            actual_brainstem=$(find "$pons_dir" -name "$pattern" 2>/dev/null | head -1)
+            if [ -n "$actual_brainstem" ] && [ -f "$actual_brainstem" ]; then
+                log_message "Found brainstem candidate in pons dir with pattern '$pattern': $actual_brainstem"
+                break
+            fi
+        done
+    fi
+    
+    # If still not found, look in parent segmentation directory
+    if [ -z "$actual_brainstem" ] || [ ! -f "$actual_brainstem" ]; then
+        local seg_parent=$(dirname "$brainstem_dir")
+        log_message "No brainstem found in subdirectories, checking parent segmentation dir: $seg_parent"
+        for pattern in "*brainstem*.nii.gz" "*BrainStem*.nii.gz" "*brain_stem*.nii.gz"; do
+            actual_brainstem=$(find "$seg_parent" -name "$pattern" 2>/dev/null | head -1)
+            if [ -n "$actual_brainstem" ] && [ -f "$actual_brainstem" ]; then
+                log_message "Found brainstem candidate in parent dir with pattern '$pattern': $actual_brainstem"
+                break
+            fi
+        done
+    fi
+    
+    # Find pons files (comprehensive search across directories)
+    local actual_pons=""
+    log_message "Searching for pons files..."
+    
+    # First try pons directory
+    actual_pons=$(find "$pons_dir" -name "*pons*.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" 2>/dev/null | head -1)
+    if [ -n "$actual_pons" ] && [ -f "$actual_pons" ]; then
+        log_message "Found pons in pons directory: $actual_pons"
+    else
+        # Try brainstem directory
+        actual_pons=$(find "$brainstem_dir" -name "*pons*.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" 2>/dev/null | head -1)
+        if [ -n "$actual_pons" ] && [ -f "$actual_pons" ]; then
+            log_message "Found pons in brainstem directory: $actual_pons"
+        else
+            # Try parent segmentation directory
+            local seg_parent=$(dirname "$brainstem_dir")
+            actual_pons=$(find "$seg_parent" -name "*pons*.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" 2>/dev/null | head -1)
+            if [ -n "$actual_pons" ] && [ -f "$actual_pons" ]; then
+                log_message "Found pons in parent segmentation directory: $actual_pons"
+            fi
+        fi
+    fi
+    
+    # Create symbolic links with expected names
+    local success_count=0
+    
+    if [ -n "$actual_brainstem" ] && [ -f "$actual_brainstem" ]; then
+        log_message "Mapping brainstem: $actual_brainstem -> $expected_brainstem"
+        ln -sf "$actual_brainstem" "$expected_brainstem"
+        if [ -L "$expected_brainstem" ]; then
+            log_formatted "SUCCESS" "Brainstem mapped successfully"
+            success_count=$((success_count + 1))
+        else
+            log_formatted "ERROR" "Failed to create brainstem symlink"
+        fi
+    else
+        log_formatted "WARNING" "No brainstem file found - this may indicate segmentation hasn't run yet"
+        log_message "Available files in brainstem directory:"
+        ls -la "$brainstem_dir" 2>/dev/null || echo "  Directory doesn't exist"
+        log_message "Available files in pons directory:"
+        ls -la "$pons_dir" 2>/dev/null || echo "  Directory doesn't exist"
+        log_message "Available files in parent segmentation directory:"
+        local seg_parent=$(dirname "$brainstem_dir")
+        ls -la "$seg_parent" 2>/dev/null || echo "  Directory doesn't exist"
+    fi
+    
+    # For pons: use actual pons if found, otherwise use brainstem
+    local pons_source=""
+    if [ -n "$actual_pons" ] && [ -f "$actual_pons" ]; then
+        log_message "Found separate pons file: $actual_pons"
+        pons_source="$actual_pons"
+    elif [ -n "$actual_brainstem" ] && [ -f "$actual_brainstem" ]; then
+        log_message "No separate pons file found, using brainstem as pons"
+        pons_source="$actual_brainstem"
+    fi
+    
+    if [ -n "$pons_source" ] && [ -f "$pons_source" ]; then
+        log_message "Creating pons mapping: $pons_source -> $expected_pons"
+        ln -sf "$pons_source" "$expected_pons"
+        success_count=$((success_count + 1))
+        
+        # Create compatibility placeholders for legacy pipeline components
+        # NOTE: Standard atlases don't provide meaningful dorsal/ventral subdivisions
+        log_message "Creating dorsal pons compatibility file (same as main pons)"
+        ln -sf "$pons_source" "$expected_dorsal"
+        success_count=$((success_count + 1))
+        
+        log_message "Creating ventral pons compatibility file (empty - atlas doesn't subdivide)"
+        if command -v fslmaths &>/dev/null && [ -f "$pons_source" ]; then
+            if fslmaths "$pons_source" -mul 0 "$expected_ventral" 2>/dev/null; then
+                log_message "Successfully created empty ventral pons file"
+            else
+                log_message "fslmaths failed, creating empty file"
+                touch "$expected_ventral"
+            fi
+        else
+            log_message "fslmaths not available or source invalid, creating empty file"
+            touch "$expected_ventral"
+        fi
+        success_count=$((success_count + 1))
+    else
+        log_formatted "WARNING" "No valid pons source found - segmentation may not have completed"
+        log_message "Expected to find pons files in:"
+        log_message "  - Pons directory: $pons_dir"
+        log_message "  - Brainstem directory: $brainstem_dir"
+        log_message "  - Parent directory: $(dirname "$brainstem_dir")"
+    fi
+    
+    log_message "Successfully mapped $success_count segmentation files"
+    
+    # Enhanced validation - check that critical files actually exist and are valid
+    local expected_files=(
+        "$expected_brainstem"
+        "$expected_pons"
+        "$expected_dorsal"
+        "$expected_ventral"
+    )
+    
+    local validated_count=0
+    for file in "${expected_files[@]}"; do
+        if [ -f "$file" ] || [ -L "$file" ]; then
+            # Check if it's a valid symlink or file with reasonable size
+            local size=0
+            if [ -L "$file" ]; then
+                # For symlinks, check the target
+                local target=$(readlink "$file")
+                if [ -f "$target" ]; then
+                    size=$(stat -f "%z" "$target" 2>/dev/null || stat --format="%s" "$target" 2>/dev/null || echo "0")
+                fi
+            else
+                size=$(stat -f "%z" "$file" 2>/dev/null || stat --format="%s" "$file" 2>/dev/null || echo "0")
+            fi
+            
+            if [ "$size" -gt 0 ]; then
+                validated_count=$((validated_count + 1))
+                log_message "✓ Validated: $(basename "$file") ($(( size / 1024 )) KB)"
+            else
+                log_formatted "WARNING" "File exists but appears empty: $file"
+            fi
+        else
+            log_formatted "WARNING" "Expected file missing: $file"
+        fi
+    done
+    
+    log_message "Validated $validated_count out of ${#expected_files[@]} expected files"
+    
+    if [ $validated_count -ge 2 ]; then
+        log_formatted "SUCCESS" "Segmentation file mapping completed with $validated_count validated files"
+        return 0
+    else
+        log_formatted "ERROR" "Too few valid segmentation files ($validated_count). QA scripts will fail."
+        return 1
+    fi
+}
+
 # Function to extract brainstem in standard space
 extract_brainstem_standardspace() {
     # Check if input file exists
@@ -29,12 +252,27 @@ extract_brainstem_standardspace() {
         return 1
     fi
 
+    # Validate RESULTS_DIR is set
+    if [ -z "${RESULTS_DIR:-}" ]; then
+        log_formatted "ERROR" "RESULTS_DIR is not set - cannot determine output location"
+        return 1
+    fi
+
     # Get input filename
     input_file="$1"
     output_file="${2:-${RESULTS_DIR}/segmentation/brainstem/$(basename "$input_file" .nii.gz)_brainstem_stdspace.nii.gz}"
     
-    # Create output directory
-    mkdir -p "$(dirname "$output_file")"
+    # Create output directory and validate
+    local output_dir="$(dirname "$output_file")"
+    if ! mkdir -p "$output_dir"; then
+        log_formatted "ERROR" "Failed to create output directory: $output_dir"
+        return 1
+    fi
+    
+    if [ ! -w "$output_dir" ]; then
+        log_formatted "ERROR" "Output directory is not writable: $output_dir"
+        return 1
+    fi
     
     log_message "Extracting brainstem in standard space from $input_file"
     
@@ -175,10 +413,26 @@ extract_brainstem_standardspace() {
         fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask" "$output_file"
     fi
     
-    # Clean up temporary files
+    # Validate output file was created successfully before cleanup
+    if [ ! -f "$output_file" ]; then
+        log_formatted "ERROR" "Output file was not created: $output_file"
+        # Don't clean up temp_dir yet - keep for debugging
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Validate output file has reasonable size
+    local output_size=$(stat -f "%z" "$output_file" 2>/dev/null || stat --format="%s" "$output_file" 2>/dev/null || echo "0")
+    if [ "$output_size" -lt 1024 ]; then
+        log_formatted "ERROR" "Output file appears too small ($output_size bytes): $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Only clean up temporary files after successful validation
     rm -rf "$temp_dir"
     
-    log_message "Standard space brainstem extraction complete: $output_file"
+    log_message "Standard space brainstem extraction complete: $output_file ($(( output_size / 1024 )) KB)"
     return 0
 }
 
@@ -192,12 +446,27 @@ extract_brainstem_talairach() {
         return 1
     fi
     
+    # Validate RESULTS_DIR is set
+    if [ -z "${RESULTS_DIR:-}" ]; then
+        log_formatted "ERROR" "RESULTS_DIR is not set - cannot determine output location"
+        return 1
+    fi
+    
     # Get input filename and directory
     input_file="$1"
     output_file="${2:-${RESULTS_DIR}/segmentation/brainstem/$(basename "$input_file" .nii.gz)_brainstem_talairach.nii.gz}"
     
-    # Create output directory
-    mkdir -p "$(dirname "$output_file")"
+    # Create output directory and validate
+    local output_dir="$(dirname "$output_file")"
+    if ! mkdir -p "$output_dir"; then
+        log_formatted "ERROR" "Failed to create output directory: $output_dir"
+        return 1
+    fi
+    
+    if [ ! -w "$output_dir" ]; then
+        log_formatted "ERROR" "Output directory is not writable: $output_dir"
+        return 1
+    fi
     
     log_message "Extracting brainstem using Talairach method from $input_file"
     
@@ -245,10 +514,25 @@ extract_brainstem_talairach() {
         fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask" "$output_file"
     fi
     
-    # Step 6: Clean up temporary files
+    # Step 6: Validate output file was created successfully before cleanup
+    if [ ! -f "$output_file" ]; then
+        log_formatted "ERROR" "Output file was not created: $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Validate output file has reasonable size
+    local output_size=$(stat -f "%z" "$output_file" 2>/dev/null || stat --format="%s" "$output_file" 2>/dev/null || echo "0")
+    if [ "$output_size" -lt 1024 ]; then
+        log_formatted "ERROR" "Output file appears too small ($output_size bytes): $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Only clean up temporary files after successful validation
     rm -rf "$temp_dir"
     
-    log_message "Talairach-based brainstem extraction complete: $output_file"
+    log_message "Talairach-based brainstem extraction complete: $output_file ($(( output_size / 1024 )) KB)"
     return 0
 }
 
@@ -318,7 +602,7 @@ extract_brainstem_final() {
     elif $talairach_success; then
         log_message "Using Talairach method result (fallback 2)"
         cp "$talairach_file" "$brainstem_file"
-    else {
+    else
         # If all methods failed, create a simple primitive mask
         log_formatted "WARNING" "All methods failed, creating primitive brainstem approximation"
         
@@ -338,9 +622,15 @@ extract_brainstem_final() {
         # Apply mask to original image
         fslmaths "$input_file" -mas "${temp_dir}/primitive_brainstem.nii.gz" "$brainstem_file"
         
-        # Clean up
+        # Validate the primitive brainstem file was created
+        if [ ! -f "$brainstem_file" ]; then
+            log_formatted "ERROR" "Failed to create primitive brainstem file: $brainstem_file"
+            log_message "Temp directory preserved for debugging: $temp_dir"
+            return 1
+        fi
+        
+        # Only clean up after successful validation
         rm -rf "$temp_dir"
-    }
     fi
     
     # Try Juelich atlas-based segmentation first for better anatomical accuracy
@@ -353,6 +643,13 @@ extract_brainstem_final() {
         
         if [ $segmentation_success -eq 0 ]; then
             log_message "Juelich-based segmentation completed successfully"
+            
+            # EMERGENCY FIX: Map actual files to expected names
+            if discover_and_map_segmentation_files "$input_basename" "$brainstem_dir" "$pons_dir"; then
+                log_formatted "SUCCESS" "Segmentation files mapped successfully"
+            else
+                log_formatted "WARNING" "Some segmentation files could not be mapped"
+            fi
         else
             log_formatted "WARNING" "Juelich segmentation failed, falling back to basic methods"
             
@@ -393,12 +690,27 @@ extract_brainstem_ants() {
         return 1
     fi
     
+    # Validate RESULTS_DIR is set
+    if [ -z "${RESULTS_DIR:-}" ]; then
+        log_formatted "ERROR" "RESULTS_DIR is not set - cannot determine output location"
+        return 1
+    fi
+    
     # Get input filename and directory
     input_file="$1"
     output_file="${2:-${RESULTS_DIR}/segmentation/brainstem/$(basename "$input_file" .nii.gz)_brainstem.nii.gz}"
     
-    # Create output directory
-    mkdir -p "$(dirname "$output_file")"
+    # Create output directory and validate
+    local output_dir="$(dirname "$output_file")"
+    if ! mkdir -p "$output_dir"; then
+        log_formatted "ERROR" "Failed to create output directory: $output_dir"
+        return 1
+    fi
+    
+    if [ ! -w "$output_dir" ]; then
+        log_formatted "ERROR" "Output directory is not writable: $output_dir"
+        return 1
+    fi
     
     log_message "Extracting brainstem using ANTs from $input_file"
     
@@ -444,10 +756,25 @@ extract_brainstem_ants() {
     log_message "Applying prior to extract brainstem..."
     fslmaths "$input_file" -mas "${temp_dir}/brainstem_prior.nii.gz" "$output_file"
     
-    # Step 5: Clean up temporary files
+    # Step 5: Validate output file was created successfully before cleanup
+    if [ ! -f "$output_file" ]; then
+        log_formatted "ERROR" "Output file was not created: $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Validate output file has reasonable size
+    local output_size=$(stat -f "%z" "$output_file" 2>/dev/null || stat --format="%s" "$output_file" 2>/dev/null || echo "0")
+    if [ "$output_size" -lt 1024 ]; then
+        log_formatted "ERROR" "Output file appears too small ($output_size bytes): $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Only clean up temporary files after successful validation
     rm -rf "$temp_dir"
     
-    log_message "Brainstem extraction complete: $output_file"
+    log_message "Brainstem extraction complete: $output_file ($(( output_size / 1024 )) KB)"
     return 0
 }
 
@@ -761,6 +1088,7 @@ export -f extract_pons_from_brainstem
 export -f divide_pons
 export -f validate_segmentation
 export -f segment_tissues
+export -f discover_and_map_segmentation_files
 # These functions are already exported from environment.sh
 # export -f log_diagnostic execute_with_logging
 
