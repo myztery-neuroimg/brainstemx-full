@@ -89,32 +89,159 @@ execute_with_logging() {
   return ${PIPESTATUS[0]}
 }
 
+# macOS-compatible safe fslmaths wrapper
+safe_fslmaths() {
+    local description="$1"
+    shift
+    
+    # Pre-validate all input files
+    local has_input_files=false
+    local input_files=()
+    
+    for arg in "$@"; do
+        # Skip flags and output files
+        if [[ "$arg" == -* ]] || [[ "$arg" == *"_output"* ]] || [[ "$arg" == *"_temp"* ]]; then
+            continue
+        fi
+        
+        # Check if this looks like an input NIfTI file
+        if [[ "$arg" == *.nii.gz ]] && [[ ! "$arg" == *" "* ]]; then
+            has_input_files=true
+            input_files+=("$arg")
+            
+            log_message "Checking input file: $arg"
+            
+            if [ ! -f "$arg" ]; then
+                log_formatted "ERROR" "$description: Missing input file: $arg"
+                log_message "Working directory: $(pwd)"
+                log_message "Files in $(dirname "$arg"):"
+                ls -la "$(dirname "$arg")" 2>/dev/null | head -10 || echo "Directory not accessible"
+                
+                # Try to find similar files
+                local dir=$(dirname "$arg")
+                local basename=$(basename "$arg" .nii.gz)
+                log_message "Searching for similar files..."
+                find "$dir" -name "*.nii.gz" 2>/dev/null | head -5 | while read found_file; do
+                    log_message "  Found: $found_file"
+                done
+                
+                return 1
+            fi
+            
+            # Quick NIfTI validation (macOS-compatible)
+            if ! fslinfo "$arg" >/dev/null 2>&1; then
+                log_formatted "ERROR" "$description: Invalid NIfTI file: $arg"
+                return 1
+            fi
+            log_message "✓ Valid input file: $arg"
+        fi
+    done
+    
+    if [ "$has_input_files" = "false" ]; then
+        log_formatted "WARNING" "$description: No input files detected in command"
+    fi
+    
+    # Execute fslmaths with error handling (no timeout on macOS)
+    log_message "Executing: fslmaths $*"
+    
+    # Create a background process for monitoring (macOS alternative to timeout)
+    (
+        sleep 300  # 5 minute limit
+        if ps aux | grep -v grep | grep "fslmaths.*$$" >/dev/null 2>&1; then
+            log_formatted "WARNING" "$description: fslmaths running longer than 5 minutes"
+        fi
+    ) &
+    local monitor_pid=$!
+    
+    # Execute fslmaths
+    fslmaths "$@"
+    local status=$?
+    
+    # Kill the monitor process
+    kill $monitor_pid 2>/dev/null || true
+    
+    if [ $status -ne 0 ]; then
+        log_formatted "ERROR" "$description: fslmaths failed with exit code $status"
+        log_message "Command was: fslmaths $*"
+        log_message "Input files were:"
+        for file in "${input_files[@]}"; do
+            if [ -f "$file" ]; then
+                log_message "  ✓ $file (exists, $(stat -f%z "$file" 2>/dev/null || echo "?") bytes)"
+            else
+                log_message "  ✗ $file (missing)"
+            fi
+        done
+        return $status
+    fi
+    
+    log_formatted "SUCCESS" "$description: fslmaths completed successfully"
+    return 0
+}
+
 # Function specifically for ANTs commands with enhanced explanations
 execute_ants_command() {
   local log_prefix="${1:-ants_cmd}"
-  local step_description="${2:-ANTs processing step}"  # New parameter for step description
+  local step_description="${2:-ANTs processing step}"
   local diagnostic_log="${LOG_DIR}/${log_prefix}_diagnostic.log"
   local cmd=("${@:3}") # Get all arguments except the first two as the command
   
   # Create diagnostic log directory if needed
   mkdir -p "$LOG_DIR"
   
-  # IMPROVEMENT: Better description of what's happening
-  log_formatted "INFO" "==== $step_description ===="
-  log_message "Running: ${cmd[0]} (full details in log file)"
-  log_message "Diagnostic output saved to: $diagnostic_log"
+  # Verbosity level (can be set via PIPELINE_VERBOSITY environment variable)
+  local verbosity="${PIPELINE_VERBOSITY:-normal}"
   
-  # Show primary parameters in a simplified form if available
-  local cmd_str="${cmd[*]}"
-  if [[ "$cmd_str" == *"-d "* ]]; then
-    local dim=$(echo "$cmd_str" | grep -o -- "-d [0-9]" | cut -d ' ' -f 2)
-    log_message "Processing ${dim}D image data"
+  # Stage tracking variables
+  local current_stage=""
+  local stage_count=0
+  local total_stages=0
+  local stage_start_time=""
+  local in_stage_header=false
+  
+  # Define comprehensive filter patterns for different verbosity levels
+  local filter_patterns_quiet="RTTI typeinfo|Reference Count|Modified Time|Debug:|Object Name|Observers:|Source:|PipelineMTime|UpdateMTime|RealTimeStamp|PixelContainer|ImportImageContainer|Container manages|Capacity:|Pointer:|IndexToPointMatrix|PointToIndexMatrix|Inverse Direction|Direction:|BufferedRegion|RequestedRegion|LargestPossibleRegion|Sampling strategy|Sampling percentage|Update field|Total field|Number of time|Release Data|Data Released|Global Release Data|Spacing:|Origin:|Dimension:|Index:|Size:|PixelContainer:|convergenceValue|metricValue|ITERATION_TIME|CurrentIteration|CurrentMetricValue|CurrentConvergenceValue"
+  
+  local filter_patterns_normal="RTTI typeinfo|Reference Count|Modified Time|Debug:|Object Name|Observers:|Source:|PipelineMTime|UpdateMTime|RealTimeStamp|PixelContainer|ImportImageContainer|Container manages|Capacity:|Pointer:|IndexToPointMatrix|PointToIndexMatrix|Inverse Direction|BufferedRegion|RequestedRegion|LargestPossibleRegion|Release Data|Data Released|Global Release Data|PixelContainer:|convergenceValue|metricValue|CurrentMetricValue|CurrentConvergenceValue"
+  
+  local filter_patterns_verbose="RTTI typeinfo|Reference Count|Modified Time|Debug:|Object Name|Observers:|Source:|PipelineMTime|UpdateMTime|RealTimeStamp|PixelContainer|ImportImageContainer|Container manages|Capacity:|Pointer:"
+  
+  # Select filter pattern based on verbosity
+  local filter_pattern="$filter_patterns_normal"
+  case "$verbosity" in
+    quiet) filter_pattern="$filter_patterns_quiet" ;;
+    verbose) filter_pattern="$filter_patterns_verbose" ;;
+    debug) filter_pattern="" ;; # No filtering in debug mode
+  esac
+  
+  # Show initial description based on verbosity
+  if [[ "$verbosity" != "quiet" ]]; then
+    log_formatted "INFO" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_formatted "INFO" "🧠 $step_description"
+    log_formatted "INFO" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   fi
   
-  # Extract common parameters for better visibility
-  [[ "$cmd_str" == *"-f "* ]] && log_message "Fixed (reference) image: $(echo "$cmd_str" | grep -o -- "-f [^ ]*" | cut -d ' ' -f 2)"
-  [[ "$cmd_str" == *"-m "* ]] && log_message "Moving (source) image: $(echo "$cmd_str" | grep -o -- "-m [^ ]*" | cut -d ' ' -f 2)"
-  [[ "$cmd_str" == *"-o "* ]] && log_message "Output prefix: $(echo "$cmd_str" | grep -o -- "-o [^ ]*" | cut -d ' ' -f 2)"
+  # Show primary parameters in a simplified form
+  local cmd_str="${cmd[*]}"
+  if [[ "$verbosity" != "quiet" ]]; then
+    # Extract and display key information
+    if [[ "$cmd_str" == *"-f "* ]]; then
+      local fixed_img=$(echo "$cmd_str" | grep -o -- "-f [^ ]*" | cut -d ' ' -f 2)
+      log_message "  📁 Reference: $(basename "$fixed_img")"
+    fi
+    if [[ "$cmd_str" == *"-m "* ]]; then
+      local moving_img=$(echo "$cmd_str" | grep -o -- "-m [^ ]*" | cut -d ' ' -f 2)
+      log_message "  📁 Moving: $(basename "$moving_img")"
+    fi
+    if [[ "$cmd_str" == *"-o "* ]]; then
+      local output_prefix=$(echo "$cmd_str" | grep -o -- "-o [^ ]*" | cut -d ' ' -f 2)
+      log_message "  📁 Output: $(basename "$output_prefix")*"
+    fi
+  fi
+  
+  # Only show diagnostic log location in verbose/debug mode
+  if [[ "$verbosity" == "verbose" ]] || [[ "$verbosity" == "debug" ]]; then
+    log_message "Diagnostic output saved to: $diagnostic_log"
+  fi
   
   # Create named pipes for better output handling
   local stdout_pipe=$(mktemp -u)
@@ -125,45 +252,130 @@ execute_ants_command() {
   # Enhanced progress tracking
   local start_time=$(date +%s)
   
-  # Print initial progress indicator
-  echo -n "Progress: " >&2
-  
   # Start background processes to handle output
-  # This improved filter removes verbose registration output and shows progress
   (
-    # Progress indicator counter
     local line_count=0
-    local major_step=""
+    local dots_printed=0
+    local current_transform=""
+    local current_iterations=""
+    local last_progress_time=$start_time
     
     while IFS= read -r line; do
-      # Check for major step changes to provide better feedback
-      if echo "$line" | grep -q "Running.*Transform registration"; then
-        major_step=$(echo "$line" | sed -E 's/.*Running (.*)Transform registration.*/\1/')
-        echo -e "\n${BLUE}[PROGRESS]${NC} Starting $major_step registration phase" >&2
-        echo -n "Progress: " >&2
-        line_count=0
+      # Detect stage transitions
+      if [[ "$line" =~ Stage[[:space:]]([0-9]+)[[:space:]]State ]]; then
+        stage_count="${BASH_REMATCH[1]}"
+        stage_start_time=$(date +%s)
+        in_stage_header=true
+        if [[ "$verbosity" != "quiet" ]]; then
+          echo "" >&2
+          echo -e "${BLUE}━━━ Stage $stage_count ━━━${NC}" >&2
+        fi
+        continue
       fi
       
-      # Filter out diagnostic and verbose registration messages
-      if ! echo "$line" | grep -qE "^(2)?DIAGNOSTIC|^XXDIAGNOSTIC|convergenceValue|metricValue|ITERATION_TIME|Running.*Transform registration|DIAGNOSTIC|CurrentIteration"; then
-        echo "$line" | tee -a "$LOG_FILE"
-      else
-        # Print a dot to show progress without the verbose output
-        line_count=$((line_count + 1))
-        if [ $((line_count % 10)) -eq 0 ]; then
-          echo -n "." >&2
+      # Extract transform type
+      if [[ "$line" =~ Transform[[:space:]]*=[[:space:]]*(Rigid|Affine|SyN|BSplineSyN|TimeVaryingSyN) ]]; then
+        current_transform="${BASH_REMATCH[1]}"
+        if [[ "$verbosity" != "quiet" ]] && [[ -n "$current_transform" ]]; then
+          echo -e "  ${GREEN}►${NC} Transform type: $current_transform" >&2
         fi
-        # Still save the diagnostic info to the log file
+        continue
+      fi
+      
+      # Extract metric type
+      if [[ "$line" =~ Image[[:space:]]metric[[:space:]]*=[[:space:]]*([A-Za-z]+) ]]; then
+        local metric="${BASH_REMATCH[1]}"
+        if [[ "$verbosity" == "verbose" ]]; then
+          echo -e "  ${GREEN}►${NC} Similarity metric: $metric" >&2
+        fi
+        continue
+      fi
+      
+      # Extract iterations
+      if [[ "$line" =~ iterations[[:space:]]*=[[:space:]]*([0-9x]+) ]]; then
+        current_iterations="${BASH_REMATCH[1]}"
+        if [[ "$verbosity" != "quiet" ]]; then
+          echo -e "  ${GREEN}►${NC} Max iterations: $current_iterations" >&2
+        fi
+        continue
+      fi
+      
+      # Detect registration phase starts
+      if [[ "$line" =~ \[PROGRESS\][[:space:]]Starting[[:space:]](.*)registration[[:space:]]phase ]]; then
+        local phase="${BASH_REMATCH[1]}"
+        if [[ "$verbosity" != "quiet" ]]; then
+          echo -e "\n  ${YELLOW}▶${NC} Starting ${phase}registration..." >&2
+          echo -n "  Progress: " >&2
+          dots_printed=0
+        fi
+        continue
+      fi
+      
+      # Detect elapsed time messages
+      if [[ "$line" =~ Elapsed[[:space:]]time[[:space:]]\(stage[[:space:]]([0-9]+)\):[[:space:]]([0-9.e+]+) ]]; then
+        local stage="${BASH_REMATCH[1]}"
+        local elapsed="${BASH_REMATCH[2]}"
+        if [[ "$verbosity" != "quiet" ]]; then
+          # Clear the progress line
+          echo -e "\r\033[K  ${GREEN}✓${NC} Stage $((stage + 1)) completed ($(printf "%.1f" $elapsed)s)" >&2
+        fi
+        continue
+      fi
+      
+      # Apply filtering based on verbosity
+      if [[ -n "$filter_pattern" ]] && echo "$line" | grep -qE "$filter_pattern"; then
+        # Save to diagnostic log but don't display
         echo "$line" >> "$diagnostic_log"
+      else
+        # Check if this line should trigger a progress dot
+        if [[ "$line" =~ CurrentIteration ]] || [[ "$line" =~ convergenceValue ]]; then
+          if [[ "$verbosity" == "normal" ]]; then
+            # Show progress dots at reasonable intervals
+            local current_time=$(date +%s)
+            if [[ $((current_time - last_progress_time)) -ge 2 ]]; then
+              echo -n "." >&2
+              dots_printed=$((dots_printed + 1))
+              last_progress_time=$current_time
+              # Wrap progress dots
+              if [[ $dots_printed -ge 40 ]]; then
+                echo "" >&2
+                echo -n "  Progress: " >&2
+                dots_printed=0
+              fi
+            fi
+          fi
+          echo "$line" >> "$diagnostic_log"
+        else
+          # Show the line if it passes filters
+          if [[ "$verbosity" != "quiet" ]] || [[ "$line" =~ ERROR|WARNING|error|warning ]]; then
+            echo "$line" | tee -a "$LOG_FILE"
+          else
+            echo "$line" >> "$LOG_FILE"
+          fi
+        fi
       fi
     done
+    
+    # Clear any remaining progress line
+    if [[ $dots_printed -gt 0 ]]; then
+      echo -e "\r\033[K" >&2
+    fi
   ) < "$stdout_pipe" &
   local stdout_pid=$!
   
-  tee -a "$diagnostic_log" < "$stderr_pipe" >&2 &
+  # Handle stderr (mostly keep as-is but filter some patterns)
+  (
+    while IFS= read -r line; do
+      if [[ -n "$filter_pattern" ]] && echo "$line" | grep -qE "$filter_pattern|DIAGNOSTIC"; then
+        echo "$line" >> "$diagnostic_log"
+      else
+        echo "$line" | tee -a "$diagnostic_log" >&2
+      fi
+    done
+  ) < "$stderr_pipe" &
   local stderr_pid=$!
   
-  # Execute command directly without eval with improved output redirection
+  # Execute command
   "${cmd[@]}" > "$stdout_pipe" 2> "$stderr_pipe"
   local status=$?
   
@@ -177,40 +389,52 @@ execute_ants_command() {
   local minutes=$((elapsed / 60))
   local seconds=$((elapsed % 60))
   
-  # Add newline to separate progress dots from completion message
-  echo "" >&2
-  
-  # Add better status reporting after command completes
-  if [ $status -eq 0 ]; then
-    log_formatted "SUCCESS" "$step_description completed successfully (${minutes}m ${seconds}s)"
-    
-    # Look for output files to suggest visualization
-    if [[ "$cmd_str" == *"-o "* ]]; then
-      local output_prefix=$(echo "$cmd_str" | grep -o -- "-o [^ ]*" | cut -d ' ' -f 2)
+  # Show completion status based on verbosity
+  if [[ "$verbosity" != "quiet" ]]; then
+    echo "" >&2
+    if [ $status -eq 0 ]; then
+      log_formatted "SUCCESS" "✅ $step_description completed (${minutes}m ${seconds}s)"
       
-      # For brain extraction
-      if [[ "$step_description" == *"brain extraction"* ]] && [[ -f "${output_prefix}BrainExtractionBrain.nii.gz" ]]; then
-        log_formatted "INFO" "--------------------------------------------------------"
-        log_formatted "INFO" "VISUALIZATION SUGGESTION"
-        log_message "To view the extracted brain, run:"
-        log_message "  freeview ${output_prefix}BrainExtractionBrain.nii.gz ${output_prefix}BrainExtractionMask.nii.gz"
-        log_formatted "INFO" "--------------------------------------------------------"
+      # Show visualization suggestions for normal and verbose modes
+      if [[ "$verbosity" != "quiet" ]] && [[ "$cmd_str" == *"-o "* ]]; then
+        local output_prefix=$(echo "$cmd_str" | grep -o -- "-o [^ ]*" | cut -d ' ' -f 2)
+        
+        # For brain extraction
+        if [[ "$step_description" == *"brain extraction"* ]] || [[ "$step_description" == *"Brain extraction"* ]]; then
+          if [[ -f "${output_prefix}BrainExtractionBrain.nii.gz" ]]; then
+            echo -e "${BLUE}💡 Tip:${NC} View the extracted brain with:" >&2
+            echo "     freeview ${output_prefix}BrainExtractionBrain.nii.gz" >&2
+          fi
+        
+        # For registration
+        elif [[ "$step_description" == *"registration"* ]] || [[ "$step_description" == *"Registration"* ]]; then
+          if [[ -f "${output_prefix}Warped.nii.gz" ]]; then
+            local fixed_img=$(echo "$cmd_str" | grep -o -- "-f [^ ]*" | cut -d ' ' -f 2 || echo "")
+            echo -e "${BLUE}💡 Tip:${NC} Check registration quality with:" >&2
+            echo "     freeview ${output_prefix}Warped.nii.gz${fixed_img:+ $fixed_img}" >&2
+          fi
+        fi
+      fi
+    else
+      log_formatted "ERROR" "❌ $step_description failed (status: $status, duration: ${minutes}m ${seconds}s)"
       
-      # For registration
-      elif [[ "$step_description" == *"registration"* ]] && [[ -f "${output_prefix}Warped.nii.gz" ]]; then
-        local fixed_img=$(echo "$cmd_str" | grep -o -- "-f [^ ]*" | cut -d ' ' -f 2)
-        log_formatted "INFO" "--------------------------------------------------------"
-        log_formatted "INFO" "VISUALIZATION SUGGESTION"
-        log_message "To check registration quality, run:"
-        log_message "  freeview ${output_prefix}Warped.nii.gz $fixed_img"
-        log_formatted "INFO" "--------------------------------------------------------"
+      # Show last few error lines from diagnostic log
+      if [[ -f "$diagnostic_log" ]] && [[ "$verbosity" != "quiet" ]]; then
+        local error_lines=$(tail -n 20 "$diagnostic_log" | grep -i "error\|exception\|failed" | tail -n 3)
+        if [[ -n "$error_lines" ]]; then
+          echo -e "${RED}Last errors:${NC}" >&2
+          echo "$error_lines" >&2
+        fi
       fi
     fi
     
+    echo "" >&2  # Add spacing after command completion
+  elif [ $status -eq 0 ]; then
+    # Quiet mode - just show completion
+    log_formatted "SUCCESS" "✓ $step_description"
   else
-    log_formatted "ERROR" "$step_description failed with status $status after ${minutes}m ${seconds}s"
-    # Extract important error lines from the diagnostic log
-    tail -n 10 "$diagnostic_log" | grep -v -E "^(2)?DIAGNOSTIC|^XXDIAGNOSTIC|convergenceValue" | tail -n 3
+    # Quiet mode - show errors
+    log_formatted "ERROR" "✗ $step_description failed (status: $status)"
   fi
   
   # Remove named pipes
@@ -1171,3 +1395,6 @@ export compute_initial_affine
 
 log_message "Environment module loaded"
 
+
+# Export the safe_fslmaths function for emergency fix
+export -f safe_fslmaths

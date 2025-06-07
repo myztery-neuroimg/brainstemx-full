@@ -13,6 +13,55 @@
 MNI_TEMPLATE="${FSLDIR}/data/standard/MNI152_T1_1mm.nii.gz"
 MNI_BRAIN="${FSLDIR}/data/standard/MNI152_T1_1mm_brain.nii.gz"
 
+# Emergency path validation function
+emergency_validate_paths() {
+    local operation="$1"
+    shift
+    local files=("$@")
+    
+    log_formatted "INFO" "Emergency path validation for: $operation"
+    
+    local missing_count=0
+    
+    for file in "${files[@]}"; do
+        if [ ! -f "$file" ]; then
+            log_formatted "ERROR" "$operation: File not found: $file"
+            missing_count=$((missing_count + 1))
+            
+            # Try to find similar files
+            local dir=$(dirname "$file")
+            local basename=$(basename "$file" .nii.gz)
+            
+            if [ -d "$dir" ]; then
+                log_message "Files in directory $dir:"
+                ls -la "$dir" | grep "\.nii\.gz" | head -5 | while read line; do
+                    log_message "  $line"
+                done
+                
+                # Search for files with similar names
+                local similar_files=$(find "$dir" -name "*$(echo "$basename" | cut -d'_' -f1)*" -name "*.nii.gz" 2>/dev/null | head -3)
+                if [ -n "$similar_files" ]; then
+                    log_message "Similar files found:"
+                    echo "$similar_files" | while read similar_file; do
+                        log_message "  $similar_file"
+                    done
+                fi
+            else
+                log_formatted "ERROR" "Directory does not exist: $dir"
+            fi
+        else
+            log_message "✓ Valid file: $file"
+        fi
+    done
+    
+    if [ $missing_count -gt 0 ]; then
+        log_formatted "ERROR" "$operation: $missing_count missing files detected"
+        return 1
+    fi
+    
+    return 0
+}
+
 # Function to validate and standardize coordinate space
 validate_coordinate_space() {
     local image="$1"
@@ -950,8 +999,13 @@ create_intensity_mask() {
     local mask_min=$(fslstats "$intensity_image" -k "$binary_mask" -R | awk '{print $1}')
     local mask_max=$(fslstats "$intensity_image" -k "$binary_mask" -R | awk '{print $2}')
     
-    # Create intensity mask (preserving intensity values from original image)
-    fslmaths "$intensity_image" -mas "$binary_mask" "$output"
+    # Create intensity mask with emergency validation
+    if emergency_validate_paths "intensity mask creation" "$intensity_image" "$binary_mask"; then
+        safe_fslmaths "Create intensity mask from binary mask" "$intensity_image" -mas "$binary_mask" "$output"
+    else
+        log_formatted "ERROR" "Cannot create intensity mask - missing input files"
+        return 1
+    fi
     
     # Log statistics
     log_message "Intensity mask created with statistics:"
@@ -1176,5 +1230,6 @@ verify_pipeline_step_outputs() {
 
 # Export verification function
 export -f verify_pipeline_step_outputs
+export -f emergency_validate_paths
 
 log_message "Enhanced registration validation module loaded with coordinate space validation"

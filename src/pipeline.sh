@@ -12,6 +12,9 @@
 #   -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)
 #   -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)
 #   -t, --start-stage STAGE  Start pipeline from STAGE (default: import)
+#   --quiet              Minimal output (errors and completion only)
+#   --verbose            Detailed output with technical parameters
+#   --debug              Full output including all ANTs technical details
 #   -h, --help           Show this help message and exit
 #
 
@@ -49,6 +52,9 @@ show_help() {
   echo "  -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)"
   echo "  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)"
   echo "  -t, --start-stage STAGE  Start pipeline from STAGE (default: import)"
+  echo "  --quiet              Minimal output (errors and completion only)"
+  echo "  --verbose            Detailed output with technical parameters"
+  echo "  --debug              Full output including all ANTs technical details"
   echo "  -h, --help           Show this help message and exit"
   echo ""
   echo "Pipeline Stages:"
@@ -59,6 +65,12 @@ show_help() {
   echo "  analysis: Detect and analyze hyperintensities"
   echo "  visualization: Generate visualizations and reports"
   echo "  tracking: Track pipeline progress"
+  echo ""
+  echo "Verbosity Levels:"
+  echo "  normal (default): Balanced output with stage progression and key information"
+  echo "  --quiet:          Minimal output, only errors and completion status"
+  echo "  --verbose:        Detailed output including technical parameters"
+  echo "  --debug:          Full output with all ANTs technical details saved to logs"
 }
 
 # Load configuration file
@@ -121,6 +133,9 @@ parse_arguments() {
   PIPELINE_TYPE="FULL"
   START_STAGE_NAME="import"
   
+  # Set default verbosity level
+  export PIPELINE_VERBOSITY="normal"
+  
   # Parse arguments
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -151,6 +166,18 @@ parse_arguments() {
       -t|--start-stage)
         START_STAGE_NAME="$2"
         shift 2
+        ;;
+      --quiet)
+        export PIPELINE_VERBOSITY="quiet"
+        shift
+        ;;
+      --verbose)
+        export PIPELINE_VERBOSITY="verbose"
+        shift
+        ;;
+      --debug)
+        export PIPELINE_VERBOSITY="debug"
+        shift
         ;;
       -h|--help)
         show_help
@@ -187,7 +214,7 @@ parse_arguments() {
   export START_STAGE
   export START_STAGE_NAME
   
-  log_message "Arguments parsed: SRC_DIR=$SRC_DIR, RESULTS_DIR=$RESULTS_DIR, SUBJECT_ID=$SUBJECT_ID, QUALITY_PRESET=$QUALITY_PRESET, PIPELINE_TYPE=$PIPELINE_TYPE"
+  log_message "Arguments parsed: SRC_DIR=$SRC_DIR, RESULTS_DIR=$RESULTS_DIR, SUBJECT_ID=$SUBJECT_ID, QUALITY_PRESET=$QUALITY_PRESET, PIPELINE_TYPE=$PIPELINE_TYPE, VERBOSITY=$PIPELINE_VERBOSITY"
 }
 
 # Function to validate a processing step
@@ -631,11 +658,18 @@ run_pipeline() {
     log_message "Validating output files exist..."
     [ ! -f "$brainstem_output" ] && log_formatted "WARNING" "Brainstem file not found: $brainstem_output"
     [ ! -f "$pons_output" ] && log_formatted "WARNING" "Pons file not found: $pons_output"
-    [ ! -f "$dorsal_pons" ] && log_formatted "WARNING" "Dorsal pons file not found: $dorsal_pons"
-    [ ! -f "$ventral_pons" ] && log_formatted "WARNING" "Ventral pons file not found: $ventral_pons"
     
-    # Validate dorsal/ventral division
-    validate_step "Segmentation" "${subject_id}_dorsal_pons.nii.gz,${subject_id}_ventral_pons.nii.gz" "segmentation/pons"
+    # Note: Dorsal/ventral pons subdivision is not available from Juelich atlas
+    # These files are created as compatibility placeholders by the segmentation module
+    if [ ! -f "$dorsal_pons" ]; then
+        log_formatted "INFO" "Dorsal pons placeholder not found (will be created): $dorsal_pons"
+    fi
+    if [ ! -f "$ventral_pons" ]; then
+        log_formatted "INFO" "Ventral pons placeholder not found (will be created): $ventral_pons"
+    fi
+
+    # Validate main segmentation files (dorsal/ventral are just compatibility placeholders)
+    validate_step "Segmentation" "${subject_id}_brainstem.nii.gz,${subject_id}_pons.nii.gz" "segmentation"
   
     # Create intensity versions of the segmentation masks
     log_message "Creating intensity versions of segmentation masks for better visualization..."
@@ -708,41 +742,42 @@ run_pipeline() {
     
     # Find segmentation files
     log_message "Looking for segmentation files..."
-    local dorsal_pons=$(find "$RESULTS_DIR/segmentation/pons" -name "*dorsal_pons.nii.gz" | head -1)
-    
-    if [ -z "$dorsal_pons" ]; then
-      log_error "Dorsal pons segmentation not found" $ERR_DATA_MISSING
+    # Use main pons instead of dorsal subdivision (Juelich atlas doesn't provide subdivisions)
+    local pons_mask=$(find "$RESULTS_DIR/segmentation/pons" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" | head -1)
+
+    if [ -z "$pons_mask" ]; then
+      log_error "Pons segmentation not found" $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
-    
-    log_message "Found dorsal pons segmentation: $dorsal_pons"
+
+    log_message "Found pons segmentation: $pons_mask"
     
     # Transform segmentation from standard space to original space
     log_message "Transforming segmentation from standard to original space..."
     local orig_space_dir=$(create_module_dir "segmentation/original_space")
-    local dorsal_pons_orig="${orig_space_dir}/$(basename "$dorsal_pons" .nii.gz)_orig.nii.gz"
+    local pons_orig="${orig_space_dir}/$(basename "$pons_mask" .nii.gz)_orig.nii.gz"
     
-    transform_segmentation_to_original "$dorsal_pons" "$orig_t1" "$dorsal_pons_orig"
+    transform_segmentation_to_original "$pons_mask" "$orig_t1" "$pons_orig"
     
-    if [ ! -f "$dorsal_pons_orig" ]; then
+    if [ ! -f "$pons_orig" ]; then
       log_error "Failed to transform segmentation to original space" $ERR_PROCESSING
       return $ERR_PROCESSING
     fi
     
-    log_message "Successfully transformed segmentation to original space: $dorsal_pons_orig"
+    log_message "Successfully transformed segmentation to original space: $pons_orig"
     
     # Create intensity versions of segmentation masks
     log_message "Creating intensity versions of segmentation masks..."
-    local dorsal_pons_intensity="${orig_space_dir}/$(basename "$dorsal_pons" .nii.gz)_intensity.nii.gz"
-    create_intensity_mask "$dorsal_pons_orig" "$orig_t1" "$dorsal_pons_intensity"
+    local pons_intensity="${orig_space_dir}/$(basename "$pons_mask" .nii.gz)_intensity.nii.gz"
+    create_intensity_mask "$pons_orig" "$orig_t1" "$pons_intensity"
     
     # Verify dimensions consistency
     log_message "Verifying dimensions consistency across pipeline stages..."
-    verify_dimensions_consistency "$orig_t1" "$t1_std" "$dorsal_pons_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
+    verify_dimensions_consistency "$orig_t1" "$t1_std" "$pons_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
     
     # Verify segmentation location
     log_message "Verifying segmentation anatomical location..."
-    verify_segmentation_location "$dorsal_pons_orig" "$orig_t1" "dorsal_pons" "${RESULTS_DIR}/validation/segmentation_location"
+    verify_segmentation_location "$pons_orig" "$orig_t1" "pons" "${RESULTS_DIR}/validation/segmentation_location"
     
     # Find or create registered FLAIR
     local flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)
@@ -780,25 +815,25 @@ run_pipeline() {
     
     # For backward compatibility, create a link to the traditional hyperintensity mask
     local hyperintensities_dir=$(create_module_dir "hyperintensities")
-    local hyperintensity_mask="${comprehensive_dir}/hyperintensities/dorsal_pons/hyperintensities_bin.nii.gz"
+    local hyperintensity_mask="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
     
     if [ -f "$hyperintensity_mask" ]; then
-      local legacy_mask="${hyperintensities_dir}/${subject_id}_dorsal_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
+      local legacy_mask="${hyperintensities_dir}/${subject_id}_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
       ln -sf "$hyperintensity_mask" "$legacy_mask"
       log_message "Created link to comprehensive analysis result: $legacy_mask"
     else
       log_formatted "WARNING" "Comprehensive analysis didn't produce expected hyperintensity mask"
-      log_message "Falling back to traditional hyperintensity detection..."
+      log_message "Falling back to traditional hyperintensity detection using main pons..."
       
-      # Fall back to traditional hyperintensity detection
-      local hyperintensities_prefix="${hyperintensities_dir}/${subject_id}_dorsal_pons"
+      # Fall back to traditional hyperintensity detection using main pons
+      local hyperintensities_prefix="${hyperintensities_dir}/${subject_id}_pons"
       detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"
       hyperintensity_mask="${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
-      analyze_hyperintensity_clusters "$hyperintensity_mask" "$dorsal_pons_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
+      analyze_hyperintensity_clusters "$hyperintensity_mask" "$pons_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
     fi
     
     # Validate hyperintensities detection
-    validate_step "Hyperintensity detection" "${subject_id}_dorsal_pons*.nii.gz" "hyperintensities"
+    validate_step "Hyperintensity detection" "${subject_id}_pons*.nii.gz" "hyperintensities"
     
     # Launch enhanced visual QA for hyperintensity detection (non-blocking)
     # Show both the FLAIR and the hyperintensity mask
@@ -820,15 +855,15 @@ run_pipeline() {
       return $ERR_DATA_MISSING
     fi
     
-    # Find key segmentation files
-    dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons.nii.gz" | head -1)
+    # Find key segmentation files (use main pons instead of dorsal subdivision)
+    pons_mask=$(find "$segmentation_dir" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" | head -1)
     
-    if [ -z "$dorsal_pons" ]; then
-      log_error "Dorsal pons segmentation not found. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    if [ -z "$pons_mask" ]; then
+      log_error "Pons segmentation not found. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
     
-    log_message "Found segmentation data: $dorsal_pons"
+    log_message "Found segmentation data: $pons_mask"
   fi  # End of Analysis (Step 5)
   
   # Step 6: Visualization
@@ -1005,26 +1040,21 @@ run_pipeline_batch() {
         pons_vol=$(fslstats "$pons_file" -V | awk '{print $1}')
       fi
       
-      local dorsal_pons_file=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
-      if [ -f "$dorsal_pons_file" ]; then
-        dorsal_pons_vol=$(fslstats "$dorsal_pons_file" -V | awk '{print $1}')
-      fi
-      
-      # Use the configured threshold from config instead of hardcoded 2.0
+      # Get hyperintensity volume (using main pons instead of dorsal subdivision)
       local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
-      local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_dorsal_pons_thresh${threshold_multiplier}")
+      local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_pons_thresh${threshold_multiplier}")
       if [ -f "$hyperintensity_file" ]; then
         hyperintensity_vol=$(fslstats "$hyperintensity_file" -V | awk '{print $1}')
         
         # Get largest cluster size if clusters file exists
-        local clusters_file="${hyperintensities_dir}/${subject_id}_dorsal_pons_clusters_sorted.txt"
+        local clusters_file="${hyperintensities_dir}/${subject_id}_pons_clusters_sorted.txt"
         if [ -f "$clusters_file" ]; then
           largest_cluster_vol=$(head -1 "$clusters_file" | awk '{print $2}')
         fi
       fi
       
-      # Add to summary
-      echo "${subject_id},${status_text},${brainstem_vol},${pons_vol},${dorsal_pons_vol},${hyperintensity_vol},${largest_cluster_vol},${reg_quality}" >> "$summary_file"
+      # Add to summary (note: dorsal_pons_vol is now just pons_vol since no subdivision)
+      echo "${subject_id},${status_text},${brainstem_vol},${pons_vol},${pons_vol},${hyperintensity_vol},${largest_cluster_vol},${reg_quality}" >> "$summary_file"
       
   done < "$subject_list"
   fi

@@ -17,8 +17,23 @@ extract_pons_juelich() {
         return 1
     fi
     
-    # Create output directory
-    mkdir -p "$(dirname "$output_file")"
+    # Validate RESULTS_DIR is set
+    if [ -z "${RESULTS_DIR:-}" ]; then
+        log_formatted "ERROR" "RESULTS_DIR is not set - cannot determine output location"
+        return 1
+    fi
+    
+    # Create output directory and validate
+    local output_dir="$(dirname "$output_file")"
+    if ! mkdir -p "$output_dir"; then
+        log_formatted "ERROR" "Failed to create output directory: $output_dir"
+        return 1
+    fi
+    
+    if [ ! -w "$output_dir" ]; then
+        log_formatted "ERROR" "Output directory is not writable: $output_dir"
+        return 1
+    fi
     
     log_message "Extracting pons using Juelich atlas from $input_file"
     
@@ -98,10 +113,25 @@ extract_pons_juelich() {
     log_message "Creating intensity-based pons segmentation..."
     fslmaths "$input_file" -mas "${temp_dir}/pons_subject.nii.gz" "$output_file"
     
-    # Clean up
+    # Validate output file was created successfully before cleanup
+    if [ ! -f "$output_file" ]; then
+        log_formatted "ERROR" "Output file was not created: $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Validate output file has reasonable size
+    local output_size=$(stat -f "%z" "$output_file" 2>/dev/null || stat --format="%s" "$output_file" 2>/dev/null || echo "0")
+    if [ "$output_size" -lt 1024 ]; then
+        log_formatted "ERROR" "Output file appears too small ($output_size bytes): $output_file"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Only clean up after successful validation
     rm -rf "$temp_dir"
     
-    log_message "Juelich-based pons extraction complete: $output_file"
+    log_message "Juelich-based pons extraction complete: $output_file ($(( output_size / 1024 )) KB)"
     return 0
 }
 
@@ -116,10 +146,25 @@ extract_brainstem_juelich() {
         return 1
     fi
     
-    # Create output directories
+    # Validate RESULTS_DIR is set
+    if [ -z "${RESULTS_DIR:-}" ]; then
+        log_formatted "ERROR" "RESULTS_DIR is not set - cannot determine output location"
+        return 1
+    fi
+    
+    # Create output directories and validate
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     local pons_dir="${RESULTS_DIR}/segmentation/pons"
-    mkdir -p "$brainstem_dir" "$pons_dir"
+    
+    if ! mkdir -p "$brainstem_dir" "$pons_dir"; then
+        log_formatted "ERROR" "Failed to create output directories"
+        return 1
+    fi
+    
+    if [ ! -w "$brainstem_dir" ] || [ ! -w "$pons_dir" ]; then
+        log_formatted "ERROR" "Output directories are not writable: $brainstem_dir, $pons_dir"
+        return 1
+    fi
     
     log_message "Extracting brainstem regions using Juelich atlas from $input_file"
     
@@ -223,10 +268,31 @@ extract_brainstem_juelich() {
     cp "${pons_dir}/${output_prefix}_pons.nii.gz" "${pons_dir}/${output_prefix}_dorsal_pons.nii.gz"
     fslmaths "${pons_dir}/${output_prefix}_pons.nii.gz" -mul 0 "${pons_dir}/${output_prefix}_ventral_pons.nii.gz"
     
-    # Clean up
+    # Validate critical output files exist before cleanup
+    local critical_files=(
+        "${brainstem_dir}/${output_prefix}_brainstem.nii.gz"
+        "${pons_dir}/${output_prefix}_pons.nii.gz"
+        "${pons_dir}/${output_prefix}_dorsal_pons.nii.gz"
+        "${pons_dir}/${output_prefix}_ventral_pons.nii.gz"
+    )
+    
+    local missing_files=()
+    for file in "${critical_files[@]}"; do
+        if [ ! -f "$file" ]; then
+            missing_files+=("$file")
+        fi
+    done
+    
+    if [ ${#missing_files[@]} -gt 0 ]; then
+        log_formatted "ERROR" "Critical output files missing: ${missing_files[*]}"
+        log_message "Temp directory preserved for debugging: $temp_dir"
+        return 1
+    fi
+    
+    # Only clean up after successful validation
     rm -rf "$temp_dir"
     
-    log_message "Juelich-based brainstem extraction complete"
+    log_message "Juelich-based brainstem extraction complete - all files validated"
     return 0
 }
 
