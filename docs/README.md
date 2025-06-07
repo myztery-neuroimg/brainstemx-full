@@ -21,6 +21,13 @@ The project is in active development as of June 2025. Whilst many improvements a
 
 For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx (currently a very immature implementation and work in progress).
 
+## Recent Segmentation Improvements (June 2025)
+- Corrected Harvard-Oxford atlas selection: now uses only brainstem index 7, eliminating erroneous multi-index summation.
+- Improved MNI→native space transformation: switched to trilinear interpolation + 0.5 thresholding, preserving partial volumes.
+- Consistent file naming: updated pipeline and modules to use `_brainstem.nii.gz` and `_brainstem_flair_intensity.nii.gz` uniformly.
+- Updated Juelich pons segmentation: applied same interpolation fix, yielding anatomically reasonable voxel counts.
+- Integrated FLAIR enhancement: generated separate FLAIR intensity masks for segmentation quality analysis.
+
 ## Features
 
 ### Acquisition-Specific Processing and Registration
