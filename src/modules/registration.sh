@@ -20,6 +20,13 @@ if [ -f "$ORIENTATION_MODULE" ]; then
     log_message "Loaded orientation correction module: $ORIENTATION_MODULE"
 fi
 
+# Source the scan selection module
+SCAN_SELECTION_MODULE="${SCRIPT_DIR}/scan_selection.sh"
+if [ -f "$SCAN_SELECTION_MODULE" ]; then
+    source "$SCAN_SELECTION_MODULE"
+    log_message "Loaded scan selection module: $SCAN_SELECTION_MODULE"
+fi
+
 # Function to run registration fix script - only call this after standardization
 run_registration_fix() {
     # Only run if standardized directory exists
@@ -1356,6 +1363,76 @@ perform_wm_guided_initialization() {
     return 0
 }
 
+# Function to perform registration comparison between T1 and T2
+perform_registration_comparison() {
+    local input_dir="$1"
+    local output_base_dir="${2:-${RESULTS_DIR}/registration_comparison}"
+
+    log_message "=== Performing T1 vs T2 Registration Comparison ==="
+    log_message "Input directory: $input_dir"
+    log_message "Output base directory: $output_base_dir"
+
+    # Ensure scan selection module is sourced
+    if ! command -v select_best_scan &> /dev/null; then
+        log_formatted "ERROR" "Scan selection module not loaded. Cannot perform interactive selection."
+        return 1
+    fi
+
+    # Step 1: Select T1 and T2 scans interactively
+    log_message "Please select the T1 scan for comparison."
+    local selected_t1=$(select_best_scan "T1" "*T1*.nii.gz" "$input_dir" "" "interactive")
+    if [ -z "$selected_t1" ]; then
+        log_formatted "ERROR" "No T1 scan selected. Aborting comparison."
+        return 1
+    fi
+
+    log_message "Please select the T2 scan for comparison."
+    local selected_t2=$(select_best_scan "T2" "*T2*.nii.gz" "$input_dir" "$selected_t1" "interactive")
+     if [ -z "$selected_t2" ]; then
+        log_formatted "ERROR" "No T2 scan selected. Aborting comparison."
+        return 1
+    fi
+
+    log_message "Selected T1: $selected_t1"
+    log_message "Selected T2: $selected_t2"
+
+    # Step 2: Perform T2 to T1 registration
+    local t2_to_t1_output_prefix="${output_base_dir}/t2_to_t1/t2_to_t1"
+    log_message "--- Running T2 to T1 Registration ---"
+    # Call the generic registration function (will modify register_modality_to_t1 later)
+    # For now, we'll call the existing function, assuming T1 is fixed
+    register_modality_to_t1 "$selected_t1" "$selected_t2" "T2" "$t2_to_t1_output_prefix"
+    local t2_to_t1_status=$?
+
+    # Step 3: Perform T1 to T2 registration
+    local t1_to_t2_output_prefix="${output_base_dir}/t1_to_t2/t1_to_t2"
+    log_message "--- Running T1 to T2 Registration ---"
+    # Need to modify registration function to handle T1 to T2
+    # Placeholder call - will be updated in the next step
+    # register_modality_to_t1 "$selected_t2" "$selected_t1" "T1" "$t1_to_t2_output_prefix"
+    log_message "T1 to T2 registration placeholder - will be implemented next."
+    local t1_to_t2_status=1 # Assume failure for now
+
+    # Step 4: Validate and visualize results (will update validation/viz functions later)
+    log_message "--- Validating and Visualizing Results ---"
+    if [ $t2_to_t1_status -eq 0 ]; then
+        log_message "Validating T2 to T1 registration..."
+        validate_registration_output "$selected_t1" "$selected_t2" "${t2_to_t1_output_prefix}Warped.nii.gz" "$t2_to_t1_output_prefix"
+    fi
+
+    if [ $t1_to_t2_status -eq 0 ]; then
+         log_message "Validating T1 to T2 registration..."
+         # Need to update validate_registration_output to handle T2 fixed / T1 moving
+         # For now, placeholder call
+         # validate_registration_output "$selected_t2" "$selected_t1" "${t1_to_t2_output_prefix}Warped.nii.gz" "$t1_to_t2_output_prefix"
+         log_message "T1 to T2 validation placeholder - will be implemented next."
+    fi
+
+    log_message "Registration comparison complete."
+    return 0
+}
+
+
 # Helper function to validate registration results
 validate_registration_output() {
     local t1_file="$1"
@@ -1377,5 +1454,6 @@ validate_registration_output() {
 
 # Export helper function
 export -f validate_registration_output
+export -f perform_registration_comparison
 
 log_message "Registration module loaded"
