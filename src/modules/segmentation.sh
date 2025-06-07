@@ -9,11 +9,11 @@
 # - Segmentation QA integration
 #
 
-# Export new SUIT-based segmentation function if the script exists
-if [ -f "$(dirname $0})/segment_pons_and_brainstem.sh" ]; then
-    source "$(dirname $0})/segment_pons_and_brainstem.sh"
-    log_message "SUIT-based brainstem segmentation loaded"
-fi      
+# Load Juelich atlas-based segmentation functions
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/segment_juelich.sh" ]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/segment_juelich.sh"
+    log_message "Juelich atlas-based brainstem segmentation loaded"
+fi
 
 # Function to extract brainstem in standard space
 extract_brainstem_standardspace() {
@@ -343,19 +343,18 @@ extract_brainstem_final() {
     }
     fi
     
-    # Check if we have the new SUIT-based segmentation available
-    if [ -f "$(dirname "$0")/segment_pons_and_brainstem.sh" ] && [ -n "$SUIT_DIR" ]; then
-        log_message "Using advanced SUIT-based segmentation for better pons subdivision..."
+    # Try Juelich atlas-based segmentation first for better anatomical accuracy
+    if command -v extract_brainstem_juelich &> /dev/null; then
+        log_message "Using Juelich atlas-based segmentation for anatomically accurate pons subdivision..."
         
-        # Source the new script
-        source "$(dirname $0)/segment_pons_and_brainstem.sh"
-        
-        # Run the comprehensive segmentation with SUIT and Juelich atlas
-        segment_brainstem_comprehensive "$input_file" "$input_basename"
+        # Run Juelich-based comprehensive segmentation
+        extract_brainstem_juelich "$input_file" "$input_basename"
         segmentation_success=$?
         
-        if [ $segmentation_success -ne 0 ]; then
-            log_formatted "WARNING" "Advanced segmentation failed, falling back to basic methods"
+        if [ $segmentation_success -eq 0 ]; then
+            log_message "Juelich-based segmentation completed successfully"
+        else
+            log_formatted "WARNING" "Juelich segmentation failed, falling back to basic methods"
             
             # Extract pons from brainstem using basic method
             log_message "Extracting pons from brainstem using legacy method..."
@@ -366,8 +365,8 @@ extract_brainstem_final() {
             divide_pons "$pons_file" "$dorsal_pons_file" "$ventral_pons_file"
         fi
     else
-        # Use legacy methods if SUIT is not available
-        log_message "SUIT-based segmentation not available, using legacy methods..."
+        # Use legacy methods if Juelich is not available
+        log_message "Juelich-based segmentation not available, using legacy methods..."
         
         # Extract pons from brainstem
         log_message "Extracting pons from brainstem..."

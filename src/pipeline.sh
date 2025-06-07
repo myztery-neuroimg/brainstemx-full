@@ -33,6 +33,7 @@ source src/modules/analysis.sh
 source src/modules/visualization.sh
 source src/modules/qa.sh
 source src/scan_selection.sh  # Add scan selection module
+source src/modules/reference_space_selection.sh  # Add reference space selection module
 source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
 #source src/modules/extract_dicom_metadata.py
 
@@ -275,26 +276,31 @@ run_pipeline() {
   log_message "Analyzing DICOM headers for scan selection..."
   analyze_dicom_headers "$SRC_DIR" "${RESULTS_DIR}/metadata/dicom_header_analysis.txt"
   
-  # Use intelligent scan selection based on quality metrics and selection mode
-  log_message "Selecting best T1 scan using mode: ${T1_SELECTION_MODE:-highest_resolution}..."
-  local t1_file=$(select_best_scan "T1" "T1_MPRAGE_SAG_*.nii.gz" "$EXTRACT_DIR" "" "${T1_SELECTION_MODE:-highest_resolution}")
+  # Use adaptive reference space selection
+  log_message "Running adaptive reference space selection..."
+  local selection_result=$(select_optimal_reference_space "$SRC_DIR" "$EXTRACT_DIR" "${REFERENCE_SPACE_SELECTION_MODE:-adaptive}")
   
-  # If not found with specific pattern, try more general pattern
-  if [ -z "$t1_file" ]; then
-    log_message "T1 not found with specific pattern, trying more general search"
-    t1_file=$(select_best_scan "T1" "T1_*.nii.gz" "$EXTRACT_DIR" "" "${T1_SELECTION_MODE:-highest_resolution}")
-  fi
+  # Parse the selection result: modality|file|rationale
+  local selected_modality=$(echo "$selection_result" | cut -d'|' -f1)
+  local selected_file=$(echo "$selection_result" | cut -d'|' -f2)
+  local selection_rationale=$(echo "$selection_result" | cut -d'|' -f3)
   
-  # Now select FLAIR scan with the T1 as reference based on selection mode
-  log_message "Selecting best FLAIR scan using mode: ${FLAIR_SELECTION_MODE:-registration_optimized}..."
-  log_message "T1 reference: $t1_file"
+  log_formatted "SUCCESS" "Reference space selected: $selected_modality"
+  log_message "Selected file: $(basename "$selected_file")"
+  log_message "Rationale: $selection_rationale"
   
-  local flair_file=$(select_best_scan "FLAIR" "T2_SPACE_FLAIR_Sag_CS_*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
-  
-  # If not found with specific pattern, try more general pattern
-  if [ -z "$flair_file" ]; then
-    log_message "FLAIR not found with specific pattern, trying more general search"
-    flair_file=$(select_best_scan "FLAIR" "*FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
+  # Assign files based on selection result
+  if [ "$selected_modality" = "T1" ]; then
+    local t1_file="$selected_file"
+    # Find the best FLAIR for this T1
+    local flair_file=$(select_best_scan "FLAIR" "*FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
+  elif [ "$selected_modality" = "FLAIR" ]; then
+    local flair_file="$selected_file"
+    # Find the best T1 for this FLAIR
+    local t1_file=$(select_best_scan "T1" "*T1*.nii.gz" "$EXTRACT_DIR" "$flair_file" "${T1_SELECTION_MODE:-highest_resolution}")
+  else
+    log_error "Reference space selection failed: $selection_rationale" $ERR_DATA_MISSING
+    return $ERR_DATA_MISSING
   fi
   
   # Log detailed resolution information about selected scans

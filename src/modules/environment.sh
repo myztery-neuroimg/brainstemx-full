@@ -288,7 +288,7 @@ QUALITY_PRESET="HIGH"
 if [ -d "$ANTS_BIN" ]; then
   export PATH="$PATH:${ANTS_BIN}"
   log_formatted "INFO" "Added ANTs bin directory to PATH: $ANTS_BIN"
-  export ANTS_THREADS=28
+  export ANTS_THREADS=48
   # Set ANTs/ITK threading variables for proper parallelization
   export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="$ANTS_THREADS"
   export OMP_NUM_THREADS="$ANTS_THREADS"
@@ -396,9 +396,10 @@ if [ -z "${FSLDIR:-}" ]; then
 else
   export TEMPLATE_DIR="${FSLDIR}/data/standard"
 fi
-EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
-PROBABILITY_MASK="MNI152_T1_1mm_brain_mask.nii.gz"
-REGISTRATION_MASK="MNI152_T1_1mm_brain_mask_dil.nii.gz"
+# Set default templates only if not already defined (allow config override)
+EXTRACTION_TEMPLATE="${EXTRACTION_TEMPLATE:-MNI152_T1_1mm.nii.gz}"
+PROBABILITY_MASK="${PROBABILITY_MASK:-MNI152_T1_1mm_brain_mask.nii.gz}"
+REGISTRATION_MASK="${REGISTRATION_MASK:-MNI152_T1_1mm_brain_mask_dil.nii.gz}"
 
 # ------------------------------------------------------------------------------
 # Dependency Checks
