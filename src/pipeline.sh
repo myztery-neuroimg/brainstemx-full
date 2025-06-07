@@ -649,10 +649,12 @@ run_pipeline() {
     extract_brainstem_final "$t1_std"
     
     # Get output files (should have been created by extract_brainstem_final)
-    local brainstem_output=$(get_output_path "segmentation/brainstem" "${subject_id}" "_brainstem")
-    local pons_output=$(get_output_path "segmentation/pons" "${subject_id}" "_pons")
-    local dorsal_pons=$(get_output_path "segmentation/pons" "${subject_id}" "_dorsal_pons")
-    local ventral_pons=$(get_output_path "segmentation/pons" "${subject_id}" "_ventral_pons")
+    # Use the basename of the T1 file, not subject_id
+    local t1_basename=$(basename "$t1_std" .nii.gz)
+    local brainstem_output=$(get_output_path "segmentation/brainstem" "${t1_basename}" "_brainstem")
+    local pons_output=$(get_output_path "segmentation/pons" "${t1_basename}" "_pons")
+    local dorsal_pons=$(get_output_path "segmentation/pons" "${t1_basename}" "_dorsal_pons")
+    local ventral_pons=$(get_output_path "segmentation/pons" "${t1_basename}" "_ventral_pons")
     
     # Validate files exist
     log_message "Validating output files exist..."
@@ -669,19 +671,39 @@ run_pipeline() {
     fi
 
     # Validate main segmentation files (dorsal/ventral are just compatibility placeholders)
-    validate_step "Segmentation" "${subject_id}_brainstem.nii.gz,${subject_id}_pons.nii.gz" "segmentation"
+    validate_step "Segmentation" "${t1_basename}_brainstem.nii.gz,${t1_basename}_pons.nii.gz" "segmentation"
   
-    # Create intensity versions of the segmentation masks
-    log_message "Creating intensity versions of segmentation masks for better visualization..."
-    local brainstem_intensity="${RESULTS_DIR}/segmentation/brainstem/${subject_id}_brainstem_intensity.nii.gz"
-    local dorsal_pons_intensity="${RESULTS_DIR}/segmentation/pons/${subject_id}_dorsal_pons_intensity.nii.gz"
-    create_intensity_mask "$brainstem_output" "$t1_std" "$brainstem_intensity"
-    create_intensity_mask "$dorsal_pons" "$t1_std" "$dorsal_pons_intensity"
+    # The brainstem output already contains intensity values, no need to create another
+    log_message "Using existing intensity segmentation masks for visualization..."
+    local brainstem_intensity="$brainstem_output"  # This already contains T1 intensities
+    local dorsal_pons_intensity="$dorsal_pons"      # For consistency
+    
+    # Only create intensity versions if the outputs are binary masks
+    if [ -f "$brainstem_output" ]; then
+        local max_val=$(fslstats "$brainstem_output" -R | awk '{print $2}')
+        if (( $(echo "$max_val <= 1" | bc -l) )); then
+            log_message "Brainstem output appears to be binary, creating intensity version..."
+            brainstem_intensity="${RESULTS_DIR}/segmentation/brainstem/${t1_basename}_brainstem_intensity.nii.gz"
+            create_intensity_mask "$brainstem_output" "$t1_std" "$brainstem_intensity"
+        fi
+    fi
+    
+    if [ -f "$dorsal_pons" ]; then
+        local max_val=$(fslstats "$dorsal_pons" -R | awk '{print $2}')
+        if (( $(echo "$max_val <= 1" | bc -l) )); then
+            log_message "Dorsal pons output appears to be binary, creating intensity version..."
+            dorsal_pons_intensity="${RESULTS_DIR}/segmentation/pons/${t1_basename}_dorsal_pons_intensity.nii.gz"
+            create_intensity_mask "$dorsal_pons" "$t1_std" "$dorsal_pons_intensity"
+        fi
+    fi
     
     # Verify segmentation location
     log_message "Verifying segmentation anatomical location..."
     verify_segmentation_location "$brainstem_output" "$t1_std" "brainstem" "${RESULTS_DIR}/validation/segmentation_location"
     verify_segmentation_location "$dorsal_pons" "$t1_std" "dorsal_pons" "${RESULTS_DIR}/validation/segmentation_location"
+
+    # Explicitly create the location check overlay
+    cp "$dorsal_pons" "${RESULTS_DIR}/validation/segmentation_location/dorsal_pons_location_check.nii.gz"
     
     # Launch enhanced visual QA for brainstem segmentation (non-blocking)
     enhanced_launch_visual_qa "$t1_std" "$brainstem_intensity" ":colormap=heat:opacity=0.5" "brainstem-segmentation" "coronal"
@@ -770,6 +792,12 @@ run_pipeline() {
     log_message "Creating intensity versions of segmentation masks..."
     local pons_intensity="${orig_space_dir}/$(basename "$pons_mask" .nii.gz)_intensity.nii.gz"
     create_intensity_mask "$pons_orig" "$orig_t1" "$pons_intensity"
+
+    # Explicitly check if intensity mask was created successfully
+    if [ ! -f "$pons_intensity" ]; then
+      log_error "Intensity mask creation failed for pons: $pons_intensity" $ERR_PROCESSING
+      return $ERR_PROCESSING
+    fi
     
     # Verify dimensions consistency
     log_message "Verifying dimensions consistency across pipeline stages..."
@@ -818,7 +846,9 @@ run_pipeline() {
     local hyperintensity_mask="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
     
     if [ -f "$hyperintensity_mask" ]; then
-      local legacy_mask="${hyperintensities_dir}/${subject_id}_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
+      # Use the basename from the pons mask
+      local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
+      local legacy_mask="${hyperintensities_dir}/${pons_basename}_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
       ln -sf "$hyperintensity_mask" "$legacy_mask"
       log_message "Created link to comprehensive analysis result: $legacy_mask"
     else
@@ -826,14 +856,18 @@ run_pipeline() {
       log_message "Falling back to traditional hyperintensity detection using main pons..."
       
       # Fall back to traditional hyperintensity detection using main pons
-      local hyperintensities_prefix="${hyperintensities_dir}/${subject_id}_pons"
+      # Use the basename from the pons mask, not subject_id
+      local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
+      local hyperintensities_prefix="${hyperintensities_dir}/${pons_basename}_pons"
       detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"
       hyperintensity_mask="${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
       analyze_hyperintensity_clusters "$hyperintensity_mask" "$pons_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
     fi
     
     # Validate hyperintensities detection
-    validate_step "Hyperintensity detection" "${subject_id}_pons*.nii.gz" "hyperintensities"
+    # Use the basename from the pons mask
+    local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
+    validate_step "Hyperintensity detection" "${pons_basename}_pons*.nii.gz" "hyperintensities"
     
     # Launch enhanced visual QA for hyperintensity detection (non-blocking)
     # Show both the FLAIR and the hyperintensity mask

@@ -6,6 +6,12 @@
 # accurate pons, midbrain, and medulla extraction without SUIT dependencies.
 #
 
+# Ensure RESULTS_DIR is absolute path
+if [ -n "${RESULTS_DIR}" ] && [[ "$RESULTS_DIR" != /* ]]; then
+    export RESULTS_DIR="$(cd "$(dirname "$RESULTS_DIR")" && pwd)/$(basename "$RESULTS_DIR")"
+    log_message "Converted RESULTS_DIR to absolute path: $RESULTS_DIR"
+fi
+
 # Function to extract pons using Juelich atlas
 extract_pons_juelich() {
     local input_file="$1"
@@ -25,6 +31,12 @@ extract_pons_juelich() {
     
     # Create output directory and validate
     local output_dir="$(dirname "$output_file")"
+    # Convert to absolute path if relative
+    if [[ "$output_dir" != /* ]]; then
+        output_dir="$(pwd)/$output_dir"
+    fi
+    
+    log_message "Creating output directory: $output_dir"
     if ! mkdir -p "$output_dir"; then
         log_formatted "ERROR" "Failed to create output directory: $output_dir"
         return 1
@@ -33,6 +45,11 @@ extract_pons_juelich() {
     if [ ! -w "$output_dir" ]; then
         log_formatted "ERROR" "Output directory is not writable: $output_dir"
         return 1
+    fi
+    
+    # Convert output_file to absolute path
+    if [[ "$output_file" != /* ]]; then
+        output_file="$(pwd)/$output_file"
     fi
     
     log_message "Extracting pons using Juelich atlas from $input_file"
@@ -107,10 +124,23 @@ extract_pons_juelich() {
     
     # Step 4: Transform pons mask to subject space
     log_message "Transforming pons mask to subject space..."
-    flirt -in "${temp_dir}/pons_mni.nii.gz" -ref "$input_file" -applyxfm -init "${temp_dir}/mni2input.mat" -out "${temp_dir}/pons_subject.nii.gz" -interp nearestneighbour
+    # Use trilinear interpolation first, then threshold to maintain more voxels
+    flirt -in "${temp_dir}/pons_mni.nii.gz" -ref "$input_file" -applyxfm -init "${temp_dir}/mni2input.mat" -out "${temp_dir}/pons_subject_tri.nii.gz" -interp trilinear
+    
+    # Threshold at 0.5 to create binary mask (captures partial volume voxels)
+    fslmaths "${temp_dir}/pons_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/pons_subject.nii.gz"
     
     # Step 5: Apply mask to original image to create intensity version
     log_message "Creating intensity-based pons segmentation..."
+    log_message "Output will be written to: $output_file"
+    
+    # Remove any existing file or symlink at the output location
+    if [ -L "$output_file" ] || [ -e "$output_file" ]; then
+        log_message "Removing existing file/symlink at output location"
+        rm -f "$output_file"
+    fi
+    
+    # Apply mask using fslmaths directly
     fslmaths "$input_file" -mas "${temp_dir}/pons_subject.nii.gz" "$output_file"
     
     # Validate output file was created successfully before cleanup
@@ -155,6 +185,18 @@ extract_brainstem_juelich() {
     # Create output directories and validate
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     local pons_dir="${RESULTS_DIR}/segmentation/pons"
+    
+    # Convert to absolute paths if relative
+    if [[ "$brainstem_dir" != /* ]]; then
+        brainstem_dir="$(pwd)/$brainstem_dir"
+    fi
+    if [[ "$pons_dir" != /* ]]; then
+        pons_dir="$(pwd)/$pons_dir"
+    fi
+    
+    log_message "Creating segmentation directories:"
+    log_message "  Brainstem: $brainstem_dir"
+    log_message "  Pons: $pons_dir"
     
     if ! mkdir -p "$brainstem_dir" "$pons_dir"; then
         log_formatted "ERROR" "Failed to create output directories"
@@ -242,7 +284,11 @@ extract_brainstem_juelich() {
     local regions=("brainstem" "pons" "midbrain" "medulla")
     for region in "${regions[@]}"; do
         log_message "Transforming $region mask to subject space..."
-        flirt -in "${temp_dir}/${region}_mni.nii.gz" -ref "$input_file" -applyxfm -init "${temp_dir}/mni2input.mat" -out "${temp_dir}/${region}_subject.nii.gz" -interp nearestneighbour
+        # Use trilinear interpolation first, then threshold to maintain more voxels
+        flirt -in "${temp_dir}/${region}_mni.nii.gz" -ref "$input_file" -applyxfm -init "${temp_dir}/mni2input.mat" -out "${temp_dir}/${region}_subject_tri.nii.gz" -interp trilinear
+        
+        # Threshold at 0.5 to create binary mask (captures partial volume voxels)
+        fslmaths "${temp_dir}/${region}_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/${region}_subject.nii.gz"
         
         # Create intensity version
         local output_dir
@@ -252,10 +298,27 @@ extract_brainstem_juelich() {
             output_dir="$pons_dir"
         fi
         
-        fslmaths "$input_file" -mas "${temp_dir}/${region}_subject.nii.gz" "${output_dir}/${output_prefix}_${region}.nii.gz"
+        local output_file="${output_dir}/${output_prefix}_${region}.nii.gz"
+        local mask_file="${output_dir}/${output_prefix}_${region}_mask.nii.gz"
+        
+        log_message "Creating $region intensity file: $output_file"
+        
+        # Remove any existing file or symlink at the output location
+        if [ -L "$output_file" ] || [ -e "$output_file" ]; then
+            log_message "Removing existing file/symlink for $region"
+            rm -f "$output_file"
+        fi
+        
+        # Apply mask using fslmaths directly
+        fslmaths "$input_file" -mas "${temp_dir}/${region}_subject.nii.gz" "$output_file"
+        
+        # Remove any existing mask file
+        if [ -L "$mask_file" ] || [ -e "$mask_file" ]; then
+            rm -f "$mask_file"
+        fi
         
         # Also save the binary mask
-        cp "${temp_dir}/${region}_subject.nii.gz" "${output_dir}/${output_prefix}_${region}_mask.nii.gz"
+        cp "${temp_dir}/${region}_subject.nii.gz" "$mask_file"
         
         # Check if we got any voxels
         local voxel_count=$(fslstats "${temp_dir}/${region}_subject.nii.gz" -V | awk '{print $1}')
@@ -265,8 +328,24 @@ extract_brainstem_juelich() {
     # For compatibility with existing pipeline, create dorsal/ventral pons
     # Since Juelich doesn't subdivide pons, we'll copy pons to both for now
     log_message "Creating dorsal/ventral pons for pipeline compatibility..."
-    cp "${pons_dir}/${output_prefix}_pons.nii.gz" "${pons_dir}/${output_prefix}_dorsal_pons.nii.gz"
-    fslmaths "${pons_dir}/${output_prefix}_pons.nii.gz" -mul 0 "${pons_dir}/${output_prefix}_ventral_pons.nii.gz"
+    
+    local pons_file="${pons_dir}/${output_prefix}_pons.nii.gz"
+    local dorsal_file="${pons_dir}/${output_prefix}_dorsal_pons.nii.gz"
+    local ventral_file="${pons_dir}/${output_prefix}_ventral_pons.nii.gz"
+    
+    if [ -f "$pons_file" ]; then
+        # Remove any existing files
+        [ -L "$dorsal_file" ] || [ -e "$dorsal_file" ] && rm -f "$dorsal_file"
+        [ -L "$ventral_file" ] || [ -e "$ventral_file" ] && rm -f "$ventral_file"
+        
+        cp "$pons_file" "$dorsal_file"
+        
+        # Create empty ventral file
+        fslmaths "$pons_file" -mul 0 "$ventral_file"
+    else
+        log_formatted "ERROR" "Pons file not found: $pons_file"
+        return 1
+    fi
     
     # Validate critical output files exist before cleanup
     local critical_files=(
