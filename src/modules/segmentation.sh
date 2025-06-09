@@ -122,14 +122,45 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    # Step 1: Register input to MNI space to get transformation
-    log_message "Computing transformation from subject to MNI space..."
-    flirt -in "$input_file" -ref "$mni_brain" -out "${temp_dir}/input_to_mni.nii.gz" \
-          -omat "${temp_dir}/input2mni.mat" -dof 12 -cost corratio
+    # Step 1: Register input to MNI space using ANTs (compute transformation)
+    log_message "Registering $(basename \"$input_file\") to MNI space using ANTs..."
     
-    # Step 2: Generate inverse transformation (MNI to subject)
-    log_message "Computing inverse transformation (MNI to subject space)..."
-    convert_xfm -omat "${temp_dir}/mni2input.mat" -inverse "${temp_dir}/input2mni.mat"
+    # Create transforms directory if it doesn't exist
+    mkdir -p "${RESULTS_DIR}/registered/transforms"
+    
+    # Set up ANTs registration parameters using existing configuration
+    local ants_prefix="${RESULTS_DIR}/registered/transforms/ants_to_mni_"
+    local ants_warped="${RESULTS_DIR}/registered/transforms/ants_to_mni_warped.nii.gz"
+    local brainstem_mask_mni_file="${RESULTS_DIR}/registered/transforms/brainstem_mask_mni_file.nii.gz"
+    
+    # Use compute_initial_affine if available, otherwise use execute_ants_command
+    if command -v compute_initial_affine &> /dev/null; then
+        # Use the existing function for initial affine registration
+        compute_initial_affine "$input_file" "$mni_brain" "$ants_prefix"
+    else
+        # Run ANTs registration using execute_ants_command for proper logging
+        # Using antsRegistrationSyNQuick.sh for efficiency with affine-only transform
+        log_message "Running ANTs quick affine registration to MNI space..."
+        
+        execute_ants_command "ants_to_mni_registration" "Affine registration to MNI template" \
+            antsRegistrationSyNQuick.sh \
+            -d 3 \
+            -f "$mni_brain" \
+            -m "$input_file" \
+            -t a \
+            -o "$ants_prefix" \
+            -n "${ANTS_THREADS:-1}"
+    fi
+    
+    # Check if registration succeeded
+    if [ ! -f "${ants_prefix}0GenericAffine.mat" ]; then
+        log_formatted "ERROR" "ANTs registration failed - transform not created"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # The ANTs transforms are automatically invertible
+    log_message "ANTs registration completed successfully"
     
     # Step 3: Extract brainstem from Harvard-Oxford atlas
     log_message "Extracting brainstem structures from Harvard-Oxford atlas..."
@@ -161,9 +192,9 @@ extract_brainstem_harvard_oxford() {
     local found_brainstem=false
     
     log_message "Extracting brainstem (index $brainstem_index) from Harvard-Oxford atlas..."
-    fslmaths "$harvard_subcortical" -thr $brainstem_index -uthr $brainstem_index -bin "${temp_dir}/brainstem_mask_mni.nii.gz"
+    fslmaths "$harvard_subcortical" -thr $brainstem_index -uthr $brainstem_index -bin "${brainstem_mask_mni_file}"
     
-    local voxel_count=$(fslstats "${temp_dir}/brainstem_mask_mni.nii.gz" -V | awk '{print $1}')
+    local voxel_count=$(fslstats "${brainstem_mask_mni_file}" -V | awk '{print $1}')
     if [ "$voxel_count" -gt 100 ]; then
         log_message "Found brainstem with $voxel_count voxels in MNI space"
         found_brainstem=true
@@ -181,14 +212,40 @@ extract_brainstem_harvard_oxford() {
     
     # Step 4: Transform brainstem mask to subject T1 space
     log_message "Transforming brainstem mask to subject T1 space..."
-    # Use trilinear interpolation first, then threshold to maintain more voxels
-    flirt -in "${temp_dir}/brainstem_mask_mni.nii.gz" -ref "$input_file" \
-          -applyxfm -init "${temp_dir}/mni2input.mat" \
-          -out "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -interp trilinear
+    
+    # Use ANTs to apply the inverse transform (MNI to subject space)
+    # The -t flag with [transform,1] applies the inverse
+    if command -v execute_ants_command &> /dev/null; then
+        execute_ants_command "apply_inverse_transform" "Transforming brainstem mask to subject T1 space" \
+            antsApplyTransforms \
+            -d 3 \
+            -i "${brainstem_mask_mni_file}" \
+            -r "$input_file" \
+            -o "${temp_dir}/brainstem_mask_subject_tri.nii.gz" \
+            -t "[${ants_prefix}0GenericAffine.mat,1]" \
+            -n Linear
+    else
+        # Fallback to direct ANTs call if execute_ants_command is not available
+        log_message "Applying inverse transform with antsApplyTransforms..."
+        antsApplyTransforms -d 3 \
+            -i "${brainstem_mask_mni_file}" \
+            -r "$input_file" \
+            -o "${temp_dir}/brainstem_mask_subject_tri.nii.gz" \
+            -t "[${ants_prefix}0GenericAffine.mat,1]" \
+            -n Linear
+    fi
+    
+    # Check if the transform was successful
+    if [ ! -f "${temp_dir}/brainstem_mask_subject_tri.nii.gz" ]; then
+        log_formatted "ERROR" "Failed to transform brainstem mask to subject space"
+        rm -rf "$temp_dir"
+        return 1
+    fi
     
     # Threshold at 0.5 to create binary mask (captures partial volume voxels)
     fslmaths "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/brainstem_mask_subject.nii.gz"
-    
+    log_message "Displaying ${temp_dir}/brainstem_mask_subject.nii.gz fslstats.."
+    fslinfo "${temp_dir}/brainstem_mask_subject.nii.gz" 
     # Step 5: Apply mask to get intensity values
     log_message "Creating intensity-based brainstem segmentation..."
     

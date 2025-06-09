@@ -26,22 +26,22 @@ export PROCESSING_DATATYPE="float"  # internal float
 export OUTPUT_DATATYPE="int"        # final int16
 
 # Quality settings (LOW, MEDIUM, HIGH)
-export QUALITY_PRESET="HIGH"
+export QUALITY_PRESET="LOW"
 export MAX_CPU_INTENSIVE_JOBS=1
 
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
-export N4_PRESET_LOW="20x20x25,0.0001,150,4"
+export N4_PRESET_LOW="20x20x25,0.00001,100,4"
 #export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
 export N4_PRESET_HIGH="200x200x200x50,0.0000001,1000,2"
 export N4_PRESET_MEDIUM="500x500x500x50,0.00000901,2000,2"
-export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"  # override if needed
+export N4_PRESET_FLAIR="$N4_PRESET_LOW"  # override if needed
 
 export PARALLEL_JOBS=0
 
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
 
-export QUALITY_PRESET="MEDIUM"
+export QUALITY_PRESET="LOW"
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
@@ -159,9 +159,9 @@ export ISOTROPIC_SPACING=1.0
 #   registration_optimized - Prioritize scans with aspect ratios similar to reference
 #   matched_dimensions - Prioritize scans with exact dimensions matching reference
 #   interactive - Show available scans and prompt for manual selection
-export SCAN_SELECTION_MODE="original"
-export T1_SELECTION_MODE="original"    # For T1, always prefer ORIGINAL acquisitions
-export FLAIR_SELECTION_MODE="original"  # For FLAIR, always prefer ORIGINAL"  as we want to eliminate noise from the pipeline for brainstem lesions
+export SCAN_SELECTION_MODE="interactive"
+export T1_SELECTION_MODE="registration_optimized"    # For T1, always prefer ORIGINAL acquisitions
+export FLAIR_SELECTION_MODE="interactive"  # For FLAIR, always prefer ORIGINAL"  as we want to eliminate noise from the pipeline for brainstem lesions
 
 # Advanced registration options
 
@@ -192,3 +192,6 @@ export EXPECTED_QFORM_Z="Inferior-to-Superior"
 # Datatype configuration
 export PRESERVE_INTENSITY_IMAGES_DATATYPE=true  # Keep intensity images as FLOAT32
 export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
+
+export ORIGINAL_ACQUISITION_WEIGHT=0
+export USE_ANTS_SYN=true

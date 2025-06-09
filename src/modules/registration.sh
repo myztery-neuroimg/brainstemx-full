@@ -1050,7 +1050,7 @@ apply_transformation() {
             antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "[$transform,1]" -n "$interpolation" -j "$ANTS_THREADS"
         else
             # FSL .mat transform
-            flirt -in "$input" -ref "$reference" -applyxfm -init "$transform" -out "$output" -interp "$interpolation"
+            apply_transform "$input" "$reference" "$transform" "$output" "$interpolation"
         fi
     else
         # ANTs .h5 or .txt transforms — typically don't need inversion unless explicitly known

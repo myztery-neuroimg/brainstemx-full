@@ -560,7 +560,7 @@ run_pipeline() {
       local mni_dir="${reg_dir}/mni_space"
       mkdir -p "$mni_dir"
       local t1_mni="${mni_dir}/t1_to_mni.nii.gz"
-      flirt -in "$t1_fmt" -ref "$MNI_TEMPLATE" -out "$t1_mni" -applyxfm -init "$t1_mni_transform"
+      apply_transform "$t1_fmt" "$MNI_TEMPLATE" "$t1_mni_transform" "$t1_mni"
       
       # STEP 3: Create functions for applying standard masks
       log_formatted "INFO" "===== PREPARING FOR STANDARD ATLAS USAGE ====="
@@ -571,7 +571,7 @@ run_pipeline() {
         local output="$2"           # Output in subject space
         
         log_message "Transforming standard mask to subject space: $standard_mask"
-        flirt -in "$standard_mask" -ref "$t1_fmt" -out "$output" -applyxfm -init "$mni_to_t1_transform" -interp nearestneighbour
+        apply_transform "$standard_mask" "$t1_fmt" "$mni_to_t1_transform" "$output" "nearestneighbour"
       }
       
       # Export the function for use downstream
@@ -697,13 +697,8 @@ run_pipeline() {
         fi
     fi
     
-    # Verify segmentation location
-    log_message "Verifying segmentation anatomical location..."
-    verify_segmentation_location "$brainstem_output" "$t1_std" "brainstem" "${RESULTS_DIR}/validation/segmentation_location"
-    verify_segmentation_location "$dorsal_pons" "$t1_std" "dorsal_pons" "${RESULTS_DIR}/validation/segmentation_location"
-
-    # Explicitly create the location check overlay
-    cp "$dorsal_pons" "${RESULTS_DIR}/validation/segmentation_location/dorsal_pons_location_check.nii.gz"
+    # Note: Segmentation location verification moved to QA module
+    # Use qa_verify_all_segmentations function for comprehensive validation
     
     # Launch enhanced visual QA for brainstem segmentation (non-blocking)
     enhanced_launch_visual_qa "$t1_std" "$brainstem_intensity" ":colormap=heat:opacity=0.5" "brainstem-segmentation" "coronal"
@@ -745,13 +740,21 @@ run_pipeline() {
     
     # Find original T1 and FLAIR files (needed for space transformation)
     log_message "Looking for original T1 and FLAIR files..."
-    local orig_t1=$(find "${RESULTS_DIR}/bias_corrected" -name "*T1*.nii.gz" | head -1)
-    local orig_flair=$(find "${RESULTS_DIR}/bias_corrected" -name "*FLAIR*.nii.gz" | head -1)
+    # Look for brain-extracted files first, avoid mask files
+    local orig_t1=$(find "${RESULTS_DIR}/brain_extraction" -name "*T1*brain.nii.gz" | head -1)
+    local orig_flair=$(find "${RESULTS_DIR}/brain_extraction" -name "*FLAIR*brain.nii.gz" | head -1)
     
     if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
-      log_formatted "WARNING" "Original T1 or FLAIR file not found in bias_corrected directory"
-      orig_t1=$(find "${EXTRACT_DIR}" -name "*T1*.nii.gz" | head -1)
-      orig_flair=$(find "${EXTRACT_DIR}" -name "*FLAIR*.nii.gz" | head -1)
+      log_formatted "WARNING" "Brain-extracted files not found, trying bias_corrected directory"
+      # Avoid mask files by excluding them explicitly
+      orig_t1=$(find "${RESULTS_DIR}/bias_corrected" -name "*T1*.nii.gz" ! -name "*Mask*" | head -1)
+      orig_flair=$(find "${RESULTS_DIR}/bias_corrected" -name "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
+    fi
+    
+    if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
+      log_formatted "WARNING" "Files not found in bias_corrected, trying extracted directory"
+      orig_t1=$(find "${EXTRACT_DIR}" -name "*T1*.nii.gz" ! -name "*Mask*" | head -1)
+      orig_flair=$(find "${EXTRACT_DIR}" -name "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
     fi
     
     if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
@@ -788,24 +791,22 @@ run_pipeline() {
     
     log_message "Successfully transformed segmentation to original space: $pons_orig"
     
-    # Create intensity versions of segmentation masks
-    log_message "Creating intensity versions of segmentation masks..."
-    local pons_intensity="${orig_space_dir}/$(basename "$pons_mask" .nii.gz)_intensity.nii.gz"
-    create_intensity_mask "$pons_orig" "$orig_t1" "$pons_intensity"
-
-    # Explicitly check if intensity mask was created successfully
-    if [ ! -f "$pons_intensity" ]; then
-      log_error "Intensity mask creation failed for pons: $pons_intensity" $ERR_PROCESSING
-      return $ERR_PROCESSING
+    # Note: Intensity mask creation is handled by segmentation module
+    # The segmentation functions should create both T1 and FLAIR intensity versions
+    log_message "Segmentation transformation to original space complete"
+    
+    # Run QA validation to ensure all segmentation outputs are properly created
+    log_message "Running comprehensive QA validation for all segmentations..."
+    if ! qa_verify_all_segmentations "$RESULTS_DIR"; then
+      log_formatted "WARNING" "Some segmentation QA checks failed - see reports for details"
     fi
     
     # Verify dimensions consistency
     log_message "Verifying dimensions consistency across pipeline stages..."
     verify_dimensions_consistency "$orig_t1" "$t1_std" "$pons_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
     
-    # Verify segmentation location
-    log_message "Verifying segmentation anatomical location..."
-    verify_segmentation_location "$pons_orig" "$orig_t1" "pons" "${RESULTS_DIR}/validation/segmentation_location"
+    # Note: Segmentation location verification moved to QA module
+    # Use qa_verify_all_segmentations function for comprehensive validation
     
     # Find or create registered FLAIR
     local flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)

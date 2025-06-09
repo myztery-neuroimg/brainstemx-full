@@ -233,8 +233,7 @@ correct_orientation_distortion() {
 calculate_orientation_deviation() {
     local fixed="$1"
     local warped="$2"
-    local mask="$3"  # Optional mask to focus calculation
-    
+    local mask="${3:-}"  # Optional mask to focus calculation
     # Create temporary directory for processing
     local temp_dir=$(mktemp -d)
     
@@ -291,11 +290,10 @@ calculate_orientation_deviation() {
     else
         mean_angle=$(fslstats "${temp_dir}/angle.nii.gz" -M)
     fi
+    log_message "Angled mask - mean: ${mean_angle}"
     
     # Clean up temporary files
     rm -rf "$temp_dir"
-    
-    echo "$mean_angle"
 }
 
 # Function to detect shearing in a transform

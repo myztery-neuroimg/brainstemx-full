@@ -93,18 +93,46 @@ extract_pons_juelich() {
     # Create temporary directory
     local temp_dir=$(mktemp -d)
     
-    # Step 1: Register input to MNI space
-    log_message "Registering input to MNI space..."
-    flirt -in "$input_file" -ref "$mni_template" -out "${temp_dir}/input_mni.nii.gz" -omat "${temp_dir}/input2mni.mat" -dof 12
+    # Step 1: Register input to MNI space using ANTs
+    log_message "Registering input to MNI space using ANTs..."
     
-    if [ $? -ne 0 ]; then
-        log_formatted "ERROR" "Registration to MNI failed"
+    local ants_prefix="${temp_dir}/ants_to_mni_"
+    
+    # Use compute_initial_affine if available, otherwise use execute_ants_command
+    if command -v compute_initial_affine &> /dev/null; then
+        # Use the existing function for initial affine registration
+        compute_initial_affine "$input_file" "$mni_template" "$ants_prefix"
+    else
+        # Run ANTs registration using execute_ants_command for proper logging
+        if command -v execute_ants_command &> /dev/null; then
+            execute_ants_command "ants_to_mni_juelich" "Affine registration to MNI template for Juelich segmentation" \
+                antsRegistrationSyNQuick.sh \
+                -d 3 \
+                -f "$mni_template" \
+                -m "$input_file" \
+                -t a \
+                -o "$ants_prefix" \
+                -n "${ANTS_THREADS:-1}"
+        else
+            # Fallback to direct ANTs call
+            antsRegistrationSyNQuick.sh \
+                -d 3 \
+                -f "$mni_template" \
+                -m "$input_file" \
+                -t a \
+                -o "$ants_prefix" \
+                -n "${ANTS_THREADS:-1}"
+        fi
+    fi
+    
+    # Check if registration succeeded
+    if [ ! -f "${ants_prefix}0GenericAffine.mat" ]; then
+        log_formatted "ERROR" "ANTs registration failed - transform not created"
         rm -rf "$temp_dir"
         return 1
     fi
     
-    # Step 2: Generate inverse transformation
-    convert_xfm -omat "${temp_dir}/mni2input.mat" -inverse "${temp_dir}/input2mni.mat"
+    log_message "ANTs registration completed successfully"
     
     # Step 3: Extract pons from Juelich atlas (index 105)
     log_message "Extracting pons from Juelich atlas (index 105)..."
@@ -124,8 +152,33 @@ extract_pons_juelich() {
     
     # Step 4: Transform pons mask to subject space
     log_message "Transforming pons mask to subject space..."
-    # Use trilinear interpolation first, then threshold to maintain more voxels
-    flirt -in "${temp_dir}/pons_mni.nii.gz" -ref "$input_file" -applyxfm -init "${temp_dir}/mni2input.mat" -out "${temp_dir}/pons_subject_tri.nii.gz" -interp trilinear
+    
+    # Use ANTs to apply the inverse transform (MNI to subject space)
+    if command -v execute_ants_command &> /dev/null; then
+        execute_ants_command "apply_inverse_juelich_pons" "Transforming pons mask to subject space" \
+            antsApplyTransforms \
+            -d 3 \
+            -i "${temp_dir}/pons_mni.nii.gz" \
+            -r "$input_file" \
+            -o "${temp_dir}/pons_subject_tri.nii.gz" \
+            -t "[${ants_prefix}0GenericAffine.mat,1]" \
+            -n Linear
+    else
+        # Fallback to direct ANTs call
+        antsApplyTransforms -d 3 \
+            -i "${temp_dir}/pons_mni.nii.gz" \
+            -r "$input_file" \
+            -o "${temp_dir}/pons_subject_tri.nii.gz" \
+            -t "[${ants_prefix}0GenericAffine.mat,1]" \
+            -n Linear
+    fi
+    
+    # Check if the transform was successful
+    if [ ! -f "${temp_dir}/pons_subject_tri.nii.gz" ]; then
+        log_formatted "ERROR" "Failed to transform pons mask to subject space"
+        rm -rf "$temp_dir"
+        return 1
+    fi
     
     # Threshold at 0.5 to create binary mask (captures partial volume voxels)
     fslmaths "${temp_dir}/pons_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/pons_subject.nii.gz"
@@ -248,18 +301,46 @@ extract_brainstem_juelich() {
     # Create temporary directory
     local temp_dir=$(mktemp -d)
     
-    # Step 1: Register input to MNI space
-    log_message "Registering input to MNI space..."
-    flirt -in "$input_file" -ref "$mni_template" -out "${temp_dir}/input_mni.nii.gz" -omat "${temp_dir}/input2mni.mat" -dof 12
+    # Step 1: Register input to MNI space using ANTs
+    log_message "Registering input to MNI space using ANTs..."
     
-    if [ $? -ne 0 ]; then
-        log_formatted "ERROR" "Registration to MNI failed"
+    local ants_prefix="${temp_dir}/ants_to_mni_"
+    
+    # Use compute_initial_affine if available, otherwise use execute_ants_command
+    if command -v compute_initial_affine &> /dev/null; then
+        # Use the existing function for initial affine registration
+        compute_initial_affine "$input_file" "$mni_template" "$ants_prefix"
+    else
+        # Run ANTs registration using execute_ants_command for proper logging
+        if command -v execute_ants_command &> /dev/null; then
+            execute_ants_command "ants_to_mni_juelich_full" "Affine registration to MNI template for full Juelich brainstem segmentation" \
+                antsRegistrationSyNQuick.sh \
+                -d 3 \
+                -f "$mni_template" \
+                -m "$input_file" \
+                -t a \
+                -o "$ants_prefix" \
+                -n "${ANTS_THREADS:-1}"
+        else
+            # Fallback to direct ANTs call
+            antsRegistrationSyNQuick.sh \
+                -d 3 \
+                -f "$mni_template" \
+                -m "$input_file" \
+                -t a \
+                -o "$ants_prefix" \
+                -n "${ANTS_THREADS:-1}"
+        fi
+    fi
+    
+    # Check if registration succeeded
+    if [ ! -f "${ants_prefix}0GenericAffine.mat" ]; then
+        log_formatted "ERROR" "ANTs registration failed - transform not created"
         rm -rf "$temp_dir"
         return 1
     fi
     
-    # Step 2: Generate inverse transformation
-    convert_xfm -omat "${temp_dir}/mni2input.mat" -inverse "${temp_dir}/input2mni.mat"
+    log_message "ANTs registration completed successfully"
     
     # Step 3: Extract individual brainstem regions
     # Juelich indices: pons=105, midbrain=106, medulla=107
@@ -284,8 +365,33 @@ extract_brainstem_juelich() {
     local regions=("brainstem" "pons" "midbrain" "medulla")
     for region in "${regions[@]}"; do
         log_message "Transforming $region mask to subject space..."
-        # Use trilinear interpolation first, then threshold to maintain more voxels
-        flirt -in "${temp_dir}/${region}_mni.nii.gz" -ref "$input_file" -applyxfm -init "${temp_dir}/mni2input.mat" -out "${temp_dir}/${region}_subject_tri.nii.gz" -interp trilinear
+        
+        # Use ANTs to apply the inverse transform (MNI to subject space)
+        if command -v execute_ants_command &> /dev/null; then
+            execute_ants_command "apply_inverse_juelich_${region}" "Transforming ${region} mask to subject space" \
+                antsApplyTransforms \
+                -d 3 \
+                -i "${temp_dir}/${region}_mni.nii.gz" \
+                -r "$input_file" \
+                -o "${temp_dir}/${region}_subject_tri.nii.gz" \
+                -t "[${ants_prefix}0GenericAffine.mat,1]" \
+                -n Linear
+        else
+            # Fallback to direct ANTs call
+            antsApplyTransforms -d 3 \
+                -i "${temp_dir}/${region}_mni.nii.gz" \
+                -r "$input_file" \
+                -o "${temp_dir}/${region}_subject_tri.nii.gz" \
+                -t "[${ants_prefix}0GenericAffine.mat,1]" \
+                -n Linear
+        fi
+        
+        # Check if the transform was successful
+        if [ ! -f "${temp_dir}/${region}_subject_tri.nii.gz" ]; then
+            log_formatted "ERROR" "Failed to transform ${region} mask to subject space"
+            rm -rf "$temp_dir"
+            return 1
+        fi
         
         # Threshold at 0.5 to create binary mask (captures partial volume voxels)
         fslmaths "${temp_dir}/${region}_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/${region}_subject.nii.gz"
