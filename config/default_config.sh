@@ -182,6 +182,7 @@ export AUTO_DETECT_RESOLUTION=true
 # Orientation correction settings
 export ORIENTATION_CORRECTION_ENABLED=false   # Disable automatic orientation correction
 export ORIENTATION_VALIDATION_ENABLED=false   # Disable validation
+export orientation_preservation=false
 export HALT_ON_ORIENTATION_MISMATCH=true      # Halt pipeline on orientation mismatch (if validation enabled)
 
 # Expected orientation for validation
