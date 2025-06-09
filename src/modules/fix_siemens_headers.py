@@ -20,11 +20,12 @@ import uuid
 
 # DICOM fields to fix and their descriptions
 CRITICAL_FIELDS = {
-    "0020,000E": "Series Instance UID",
-    "0020,9056": "Stack ID",
+    #"0020,000E": "Series Instance UID",
+    #"0020,9056": "Stack ID",
     "0020,0013": "Instance Number",
     "0008,0021": "Series Date",
     "0008,0031": "Series Time"
+    "0008,1160": "ReferencedFrameNumber"
 }
 
 def run_dcmdump(filename, tag):

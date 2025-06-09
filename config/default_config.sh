@@ -28,10 +28,10 @@ export OUTPUT_DATATYPE="int"        # final int16
 # Quality settings (LOW, MEDIUM, HIGH)
 export MAX_CPU_INTENSIVE_JOBS=1
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
-export N4_PRESET_LOW="20x20x25,0.00001,100,4"
+export N4_PRESET_LOW="25x25x25,0.00001,150,4"
 export N4_PRESET_MEDIUM="50x50x50,0.000001,250,2"
 export N4_PRESET_HIGH="200x200x200,0.000001,1000,2"
-export N4_PRESET_ULTRA="500x500x500x50,0.0000001,2000,2"
+export N4_PRESET_ULTRA="500x500x500x10,0.0000001,2000,2"
 export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"  # override if needed
 
 export PARALLEL_JOBS=0
@@ -39,7 +39,7 @@ export PARALLEL_JOBS=0
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
 
-export QUALITY_PRESET="MEDIUM"
+export QUALITY_PRESET="LOW"
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
@@ -77,7 +77,7 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
-export ANTS_THREADS=32                 # Number of threads for ANTs processing
+export ANTS_THREADS=64                 # Number of threads for ANTs processing
 export REG_PRECISION=3                 # Registration precision (higher = more accurate but slower)
 
 # ANTs specific parameters - if not set, ANTs will use defaults
@@ -128,7 +128,7 @@ export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
 export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
 
 # Supported modalities for registration to T1
-export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE")
+export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE" "COR")
 
 # Batch processing parameters
 export  SUBJECT_LIST=""  # Path to subject list file for batch processing
@@ -150,9 +150,9 @@ export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM
 # Prioritize sagittal 3D sequences - these patterns match Siemens file naming conventions
 # after DICOM to NIfTI conversion with dcm2niix
 
-export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_14.nii.gz" #hack
-export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_1035.nii.gz" #hack
-export RESAMPLE_TO_ISOTROPIC=0
+export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz" #hack
+export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz" #hack
+export RESAMPLE_TO_ISOTROPIC=false
 export ISOTROPIC_SPACING=1.0
 unset ISOTROPIC_SPACING
 
@@ -165,12 +165,12 @@ unset ISOTROPIC_SPACING
 #   interactive - Show available scans and prompt for manual selection
 export SCAN_SELECTION_MODE="interactive"
 export T1_SELECTION_MODE="interactive"    # For T1, always prefer matched_dimensions
-export FLAIR_SELECTION_MODE="interactive"  # For FLAIR generally prefer ORIGINAL  as we want to eliminate noise from the post-processing of the scanner software for brainstem lesions. Howeverthat post-processing does add valuable resolution, so try different options
+export FLAIR_SELECTION_MODE="highest_resolution"  # For FLAIR generally prefer ORIGINAL  as we want to eliminate noise from the post-processing of the scanner software for brainstem lesions. Howeverthat post-processing does add valuable resolution, so try different options
 
 # Advanced registration options
 
 # Auto-register all modalities to T1 (if false, only FLAIR is registered)
-export AUTO_REGISTER_ALL_MODALITIES=false
+export AUTO_REGISTER_ALL_MODALITIES=true
 
 # Auto-detect resolution and use appropriate template
 # When true, the pipeline will select between 1mm and 2mm templates based on input image resolution
@@ -198,5 +198,5 @@ export EXPECTED_QFORM_Z="Inferior-to-Superior"
 export PRESERVE_INTENSITY_IMAGES_DATATYPE=true  # Keep intensity images as FLOAT32
 export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
 
-#export ORIGINAL_ACQUISITION_WEIGHT=0
-export USE_ANTS_SYN=false
+#export ORIGINAL_ACQUISITION_WEIGHT=1000
+export USE_ANTS_SYN=true

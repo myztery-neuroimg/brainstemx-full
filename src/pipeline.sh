@@ -129,7 +129,7 @@ parse_arguments() {
   SRC_DIR="..../DiCOM"
   RESULTS_DIR="../mri_results"
   SUBJECT_ID=""
-  QUALITY_PRESET="HIGH"
+  QUALITY_PRESET="MEIDUM"
   PIPELINE_TYPE="FULL"
   START_STAGE_NAME="import"
   
