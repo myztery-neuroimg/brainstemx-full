@@ -125,7 +125,7 @@ evaluate_scan_quality() {
         bet "$scan_path" "$temp_brain" -f 0.3 -v > /dev/null 2>&1
         
         if [ -f "$temp_brain" ]; then
-            snr_score = 0 #bypass
+            snr_score=0 #bypass
         else
             # Run fast for tissue segmentation
             fast -t 1 -n 3 -o "${temp_dir}/fast" "$temp_brain" > /dev/null 2>&1

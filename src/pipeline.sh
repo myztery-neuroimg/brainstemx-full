@@ -780,7 +780,7 @@ run_pipeline() {
     fi
     
     if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
-      log_error "Original T1 or FLAIR file not found" $ERR_DATA_MISSING
+      log_formatted "ERROR" "Original T1 or FLAIR file not found" $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
     
@@ -793,7 +793,7 @@ run_pipeline() {
     local pons_mask=$(find "$RESULTS_DIR/segmentation/pons" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" | head -1)
 
     if [ -z "$pons_mask" ]; then
-      log_error "Pons segmentation not found" $ERR_DATA_MISSING
+      log_formatted "ERROR" "Pons segmentation not found" $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
 
@@ -802,12 +802,19 @@ run_pipeline() {
     # Transform segmentation from standard space to original space
     log_message "Transforming segmentation from standard to original space..."
     local orig_space_dir=$(create_module_dir "segmentation/original_space")
+    mkdir -p "$orig_space_dir"
+    # Use the basename of the pons mask to create the output filename
     local pons_orig="${orig_space_dir}/$(basename "$pons_mask" .nii.gz)_orig.nii.gz"
     
-    transform_segmentation_to_original "$pons_mask" "$orig_t1" "$pons_orig"
+    transform_segmentation_to_original "$pons_mask" "$orig_flair" "$pons_orig"
+    if [ $? -ne 0 ]; then
+      log_formatted "ERROR" "Failed to transform segmentation to original space" $ERR_PROCESSING
+      return $ERR_PROCESSING
+    fi   
+
     
     if [ ! -f "$pons_orig" ]; then
-      log_error "Failed to transform segmentation to original space" $ERR_PROCESSING
+      log_formatted "ERROR" "Failed to transform segmentation to original space" $ERR_PROCESSING
       return $ERR_PROCESSING
     fi
     
@@ -825,7 +832,7 @@ run_pipeline() {
     
     # Verify dimensions consistency
     log_message "Verifying dimensions consistency across pipeline stages..."
-    verify_dimensions_consistency "$orig_t1" "$t1_std" "$pons_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
+    verify_dimensions_consistency "$orig_flair" "$orig_flair" "$pons_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
     
     # Note: Segmentation location verification moved to QA module
     # Use qa_verify_all_segmentations function for comprehensive validation
@@ -834,13 +841,13 @@ run_pipeline() {
     local flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)
     
     if [ -z "$flair_registered" ]; then
-      log_formatted "WARNING" "No registered FLAIR found. Will register now."
+      log_formatted "ERROR" "No registered FLAIR found. Will register now."
       if [ -n "$t1_std" ] && [ -n "$flair_std" ]; then
         local reg_prefix="${reg_dir}/t1_to_flair"
         register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
         flair_registered="${reg_prefix}Warped.nii.gz"
       else
-        log_error "Cannot find or create registered FLAIR file" $ERR_DATA_MISSING
+        log_formatted "ERROR" "Cannot find or create registered FLAIR file" $ERR_DATA_MISSING
         return $ERR_DATA_MISSING
       fi
     fi
@@ -928,10 +935,10 @@ run_pipeline() {
     log_message "Step 6: Visualization"
     
     # Generate QC visualizations
-  generate_qc_visualizations "$subject_id" "$RESULTS_DIR"
+    generate_qc_visualizations "$subject_id" "$RESULTS_DIR"
   
-  # Create multi-threshold overlays
-  create_multi_threshold_overlays "$subject_id" "$RESULTS_DIR"
+    # Create multi-threshold overlays
+    create_multi_threshold_overlays "$subject_id" "$RESULTS_DIR"
   
   
     # Generate HTML report
