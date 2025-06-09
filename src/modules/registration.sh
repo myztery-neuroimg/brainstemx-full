@@ -21,7 +21,7 @@ if [ -f "$ORIENTATION_MODULE" ]; then
 fi
 
 # Source the scan selection module
-SCAN_SELECTION_MODULE="${SCRIPT_DIR}/scan_selection.sh"
+SCAN_SELECTION_MODULE="${SCRIPT_DIR}/../scan_selection.sh"
 if [ -f "$SCAN_SELECTION_MODULE" ]; then
     source "$SCAN_SELECTION_MODULE"
     log_message "Loaded scan selection module: $SCAN_SELECTION_MODULE"
@@ -208,140 +208,36 @@ register_modality_to_t1() {
         # Dump matrix content for debugging
         if [ -f "$ants_wm_init_matrix" ]; then
             log_message "Matrix file exists with size: $(stat -f %z "$ants_wm_init_matrix") bytes"
-            log_message "Matrix content preview: $(head -n 2 "$ants_wm_init_matrix" 2>/dev/null || echo "Unable to read matrix content")"
+            log_message "Matrix content preview: [Binary ANTs transform file - content not displayed]"
         else
             log_formatted "ERROR" "Matrix file does not exist: $ants_wm_init_matrix"
         fi
         
-        # First try ANTs' own tool to avoid using c3d_affine_tool which can have issues on macOS
-        if command -v ${ants_bin}/ConvertTransformFile &>/dev/null; then
-            log_message "Using ANTs ConvertTransformFile for transform conversion"
-            log_message "Command: ${ants_bin}/ConvertTransformFile 3 \"$ants_wm_init_matrix\" \"${out_prefix}_wm_init_itk.txt\" --hm --ras"
-            
-            # Capture output and error messages
-            local convert_output=$( { ${ants_bin}/ConvertTransformFile 3 "$ants_wm_init_matrix" "${out_prefix}_wm_init_itk.txt" --hm --ras; } 2>&1 )
-            local convert_status=$?
-            
-            if [ $convert_status -eq 0 ]; then
-                # Verify that the file actually exists and has content
-                if [ ! -f "${out_prefix}_wm_init_itk.txt" ]; then
-                    log_formatted "WARNING" "Transform file doesn't exist despite successful conversion"
-                    transform_converted=false
-                elif [ ! -s "${out_prefix}_wm_init_itk.txt" ]; then
-                    log_formatted "WARNING" "Transform file is empty despite successful conversion"
-                    transform_converted=false
-                elif [ ! -r "${out_prefix}_wm_init_itk.txt" ]; then
-                    log_formatted "WARNING" "Transform file is not readable (permission issue)"
-                    # Try to fix permissions
-                    chmod 644 "${out_prefix}_wm_init_itk.txt" 2>/dev/null
-                    if [ ! -r "${out_prefix}_wm_init_itk.txt" ]; then
-                        transform_converted=false
-                    fi
-                else
-                    transform_converted=true
-                    log_formatted "SUCCESS" "ANTs transform conversion succeeded"
-                    
-                    # Try to read the file with better error handling
-                    local file_content
-                    file_content=$(cat "${out_prefix}_wm_init_itk.txt" 2>/dev/null)
-                    if [ -z "$file_content" ]; then
-                        log_formatted "WARNING" "Transform file exists but couldn't be read - possible permission or encoding issue"
-                    else
-                        log_message "Output transform preview: $(echo "$file_content" | head -n 2)"
-                    fi
-                    
-                    # Verify content contains expected format
-                    if ! grep -q -i "transform" "${out_prefix}_wm_init_itk.txt" 2>/dev/null; then
-                        log_formatted "WARNING" "Transform file doesn't contain expected content"
-                        log_message "Attempting to create a simplified transform file directly"
-                        
-                        # Create a simplified transform file directly
-                        echo "#Insight Transform File V1.0" > "${out_prefix}_wm_init_itk.txt"
-                        echo "#Transform 0" >> "${out_prefix}_wm_init_itk.txt"
-                        echo "Transform: MatrixOffsetTransformBase_double_3_3" >> "${out_prefix}_wm_init_itk.txt"
-                        echo "Parameters: 1 0 0 0 1 0 0 0 1 0 0 0" >> "${out_prefix}_wm_init_itk.txt"
-                        echo "FixedParameters: 0 0 0" >> "${out_prefix}_wm_init_itk.txt"
-                        
-                        # Verify our manual file
-                        if [ -s "${out_prefix}_wm_init_itk.txt" ]; then
-                            log_formatted "SUCCESS" "Created simplified identity transform file"
-                        else
-                            log_formatted "WARNING" "Did not create simplified identity transform file with itk"
-                            transform_converted=false
-                        fi
-                    fi
-                fi
+        # For ANTs transform files, we should use the .mat file directly in antsRegistrationSyN
+        # No conversion to ITK format is needed for ANTs-to-ANTs workflows
+        log_message "Using ANTs transform file directly (no conversion needed for ANTs workflow)"
+        
+        # Verify the ANTs transform file exists and is valid
+        if [ -f "$ants_wm_init_matrix" ] && [ -s "$ants_wm_init_matrix" ]; then
+            # Check if it's a valid ANTs transform by looking for the binary signature
+            if file "$ants_wm_init_matrix" | grep -q "data" 2>/dev/null; then
+                log_formatted "SUCCESS" "Valid ANTs transform file detected"
+                transform_converted=true
+                # We'll use the .mat file directly with antsRegistrationSyN
+                cp "$ants_wm_init_matrix" "${out_prefix}_wm_init_itk.txt"
             else
-                log_formatted "WARNING" "ANTs transform conversion failed with status $convert_status"
-                log_message "Error output: $convert_output"
-                log_message "Trying c3d_affine_tool as fallback"
+                log_formatted "WARNING" "Transform file may be corrupted or invalid format"
+                transform_converted=false
             fi
         else
-            log_formatted "INFO" "ANTs ConvertTransformFile not available, will try c3d_affine_tool"
+            log_formatted "WARNING" "Transform file is missing or empty: $ants_wm_init_matrix"
+            transform_converted=false
         fi
         
-        # Fall back to c3d_affine_tool if ANTs method failed
-        if [ "$transform_converted" = "false" ] && command -v c3d_affine_tool &>/dev/null; then
-            log_formatted "INFO" "===== C3D AFFINE TOOL CONVERSION ATTEMPT ====="
-            log_message "Using c3d_affine_tool for transform conversion"
-            log_message "Reference image: $t1_file ($(fslinfo "$t1_file" 2>/dev/null | grep -E 'dim[1-3]|pixdim[1-3]' || echo "Unable to read image info"))"
-            log_message "Source image: $modality_file ($(fslinfo "$modality_file" 2>/dev/null | grep -E 'dim[1-3]|pixdim[1-3]' || echo "Unable to read image info"))"
-            log_message "Command: c3d_affine_tool -ref \"$t1_file\" -src \"$modality_file\" -fsl2ras -oitk \"${out_prefix}_wm_init_itk.txt\" \"$ants_wm_init_matrix\""
-            
-            # Log system resources before running
-            log_message "System memory before conversion: $(vm_stat | grep 'Pages free' || free -m | grep Mem || echo "Memory info unavailable")"
-            
-            # Create a simplified version of the conversion command that's less likely to fail
-            # Use memory limit and timeout to prevent excessive resource usage
-            # Use ulimit to cap memory usage and add timeout
-            log_message "Running with resource limits: 4GB memory, 60 second timeout"
-            
-            # Capture start time
-            local start_time=$(date +%s)
-            
-            # Run with resource limits and capture output
-            local c3d_output
-            {
-                c3d_output=$(
-                    ulimit -v 8000000  # Limit virtual memory to ~8GB
-                    c3d_affine_tool -ref "$t1_file" -src "$modality_file" \
-                        -fsl2ras -oitk "${out_prefix}_wm_init_itk.txt" "$ants_wm_init_matrix" 2>&1
-                )
-            }
-            local c3d_status=$?
-            
-            # Calculate elapsed time
-            local end_time=$(date +%s)
-            local elapsed=$((end_time - start_time))
-            log_message "Conversion ${elapsed}s elapsed, exit status: $c3d_status"
-            
-            # Check if output file exists and is valid
-            if [ $c3d_status -ne 0 ]; then
-                log_formatted "WARNING" "Transform conversion with c3d_affine_tool failed with status $c3d_status"
-                log_message "Error output: $c3d_output"
-                wm_init_completed=false
-            elif [ ! -f "${out_prefix}_wm_init_itk.txt" ] || [ ! -s "${out_prefix}_wm_init_itk.txt" ]; then
-                log_formatted "WARNING" "Transform conversion with c3d_affine_tool failed to produce output file"
-                log_message "Error output: $c3d_output"
-                wm_init_completed=false
-            else
-                transform_converted=true
-                log_formatted "SUCCESS" "c3d_affine_tool conversion completed"
-                log_message "Output transform preview: $(head -n 2 "${out_prefix}_wm_init_itk.txt" 2>/dev/null || echo "Unable to read transform")"
-                
-                # Verify the converted transform file is valid
-                if ! grep -q "Transform" "${out_prefix}_wm_init_itk.txt" 2>/dev/null; then
-                    log_formatted "WARNING" "Generated transform file appears invalid (no 'Transform' keyword found)"
-                    log_message "Transform file content: $(cat "${out_prefix}_wm_init_itk.txt" 2>/dev/null || echo "Unable to read file")"
-                    wm_init_completed=false
-                    transform_converted=false
-                fi
-            fi
-        else
-            if [ "$transform_converted" = "false" ]; then
-                log_formatted "WARNING" "No transform conversion tool available, falling back to standard registration"
-                wm_init_completed=false
-            fi
+        # If transform conversion failed, fall back to standard registration
+        if [ "$transform_converted" = "false" ]; then
+            log_formatted "WARNING" "Transform initialization failed, falling back to standard registration"
+            wm_init_completed=false
         fi
         
         if [ "$transform_converted" = "true" ]; then
@@ -351,20 +247,16 @@ register_modality_to_t1() {
             log_message "Fixed image: $t1_file"
             log_message "Moving image: $modality_file"
             log_message "Output prefix: $out_prefix"
-            log_message "Transform: ${out_prefix}_wm_init_itk.txt"
-            log_message "Command: ${ants_bin}/antsRegistrationSyN.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"$out_prefix\" -t r -i \"${out_prefix}_wm_init_itk.txt\" -n \"$ANTS_THREADS\" -p f -j \"$ANTS_THREADS\" -x \"$REG_METRIC_CROSS_MODALITY\""
+            log_message "Transform: $ants_wm_init_matrix"
+            log_message "Command: ${ants_bin}/antsRegistrationSyN.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"$out_prefix\" -t r -i \"$ants_wm_init_matrix\" -n \"$ANTS_THREADS\" -p f -j \"$ANTS_THREADS\" -x \"$REG_METRIC_CROSS_MODALITY\""
             
             # Capture start time
             local start_time=$(date +%s)
             
-            # Try with a simpler, more robust registration approach that uses
-            # the initialization but with fewer parameters
-            log_message "Running ANTs registration with diagnostic output filtering"
+            # Use the ANTs transform file directly
+            log_message "Running ANTs registration with ANTs transform initialization"
             
-            # Use the new direct execution method with array instead of string with quotes
-            log_message "Running ANTs registration with direct command execution"
-            
-            # Execute ANTs command directly without eval issues
+            # Execute ANTs command directly using the original ANTs transform
             execute_ants_command "ants_registration" "T1-to-$modality_name white matter guided registration" \
               ${ants_bin}/antsRegistrationSyN.sh \
               -d 3 \
@@ -372,7 +264,7 @@ register_modality_to_t1() {
               -m "$modality_file" \
               -o "$out_prefix" \
               -t r \
-              -i "${out_prefix}_wm_init_itk.txt" \
+              -i "$ants_wm_init_matrix" \
               -n "$ANTS_THREADS" \
               -p f \
               -j "$ANTS_THREADS" \
@@ -429,31 +321,49 @@ register_modality_to_t1() {
                 log_formatted "SUCCESS" "WM-guided registration completed successfully"
             fi
         fi
-    elif [ -f "$outer_ribbon_mask" ]; then
+    elif [ -f "$outer_ribbon_mask" ] && [ -s "$outer_ribbon_mask" ]; then
         # If WM-guided initialization failed but we have the outer ribbon mask,
         # use it for cost function masking to improve boundary alignment
         log_message "Using outer ribbon mask constraint for ANTs SyN registration"
         log_message "This approach still benefits from ANTs-based mask preparation"
+        log_message "Outer ribbon mask: $outer_ribbon_mask"
         
-        # Run antsRegistrationSyN with the outer ribbon mask for cost function masking
-        log_message "Running ANTs registration with cost function masking, filtering diagnostic output"
-        
-        # Execute ANTs masked command directly
-        execute_ants_command "ants_masked_registration" "Registration with outer ribbon mask for boundary alignment" \
-          ${ants_bin}/antsRegistrationSyN.sh \
-          -d 3 \
-          -f "$t1_file" \
-          -m "$modality_file" \
-          -o "$out_prefix" \
-          -t r \
-          -n "$ANTS_THREADS" \
-          -p f \
-          -j "$ANTS_THREADS" \
-          -x "$REG_METRIC_CROSS_MODALITY" \
-          -m "$outer_ribbon_mask"
-        
-        if [ $? -ne 0 ]; then
-            log_formatted "WARNING" "ANTs registration with cost function masking failed, falling back to standard registration"
+        # Verify mask is valid before using
+        if fslinfo "$outer_ribbon_mask" &>/dev/null; then
+            # Run antsRegistrationSyN with the outer ribbon mask for cost function masking
+            log_message "Running ANTs registration with cost function masking, filtering diagnostic output"
+            
+            # Execute ANTs masked command directly
+            execute_ants_command "ants_masked_registration" "Registration with outer ribbon mask for boundary alignment" \
+              ${ants_bin}/antsRegistrationSyN.sh \
+              -d 3 \
+              -f "$t1_file" \
+              -m "$modality_file" \
+              -o "$out_prefix" \
+              -t r \
+              -n "$ANTS_THREADS" \
+              -p f \
+              -j "$ANTS_THREADS" \
+              -x "$REG_METRIC_CROSS_MODALITY" \
+              -s "$outer_ribbon_mask"
+            
+            if [ $? -ne 0 ]; then
+                log_formatted "WARNING" "ANTs registration with cost function masking failed, falling back to standard registration"
+                # Fall back to standard registration
+                execute_ants_command "ants_standard_registration" "Standard registration without mask constraints" \
+                  ${ants_bin}/antsRegistrationSyN.sh \
+                  -d 3 \
+                  -f "$t1_file" \
+                  -m "$modality_file" \
+                  -o "$out_prefix" \
+                  -t r \
+                  -n "$ANTS_THREADS" \
+                  -p f \
+                  -j "$ANTS_THREADS" \
+                  -x "$REG_METRIC_CROSS_MODALITY"
+            fi
+        else
+            log_formatted "WARNING" "Outer ribbon mask is invalid, falling back to standard registration"
             # Fall back to standard registration
             execute_ants_command "ants_standard_registration" "Standard registration without mask constraints" \
               ${ants_bin}/antsRegistrationSyN.sh \
@@ -1313,6 +1223,15 @@ perform_wm_guided_initialization() {
         log_message "Using ANTs for white matter-guided initialization"
         
         # Execute ANTs command via the utility function
+        # Verify WM mask exists before using it
+        local mask_param=""
+        if [ -f "$wm_mask" ] && [ -s "$wm_mask" ]; then
+            mask_param="--masks [${wm_mask},NULL]"
+            log_message "Using WM mask for registration: $wm_mask"
+        else
+            log_formatted "WARNING" "WM mask not found or empty: $wm_mask - proceeding without mask"
+        fi
+        
         execute_ants_command "ants_wm_init" "White matter guided initialization for accurate boundary alignment" \
             ${ants_bin}/antsRegistration \
             --dimensionality 3 \
@@ -1326,7 +1245,7 @@ perform_wm_guided_initialization() {
             --convergence [1000x500x250x0,1e-6,10] \
             --shrink-factors 8x4x2x1 \
             --smoothing-sigmas 3x2x1x0vox \
-            --masks [${wm_mask},NULL] \
+            ${mask_param} \
             --verbose 1
             
         # Check if initialization was successful

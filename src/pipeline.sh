@@ -35,7 +35,7 @@ source src/modules/segmentation.sh
 source src/modules/analysis.sh
 source src/modules/visualization.sh
 source src/modules/qa.sh
-source src/scan_selection.sh  # Add scan selection module
+source src/modules/scan_selection.sh  # Add scan selection module
 source src/modules/reference_space_selection.sh  # Add reference space selection module
 source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
 #source src/modules/extract_dicom_metadata.py

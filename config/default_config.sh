@@ -26,25 +26,27 @@ export PROCESSING_DATATYPE="float"  # internal float
 export OUTPUT_DATATYPE="int"        # final int16
 
 # Quality settings (LOW, MEDIUM, HIGH)
-export QUALITY_PRESET="LOW"
 export MAX_CPU_INTENSIVE_JOBS=1
-
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
 export N4_PRESET_LOW="20x20x25,0.00001,100,4"
-#export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
-export N4_PRESET_HIGH="200x200x200x50,0.0000001,1000,2"
-export N4_PRESET_MEDIUM="500x500x500x50,0.00000901,2000,2"
-export N4_PRESET_FLAIR="$N4_PRESET_LOW"  # override if needed
+export N4_PRESET_MEDIUM="50x50x50,0.000001,250,2"
+export N4_PRESET_HIGH="200x200x200,0.000001,1000,2"
+export N4_PRESET_ULTRA="500x500x500x50,0.0000001,2000,2"
+export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"  # override if needed
 
 export PARALLEL_JOBS=0
 
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
 
-export QUALITY_PRESET="LOW"
+export QUALITY_PRESET="MEDIUM"
 # Set default N4_PARAMS by QUALITY_PRESET
-if [ "$QUALITY_PRESET" = "HIGH" ]; then
+if [ "$QUALITY_PRESET" = "ULTRA" ]; then
+    export N4_PARAMS="$N4_PRESET_ULTRA"
+    export N4_PRESET_FLAIR="$N4_PRESET_ULTRA"
+elif [ "$QUALITY_PRESET" = "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
+    export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
 elif [ "$QUALITY_PRESET" = "MEDIUM" ]; then
     export N4_PARAMS="$N4_PRESET_MEDIUM"
 else
@@ -75,7 +77,7 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
-export ANTS_THREADS=48                 # Number of threads for ANTs processing
+export ANTS_THREADS=32                 # Number of threads for ANTs processing
 export REG_PRECISION=3                 # Registration precision (higher = more accurate but slower)
 
 # ANTs specific parameters - if not set, ANTs will use defaults
@@ -102,7 +104,7 @@ export C3D_PADDING_MM=5
 
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
-  log_formatted "WARNING" "FSLDIR not set. Template references may fail."
+  log_formatted "ERROR" "FSLDIR not set. Template references may fail."
 else
   export TEMPLATE_DIR="${FSLDIR}/data/standard"
 fi
@@ -118,14 +120,15 @@ export REGISTRATION_MASK_1MM="MNI152_T1_1mm_brain_mask_dil.nii.gz"
 export EXTRACTION_TEMPLATE_2MM="MNI152_T1_2mm.nii.gz"
 export PROBABILITY_MASK_2MM="MNI152_T1_2mm_brain_mask.nii.gz"
 export REGISTRATION_MASK_2MM="MNI152_T1_2mm_brain_mask_dil.nii.gz"
-export DISABLE_DEDUPLICATION="true"
+export DISABLE_DEDUPLICATION="false"
+
 # Set initial defaults (will be updated based on detected image resolution)
 export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
 export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
 export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
 
 # Supported modalities for registration to T1
-export SUPPORTED_MODALITIES=("FLAIR" "T2" "SWI" "DWI" "TLE")
+export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE")
 
 # Batch processing parameters
 export  SUBJECT_LIST=""  # Path to subject list file for batch processing
@@ -147,10 +150,11 @@ export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM
 # Prioritize sagittal 3D sequences - these patterns match Siemens file naming conventions
 # after DICOM to NIfTI conversion with dcm2niix
 
-export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_.*.nii.gz"
-export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS.*.nii.gz"
+export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_14.nii.gz" #hack
+export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_1035.nii.gz" #hack
 export RESAMPLE_TO_ISOTROPIC=0
 export ISOTROPIC_SPACING=1.0
+unset ISOTROPIC_SPACING
 
 # Scan selection options
 # Available modes:
@@ -160,8 +164,8 @@ export ISOTROPIC_SPACING=1.0
 #   matched_dimensions - Prioritize scans with exact dimensions matching reference
 #   interactive - Show available scans and prompt for manual selection
 export SCAN_SELECTION_MODE="interactive"
-export T1_SELECTION_MODE="registration_optimized"    # For T1, always prefer ORIGINAL acquisitions
-export FLAIR_SELECTION_MODE="interactive"  # For FLAIR, always prefer ORIGINAL"  as we want to eliminate noise from the pipeline for brainstem lesions
+export T1_SELECTION_MODE="interactive"    # For T1, always prefer matched_dimensions
+export FLAIR_SELECTION_MODE="interactive"  # For FLAIR generally prefer ORIGINAL  as we want to eliminate noise from the post-processing of the scanner software for brainstem lesions. Howeverthat post-processing does add valuable resolution, so try different options
 
 # Advanced registration options
 
@@ -183,7 +187,7 @@ export AUTO_DETECT_RESOLUTION=true
 export ORIENTATION_CORRECTION_ENABLED=false   # Disable automatic orientation correction
 export ORIENTATION_VALIDATION_ENABLED=false   # Disable validation
 export orientation_preservation=false
-export HALT_ON_ORIENTATION_MISMATCH=true      # Halt pipeline on orientation mismatch (if validation enabled)
+export HALT_ON_ORIENTATION_MISMATCH=false      # Halt pipeline on orientation mismatch (if validation enabled)
 
 # Expected orientation for validation
 export EXPECTED_QFORM_X="Left-to-Right"

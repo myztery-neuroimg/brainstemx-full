@@ -462,21 +462,21 @@ select_best_scan() {
         # Display scan options with information
         log_formatted "INFO" "===== INTERACTIVE SCAN SELECTION ====="
         log_message "Please select the best $scan_type scan from the following options:"
-        echo ""
-        echo "------------------------------------------------------------------------------------------------------------------------"
-        echo "                                            SCAN OPTIONS                                                                 "
-        echo "------------------------------------------------------------------------------------------------------------------------"
+        log_message ""
+        log_message "------------------------------------------------------------------------------------------------------------------------"
+        log_message "                                            SCAN OPTIONS                                                                 "
+        log_message "------------------------------------------------------------------------------------------------------------------------"
         
         # Display header line
         if [ -n "$reference_scan" ]; then
             printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s | %-20s\n" \
-                "#" "Filename" "Type" "Dimensions" "Voxel Size (mm)" "Score" "Aspect Ratio"
+                "#" "Filename" "Type" "Dimensions" "Voxel Size (mm)" "Score" "Aspect Ratio" >&2
         else
             printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s\n" \
-                "#" "Filename" "Type" "Dimensions" "Voxel Size (mm)" "Score"
+                "#" "Filename" "Type" "Dimensions" "Voxel Size (mm)" "Score" >&2
         fi
         
-        echo "------------------------------------------------------------------------------------------------------------------------"
+        log_message "------------------------------------------------------------------------------------------------------------------------"
         
         # Display each scan option
         local i=1
@@ -488,23 +488,23 @@ select_best_scan() {
             
             if [ -n "$reference_scan" ]; then
                 printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s | %-20s\n" \
-                    "$i" "$basename" "$acq_type" "$dims" "$voxel_size" "$score" "$aspect_ratio"
+                    "$i" "$basename" "$acq_type" "$dims" "$voxel_size" "$score" "$aspect_ratio">&2
             else
                 printf "%-3s | %-40s | %-8s | %-15s | %-20s | %-7s\n" \
-                    "$i" "$basename" "$acq_type" "$dims" "$voxel_size" "$score"
+                    "$i" "$basename" "$acq_type" "$dims" "$voxel_size" "$score">&2
             fi
             
             i=$((i+1))
         done
-        echo "------------------------------------------------------------------------------------------------------------------------"
+        log_message "------------------------------------------------------------------------------------------------------------------------"
         
         # Add recommendation based on mode
         local recommended_idx=1  # Default to highest score
         
-        echo ""
-        echo "Reference scan: $(basename "$reference_scan")"
-        echo "Recommendations:"
-        echo "- For highest resolution: Option 1"
+        log_message ""
+        log_message "Reference scan: $(basename "$reference_scan")"
+        log_message "Recommendations:"
+        log_message "- For highest resolution: Option 1"
         
         # Find best aspect ratio match
         if [ -n "$reference_scan" ]; then
@@ -519,7 +519,7 @@ select_best_scan() {
                 fi
                 i=$((i+1))
             done
-            echo "- For best registration compatibility: Option $best_reg_idx"
+            log_message "- For best registration compatibility: Option $best_reg_idx"
             
             # Find exact dimension match if any
             local exact_match_idx=0
@@ -534,19 +534,18 @@ select_best_scan() {
             done
             
             if [ $exact_match_idx -ne 0 ]; then
-                echo "- For exact dimension matching: Option $exact_match_idx"
+                log_message "- For exact dimension matching: Option $exact_match_idx"
             fi
         fi
         
         # Prompt user for selection
-        #echo ""
-        #echo -n "Enter selection (1-${#sorted_scans[@]}): "
-        #read -r selection
+        log_message "Enter selection (1-${#sorted_scans[@]}): "
+        read -r selection
         
         # Validate selection
         if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#sorted_scans[@]}" ]; then
-            log_formatted "WARNING" "Invalid selection. Using highest scored option (1)."
-            selection=1
+            log_formatted "ERROR" "Invalid selection. Exiting"
+            return 1
         fi
         
         # Get selected scan
