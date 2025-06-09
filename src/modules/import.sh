@@ -73,8 +73,8 @@ import_deduplicate_identical_files() {
   
   # IMPORTANT: Deduplication is now permanently disabled
   # This prevents accidental removal of unique slices and data loss
-  log_formatted "WARNING" "Deduplication is completely disabled - required to preserve all slices"
-  return 0
+  #log_formatted "WARNING" "Deduplication is completely disabled - required to preserve all slices"
+  #return 0
   
   # The following code is never executed but kept for reference
   
@@ -335,13 +335,14 @@ import_convert_dicom_to_nifti() {
   # Use approach that preserves more data
   # -m n: Try to preserve more slices
   # -i n: Keep all images including localizers to avoid data loss
-  preserve_flags="-m n -i n"
-  
+  #preserve_flags="-m n -i n"
+  preserve_flags=""
+ 
   # Add no-collapse to prevent combining slices
-  if dcm2niix -h 2>&1 | grep -q -- "--no-collapse"; then
-    preserve_flags="$preserve_flags --no-collapse"
-    log_message "Added --no-collapse flag to preserve more slices"
-  fi
+  #if dcm2niix -h 2>&1 | grep -q -- "--no-collapse"; then
+  #  preserve_flags="$preserve_flags --no-collapse"
+  #  log_message "Added --no-collapse flag to preserve more slices"
+  #fi
   
   log_message "Using data preservation flags: $preserve_flags"
   
