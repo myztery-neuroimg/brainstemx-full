@@ -90,7 +90,7 @@ evaluate_scan_quality() {
                 
                 # Give significant bonus to ORIGINAL acquisitions
                 if [[ "$acq_type" == *"ORIGINAL"* ]]; then
-                    acq_type_score=30
+                    acq_type_score=0
                     log_message "  ORIGINAL acquisition bonus: +30"
                 else
                     log_message "  DERIVED acquisition (no bonus)"
@@ -101,8 +101,8 @@ evaluate_scan_quality() {
         else
             # Fallback to grep if jq is not available
             if grep -q "ORIGINAL" "$json_file"; then
-                acq_type_score=30
-                log_message "  ORIGINAL acquisition detected (fallback method): +30"
+                acq_type_score=0
+                log_message "  ORIGINAL acquisition detected (fallback method): +0"
             elif grep -q "DERIVED" "$json_file"; then
                 log_message "  DERIVED acquisition detected (fallback method)"
             else
@@ -179,18 +179,23 @@ calculate_pixdim_similarity() {
     local scan1_pixdims=($(echo "$scan1_info" | grep -E "^pixdim[1-3]" | awk '{print $2}'))
     local scan2_pixdims=($(echo "$scan2_info" | grep -E "^pixdim[1-3]" | awk '{print $2}'))
     
-    # Calculate Euclidean distance between pixdims
-    local diff1=$(echo "scale=6; (${scan1_pixdims[0]} - ${scan2_pixdims[0]})^2" | bc)
-    local diff2=$(echo "scale=6; (${scan1_pixdims[1]} - ${scan2_pixdims[1]})^2" | bc)
-    local diff3=$(echo "scale=6; (${scan1_pixdims[2]} - ${scan2_pixdims[2]})^2" | bc)
-    
-    local distance=$(echo "scale=6; sqrt($diff1 + $diff2 + $diff3)" | bc)
-    
-    # Convert distance to similarity score (lower distance = higher similarity)
-    # Scale inversely - a distance of 0 gives max similarity of 100
-    local similarity=$(echo "scale=2; 100 / (1 + 10 * $distance)" | bc)
-    
-    echo "$similarity"
+    # Calculate per-axis similarity (lower pixdim diff -> higher similarity)
+    # Compute absolute differences per axis
+    local diff1=$(echo "scale=6; ${scan1_pixdims[0]} - ${scan2_pixdims[0]}" | bc)
+    local abs1=$(echo "$diff1" | awk '{print ($1<0)? -$1:$1}')
+    local diff2=$(echo "scale=6; ${scan1_pixdims[1]} - ${scan2_pixdims[1]}" | bc)
+    local abs2=$(echo "$diff2" | awk '{print ($1<0)? -$1:$1}')
+    local diff3=$(echo "scale=6; ${scan1_pixdims[2]} - ${scan2_pixdims[2]}" | bc)
+    local abs3=$(echo "$diff3" | awk '{print ($1<0)? -$1:$1}')
+    # Compute per-axis similarity scores (max 100)
+    local sim1=$(echo "scale=2; 100 / (1 + 10 * $abs1)" | bc)
+    local sim2=$(echo "scale=2; 100 / (1 + 10 * $abs2)" | bc)
+    local sim3=$(echo "scale=2; 100 / (1 + 10 * $abs3)" | bc)
+    # Return the min axis similarity
+    local min_sim="$sim1"
+    if (( $(echo "$sim2 < $min_sim" | bc -l) )); then min_sim="$sim2"; fi
+    if (( $(echo "$sim3 < $min_sim" | bc -l) )); then min_sim="$sim3"; fi
+    echo "$min_sim"
 }
 
 # Function to calculate voxel aspect ratio (used for registration compatibility)
@@ -220,7 +225,8 @@ calculate_voxel_aspect_ratio() {
     local ratio2=$(echo "scale=3; ${pixdims[1]} / $min_dim" | bc)
     local ratio3=$(echo "scale=3; ${pixdims[2]} / $min_dim" | bc)
     
-    echo "$ratio1:$ratio2:$ratio3"
+    #echo "$ratio1:$ratio2:$ratio3"
+    echo "$ratio1:$ratio2:1"
 }
 
 # Function to calculate aspect ratio similarity between two scans
@@ -372,7 +378,7 @@ select_best_scan() {
                 # Apply a massive bonus to ORIGINAL scans to ensure they're selected
                 if [[ "$acq_type" == *"ORIGINAL"* ]]; then
                     # Start with a very high base score for ORIGINAL scans
-                    final_score=1000
+                    final_score=0
                     # Add quality metrics as tie-breakers between ORIGINAL scans
                     final_score=$(echo "scale=2; $final_score + $quality_score + $res_score" | bc)
                     log_message "  ORIGINAL acquisition priority mode: massive bonus applied"

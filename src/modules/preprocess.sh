@@ -365,6 +365,54 @@ calculate_inplane_resolution() {
   echo "$inplane_res"
 }
 
+# Function to detect optimal resolution across multiple images
+detect_optimal_resolution() {
+  local files=("$@")
+  local best_resolution=999.0  # Start with very poor resolution
+  local best_file=""
+  
+  log_message "Detecting optimal resolution across ${#files[@]} files..."
+  
+  for file in "${files[@]}"; do
+    if [ ! -f "$file" ]; then
+      log_formatted "WARNING" "File not found for resolution detection: $file"
+      continue
+    fi
+    
+    # Get pixel dimensions
+    local pixdim1=$(fslval "$file" pixdim1)
+    local pixdim2=$(fslval "$file" pixdim2)
+    local pixdim3=$(fslval "$file" pixdim3)
+    
+    # Calculate average in-plane resolution (finest detail indicator)
+    local inplane_res=$(echo "scale=6; ($pixdim1 + $pixdim2) / 2" | bc -l)
+    
+    # Track the finest (smallest) resolution
+    if (( $(echo "$inplane_res < $best_resolution" | bc -l) )); then
+      best_resolution="$inplane_res"
+      best_file="$file"
+    fi
+    
+    log_message "$(basename "$file"): ${pixdim1}x${pixdim2}x${pixdim3}mm (in-plane avg: ${inplane_res}mm)"
+  done
+  
+  if [ -n "$best_file" ]; then
+    # Get the optimal file's dimensions for the target grid
+    local opt_pixdim1=$(fslval "$best_file" pixdim1)
+    local opt_pixdim2=$(fslval "$best_file" pixdim2)
+    local opt_pixdim3=$(fslval "$best_file" pixdim3)
+    
+    log_formatted "SUCCESS" "Optimal resolution detected from $(basename "$best_file")"
+    log_message "Target grid: ${opt_pixdim1}x${opt_pixdim2}x${opt_pixdim3}mm"
+    
+    # Return the optimal dimensions
+    echo "${opt_pixdim1}x${opt_pixdim2}x${opt_pixdim3}"
+  else
+    log_formatted "WARNING" "No valid files for resolution detection, using default 1x1x1"
+    echo "1x1x1"
+  fi
+}
+
 # Function to get N4 parameters
 get_n4_parameters() {
   local file="$1"
@@ -511,6 +559,7 @@ process_n4_correction() {
 # Function to standardize dimensions
 standardize_dimensions() {
   local input_file="$1"
+  local target_resolution="${2:-}"  # Optional target resolution parameter
   
   # Validate input file
   if ! validate_nifti "$input_file" "Input file for standardization"; then
@@ -524,7 +573,6 @@ standardize_dimensions() {
 
   log_message "Standardizing dimensions for $basename"
   
-
   # Get current dimensions and pixel sizes
   local x_dim=$(fslval "$input_file" dim1)
   local y_dim=$(fslval "$input_file" dim2)
@@ -533,20 +581,30 @@ standardize_dimensions() {
   local y_pix=$(fslval "$input_file" pixdim2)
   local z_pix=$(fslval "$input_file" pixdim3)
 
-  # Determine target dimensions based on sequence type
+  # Determine target dimensions
   local target_dims=""
-  if [[ "$basename" == *"T1"* ]]; then
-    # T1 => 1mm isotropic
-    target_dims="1x1x1"
-  elif [[ "$basename" == *"FLAIR"* ]]; then
-    # FLAIR => keep z-dimension, standardize x,y
-    target_dims="1x1x${z_pix}"
+  if [ -n "$target_resolution" ]; then
+    # Use provided optimal resolution (smart standardization)
+    target_dims="$target_resolution"
+    log_message "Using smart standardization with optimal resolution: $target_dims mm"
   else
-    # Default => keep original resolution
-    target_dims="${x_pix}x${y_pix}x${z_pix}"
+    # Legacy behavior: sequence-based standardization
+    log_formatted "WARNING" "Using legacy standardization - consider using smart resolution detection"
+    if [[ "$basename" == *"T1"* ]]; then
+      # T1 => 1mm isotropic
+      target_dims="1x1x1"
+    elif [[ "$basename" == *"FLAIR"* ]]; then
+      # FLAIR => keep z-dimension, standardize x,y to 1mm (THIS DESTROYS HIGH-RES DATA!)
+      target_dims="1x1x${z_pix}"
+    else
+      # Default => keep original resolution
+      target_dims="${x_pix}x${y_pix}x${z_pix}"
+    fi
+    log_formatted "WARNING" "Legacy mode may downsample high-resolution data"
   fi
 
-  log_message "Resampling to $target_dims mm resolution"
+  log_message "Current resolution: ${x_pix}x${y_pix}x${z_pix}mm"
+  log_message "Target resolution: $target_dims mm"
   
   # Determine ANTs bin path
   local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"

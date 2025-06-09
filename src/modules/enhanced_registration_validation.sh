@@ -790,7 +790,7 @@ transform_segmentation_to_original() {
         
         # Fallback to direct resampling
         log_message "Using flirt for direct resampling..."
-        flirt -in "$segmentation" -ref "$reference" -out "$output" -applyxfm -init $FSLDIR/etc/flirtsch/ident.mat -interp nearestneighbour
+        apply_transform "$segmentation" "$reference" "$FSLDIR/etc/flirtsch/ident.mat" "$output" "nearestneighbour"
     else
         # Determine if it's an ANTs or FSL transform
         if [[ "$transform" == *"GenericAffine"* || "$transform" == *"Warp"* ]]; then
@@ -800,7 +800,7 @@ transform_segmentation_to_original() {
         else
             # FSL transform
             log_message "Using flirt to apply transform..."
-            flirt -in "$segmentation" -ref "$reference" -out "$output" -applyxfm -init "$transform" -interp nearestneighbour
+            apply_transform "$segmentation" "$reference" "$transform" "$output" "nearestneighbour"
         fi
     fi
     

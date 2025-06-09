@@ -52,3 +52,35 @@ legacy_execute_ants_command() {
 export -f legacy_execute_ants_command
 
 log_message "Utilities module loaded"
+
+# Wrapper to apply transforms using FLIRT or ANTs based on USE_ANTS_SYN flag
+apply_transform() {
+    local input_file="$1"
+    local ref_file="$2"
+    local transform_file="$3"
+    local output_file="$4"
+    local interp="${5:-trilinear}"
+
+    # Handle usesqform flag (skip init matrix)
+    if [ "${transform_file}" == "-usesqform" ]; then
+        log_message "Applying transform with FLIRT using sform/qform: ${input_file} -> ${output_file}"
+        flirt -in "${input_file}" -ref "${ref_file}" -applyxfm -usesqform -out "${output_file}" -interp "${interp}"
+        return $?
+    fi
+
+    if [ "${USE_ANTS_SYN}" = "true" ]; then
+        # Map interpolation to ANTs options
+        local ants_interp="Linear"
+        if [[ "${interp}" == "nearestneighbour" ]]; then
+            ants_interp="NearestNeighbor"
+        fi
+        execute_ants_command "apply_transform" "Applying transform with ANTs" \
+            antsApplyTransforms -d 3 -i "${input_file}" -r "${ref_file}" -o "${output_file}" \
+            -n "${ants_interp}" -t "${transform_file}"
+    else
+        log_message "Applying transform with FLIRT: ${input_file} -> ${output_file}"
+        flirt -in "${input_file}" -ref "${ref_file}" -applyxfm -init "${transform_file}" \
+            -out "${output_file}" -interp "${interp}"
+    fi
+}
+export -f apply_transform

@@ -315,7 +315,7 @@ validate_transformation() {
     local transformed_img="${output_dir}/transformed.nii.gz"
     if [[ "$transform" == *".mat" ]]; then
         # FSL linear transform
-        flirt -in "$moving" -ref "$fixed" -applyxfm -init "$transform" -out "$transformed_img"
+        apply_transform "$moving" "$fixed" "$transform" "$transformed_img"
     else
         # ANTs transform
         antsApplyTransforms -d 3 -i "$moving" -r "$fixed" -o "$transformed_img" -t "$transform" -n Linear
@@ -326,7 +326,7 @@ validate_transformation() {
     if [ -n "$moving_mask" ] && [ -f "$moving_mask" ]; then
         transformed_mask="${output_dir}/transformed_mask.nii.gz"
         if [[ "$transform" == *".mat" ]]; then
-            flirt -in "$moving_mask" -ref "$fixed" -applyxfm -init "$transform" -out "$transformed_mask" -interp nearestneighbour
+            apply_transform "$moving_mask" "$fixed" "$transform" "$transformed_mask" "nearestneighbour"
         else
             antsApplyTransforms -d 3 -i "$moving_mask" -r "$fixed" -o "$transformed_mask" -t "$transform" -n NearestNeighbor
         fi
@@ -843,7 +843,7 @@ calculate_extended_registration_metrics() {
             if command -v fast &>/dev/null; then
                 fast -t 1 -n 3 -o "${temp_dir}/fast" "$fixed"
                 # WM is typically label 3 in FAST output
-                fslmaths "${temp_dir}/fast_seg" -thr 3 -uthr 3 -bin "$wm_mask"
+                fslmaths "${temp_dir}/fast" -thr 3 -uthr 3 -bin "$wm_mask"
             else
                 # Simple threshold-based approach as fallback
                 local mean=$(fslstats "$fixed" -M)
@@ -1561,6 +1561,203 @@ enhanced_launch_visual_qa() {
     return 0
 }
 
+# Function to verify all segmentations with correct directory structure
+qa_verify_all_segmentations() {
+    local results_dir="$1"
+    
+    log_formatted "INFO" "===== COMPREHENSIVE SEGMENTATION VERIFICATION ====="
+    log_message "Verifying all segmentations with correct directory structure"
+    log_message "Checking both binary masks and intensity versions (T1 and FLAIR)"
+    
+    # Find all segmentation files
+    local segmentation_dir="${results_dir}/segmentation"
+    if [ ! -d "$segmentation_dir" ]; then
+        log_formatted "WARNING" "Segmentation directory not found: $segmentation_dir"
+        return 1
+    fi
+    
+    # Find reference images (standardized and original)
+    local t1_std=$(find "${results_dir}/standardized" -name "*T1*_std.nii.gz" | head -1)
+    local flair_std=$(find "${results_dir}/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+    local t1_orig=$(find "${results_dir}/brain_extraction" -name "*T1*brain.nii.gz" | head -1)
+    local flair_orig=$(find "${results_dir}/brain_extraction" -name "*FLAIR*brain.nii.gz" | head -1)
+    
+    if [ -z "$t1_orig" ]; then
+        t1_orig=$(find "${results_dir}/bias_corrected" -name "*T1*.nii.gz" ! -name "*Mask*" | head -1)
+    fi
+    if [ -z "$flair_orig" ]; then
+        flair_orig=$(find "${results_dir}/bias_corrected" -name "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
+    fi
+    
+    local verified_count=0
+    local error_count=0
+    local intensity_count=0
+    
+    # Verify brainstem segmentations
+    log_message "Checking brainstem segmentations..."
+    local brainstem_files=$(find "${segmentation_dir}/brainstem" -name "*brainstem*.nii.gz" 2>/dev/null || true)
+    for brainstem_file in $brainstem_files; do
+        if [ -f "$brainstem_file" ] && [ -f "$t1_std" ]; then
+            local output_dir="${segmentation_dir}/brainstem"
+            log_message "Verifying brainstem: $(basename "$brainstem_file")"
+            if verify_segmentation_location "$brainstem_file" "$t1_std" "brainstem" "$output_dir"; then
+                ((verified_count++))
+            else
+                ((error_count++))
+            fi
+            
+            # Check for intensity versions
+            local base_name=$(basename "$brainstem_file" .nii.gz)
+            local t1_intensity="${output_dir}/${base_name}_t1_intensity.nii.gz"
+            local flair_intensity="${output_dir}/${base_name}_flair_intensity.nii.gz"
+            
+            if [ -f "$t1_intensity" ]; then
+                log_message "✓ Found T1 intensity version: $(basename "$t1_intensity")"
+                ((intensity_count++))
+            else
+                log_formatted "WARNING" "Missing T1 intensity version: $t1_intensity"
+            fi
+            
+            if [ -f "$flair_intensity" ]; then
+                log_message "✓ Found FLAIR intensity version: $(basename "$flair_intensity")"
+                ((intensity_count++))
+            else
+                log_formatted "WARNING" "Missing FLAIR intensity version: $flair_intensity"
+            fi
+        fi
+    done
+    
+    # Verify pons segmentations
+    log_message "Checking pons segmentations..."
+    local pons_files=$(find "${segmentation_dir}/pons" -name "*pons*.nii.gz" 2>/dev/null || true)
+    for pons_file in $pons_files; do
+        if [ -f "$pons_file" ]; then
+            local output_dir="${segmentation_dir}/pons"
+            local region_name=$(basename "$pons_file" .nii.gz)
+            local reference_img
+            
+            # Extract the specific pons type (pons, dorsal_pons, ventral_pons)
+            if [[ "$region_name" == *"dorsal_pons"* ]]; then
+                region_name="dorsal_pons"
+                reference_img="$t1_std"
+            elif [[ "$region_name" == *"ventral_pons"* ]]; then
+                region_name="ventral_pons"
+                reference_img="$t1_std"
+            elif [[ "$region_name" == *"_orig"* ]]; then
+                # Original space pons
+                region_name="pons"
+                reference_img="$t1_orig"
+            else
+                # Standard space pons
+                region_name="pons"
+                reference_img="$t1_std"
+            fi
+            
+            if [ -f "$reference_img" ]; then
+                log_message "Verifying $region_name: $(basename "$pons_file")"
+                if verify_segmentation_location "$pons_file" "$reference_img" "$region_name" "$output_dir"; then
+                    ((verified_count++))
+                else
+                    ((error_count++))
+                fi
+                
+                # Check for intensity versions
+                local base_name=$(basename "$pons_file" .nii.gz)
+                local t1_intensity="${output_dir}/${base_name}_t1_intensity.nii.gz"
+                local flair_intensity="${output_dir}/${base_name}_flair_intensity.nii.gz"
+                
+                if [ -f "$t1_intensity" ]; then
+                    log_message "✓ Found T1 intensity version: $(basename "$t1_intensity")"
+                    ((intensity_count++))
+                else
+                    log_formatted "INFO" "T1 intensity version not found (may be created by segmentation module): $t1_intensity"
+                fi
+                
+                if [ -f "$flair_intensity" ]; then
+                    log_message "✓ Found FLAIR intensity version: $(basename "$flair_intensity")"
+                    ((intensity_count++))
+                else
+                    log_formatted "INFO" "FLAIR intensity version not found (may be created by segmentation module): $flair_intensity"
+                fi
+            else
+                log_formatted "WARNING" "Reference image not found for $region_name verification: $reference_img"
+                ((error_count++))
+            fi
+        fi
+    done
+    
+    # Verify any original space segmentations
+    log_message "Checking original space segmentations..."
+    local orig_space_dir="${segmentation_dir}/original_space"
+    if [ -d "$orig_space_dir" ]; then
+        local orig_files=$(find "$orig_space_dir" -name "*_orig.nii.gz" 2>/dev/null || true)
+        for orig_file in $orig_files; do
+            if [ -f "$orig_file" ]; then
+                local output_dir="$orig_space_dir"
+                local region_name=$(basename "$orig_file" .nii.gz | sed 's/_orig$//')
+                local region_type
+                
+                # Determine region type
+                if [[ "$region_name" == *"brainstem"* ]]; then
+                    region_type="brainstem"
+                elif [[ "$region_name" == *"pons"* ]]; then
+                    region_type="pons"
+                else
+                    region_type="unknown"
+                fi
+                
+                if [ -f "$t1_orig" ]; then
+                    log_message "Verifying original space $region_type: $(basename "$orig_file")"
+                    if verify_segmentation_location "$orig_file" "$t1_orig" "$region_type" "$output_dir"; then
+                        ((verified_count++))
+                    else
+                        ((error_count++))
+                    fi
+                    
+                    # Check for intensity versions in original space
+                    local base_name=$(basename "$orig_file" .nii.gz)
+                    local t1_intensity="${output_dir}/${base_name}_t1_intensity.nii.gz"
+                    local flair_intensity="${output_dir}/${base_name}_flair_intensity.nii.gz"
+                    
+                    if [ -f "$t1_intensity" ]; then
+                        log_message "✓ Found original space T1 intensity version: $(basename "$t1_intensity")"
+                        ((intensity_count++))
+                    else
+                        log_formatted "INFO" "Original space T1 intensity version not found: $t1_intensity"
+                    fi
+                    
+                    if [ -f "$flair_intensity" ]; then
+                        log_message "✓ Found original space FLAIR intensity version: $(basename "$flair_intensity")"
+                        ((intensity_count++))
+                    else
+                        log_formatted "INFO" "Original space FLAIR intensity version not found: $flair_intensity"
+                    fi
+                else
+                    log_formatted "WARNING" "Original T1 reference not found for verification"
+                    ((error_count++))
+                fi
+            fi
+        done
+    fi
+    
+    # Summary
+    log_formatted "INFO" "===== SEGMENTATION VERIFICATION SUMMARY ====="
+    log_message "Successfully verified: $verified_count segmentations"
+    log_message "Intensity masks found: $intensity_count"
+    log_message "Errors encountered: $error_count segmentations"
+    
+    if [ "$error_count" -eq 0 ]; then
+        log_formatted "SUCCESS" "All segmentations verified successfully"
+        if [ "$intensity_count" -gt 0 ]; then
+            log_message "Found $intensity_count intensity masks for hypointensity/hyperintensity analysis"
+        fi
+        return 0
+    else
+        log_formatted "WARNING" "Some segmentation verifications failed"
+        return 1
+    fi
+}
+
 # Export additional functions
 export -f calculate_extended_registration_metrics
 export -f verify_dimensions_consistency
@@ -1568,5 +1765,6 @@ export -f create_intensity_mask
 export -f verify_segmentation_location
 export -f analyze_hyperintensity_clusters
 export -f enhanced_launch_visual_qa
+export -f qa_verify_all_segmentations
 
 log_message "QA module loaded with extended metrics and enhanced validation functions"

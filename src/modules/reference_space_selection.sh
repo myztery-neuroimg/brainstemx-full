@@ -6,7 +6,7 @@
 # T1-MPRAGE or T2-SPACE-FLAIR as the reference space for the entire pipeline.
 #
 # Decision criteria (priority order):
-# 1. ORIGINAL acquisition (priority weight: +1000)
+# 1. ORIGINAL acquisition (priority weight: +10)
 # 2. 3D isotropic vs 2D multi-slice (+300)
 # 3. Spatial resolution (+200)
 # 4. Image quality metrics (+150)
@@ -24,7 +24,7 @@ fi
 
 # Configuration parameters for reference space selection
 export REFERENCE_SPACE_SELECTION_MODE="${REFERENCE_SPACE_SELECTION_MODE:-adaptive}"
-export ORIGINAL_ACQUISITION_WEIGHT="${ORIGINAL_ACQUISITION_WEIGHT:-1000}"
+export ORIGINAL_ACQUISITION_WEIGHT="${ORIGINAL_ACQUISITION_WEIGHT:-0}"
 export RESOLUTION_WEIGHT="${RESOLUTION_WEIGHT:-200}"
 export QUALITY_WEIGHT="${QUALITY_WEIGHT:-150}"
 export DIMENSIONALITY_WEIGHT="${DIMENSIONALITY_WEIGHT:-300}"
@@ -55,6 +55,7 @@ select_optimal_reference_space() {
     local t1_candidates=()
     local flair_candidates=()
     
+    #	discover_original_sequences "$extraction_dir" t1_candidates flair_candidates
     discover_original_sequences "$extraction_dir" t1_candidates flair_candidates
     
     # Phase 2: Comprehensive quality assessment
@@ -93,59 +94,47 @@ discover_original_sequences() {
     local -n flair_ref=$3
     
     # Find potential T1 sequences (broader patterns) - support both .nii and .nii.gz
-    local all_t1_files=($(find "$extraction_dir" \( -name "*T1*.nii.gz" -o -name "*T1*.nii" \) -o \( -name "*MPRAGE*.nii.gz" -o -name "*MPRAGE*.nii" \) -o \( -name "*MPR*.nii.gz" -o -name "*MPR*.nii" \) -o \( -name "*t1*.nii.gz" -o -name "*t1*.nii" \) 2>/dev/null))
+    #local all_t1_files=($(find "$extraction_dir" \( -name "*T1*.nii.gz" -o -name "*T1*.nii" \) -o \( -name "*MPR*.nii.gz" -o -name "*MPR*.nii" \) -o \( -name "*MPR*.nii.gz" -o -name "*MPR*.nii" \) -o \( -name "*t1*.nii.gz" -o -name "*t1*.nii" \) 2>/dev/null))
+    local all_t1_files=($(find "$extraction_dir" \( -name "*T1*14.nii.gz" -o -name "*T1*14.nii" \) 2>/dev/null))
     
     # Find potential FLAIR sequences (broader patterns) - support both .nii and .nii.gz
-    local all_flair_files=($(find "$extraction_dir" \( -name "*FLAIR*.nii.gz" -o -name "*FLAIR*.nii" \) -o \( -name "*flair*.nii.gz" -o -name "*flair*.nii" \) -o \( -name "*T2*SPACE*.nii.gz" -o -name "*T2*SPACE*.nii" \) -o \( -name "*t2*.nii.gz" -o -name "*t2*.nii" \) 2>/dev/null))
+    #local all_flair_files=($(find "$extraction_dir" \( -name "*FLAIR*.nii.gz" -o -name "*FLAIR*.nii" \) -o \( -name "*flair*.nii.gz" -o -name "*flair*.nii" \) -o \( -name "*T2*SPACE*.nii.gz" -o -name "*T2*SPACE*.nii" \) 2>/dev/null))
+    local all_flair_files=($(find "$extraction_dir" \( -name "*SPACE*FLAIR*1035.nii.gz" -o -name "*SPACE*FLAIR*1035.nii" \) 2>/dev/null))
     
     log_message "Found ${#all_t1_files[@]} potential T1 files"
     log_message "Found ${#all_flair_files[@]} potential FLAIR files"
     
     # Debug: Show what files are actually available
-    if [ ${#all_t1_files[@]} -eq 0 ] && [ ${#all_flair_files[@]} -eq 0 ]; then
+    if [ ${#all_t1_files[@]} -eq 0 ] || [ ${#all_flair_files[@]} -eq 0 ]; then
         log_message "No T1 or FLAIR files found. Available files in extraction directory:"
         find "$extraction_dir" -name "*.nii.gz" 2>/dev/null | head -10 | while read -r file; do
             log_message "  $(basename "$file")"
         done
         
-        # Try even broader search
         log_message "Trying broader search patterns..."
-        local any_nifti_files=($(find "$extraction_dir" \( -name "*.nii.gz" -o -name "*.nii" \) 2>/dev/null))
+        local any_nifti_files=($(find "$extraction_dir" \( -name "*T2*.nii.gz" -o -name "*.nii" \) 2>/dev/null))
         log_message "Total NIfTI files found: ${#any_nifti_files[@]}"
         
-        # For testing, if we find any NIfTI files, treat them as potential sequences
-        if [ ${#any_nifti_files[@]} -gt 0 ]; then
-            log_message "Using any available NIfTI files for testing..."
-            # Take first half as T1, second half as FLAIR (for testing)
-            local mid_point=$((${#any_nifti_files[@]} / 2))
-            if [ $mid_point -gt 0 ]; then
-                all_t1_files=("${any_nifti_files[@]:0:$mid_point}")
-                all_flair_files=("${any_nifti_files[@]:$mid_point}")
-                log_message "Assigned ${#all_t1_files[@]} files as T1 candidates"
-                log_message "Assigned ${#all_flair_files[@]} files as FLAIR candidates"
-            else
-                # Only one file, assign as T1
-                all_t1_files=("${any_nifti_files[0]}")
-                log_message "Single file assigned as T1 candidate: $(basename "${any_nifti_files[0]}")"
-            fi
-        fi
     fi
     
+    t1_ref="$all_t1_files"
+    flair_ref="$all_flair_files"
+
     # Filter for ORIGINAL acquisitions (exclude DERIVED)
-    for file in "${all_t1_files[@]}"; do
-        if is_original_acquisition "$file"; then
-            t1_ref+=("$file")
-        fi
-    done
-    
-    for file in "${all_flair_files[@]}"; do
-        if is_original_acquisition "$file"; then
-            flair_ref+=("$file")
-        fi
-    done
-    
-    log_message "Filtered to ${#t1_ref[@]} ORIGINAL T1 files"
-    log_message "Filtered to ${#flair_ref[@]} ORIGINAL FLAIR files"
+    #for file in "${all_t1_files[@]}"; do
+    #    if is_original_acquisition "$file"; then
+    #        t1_ref+=("$file")
+    #    fi
+    #done
+    #
+    #for file in "${all_flair_files[@]}"; do
+    #    if is_original_acquisition "$file"; then
+    #        flair_ref+=("$file")
+    #    fi
+    #done
+    #
+    #log_message "Filtered to ${#t1_ref[@]} ORIGINAL T1 files"
+    #log_message "Filtered to ${#flair_ref[@]} ORIGINAL FLAIR files"
 }
 
 # Check if a file represents an ORIGINAL (not DERIVED) acquisition

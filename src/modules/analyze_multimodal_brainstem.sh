@@ -41,11 +41,10 @@ fslroi "$DWI_4D" "$TMPDWI" 1 1
 log "Resampling T1, DWI, SWI, and brainstem mask to FLAIR space..."
 for MOD in "$T1" "$TMPDWI" "$SWI"; do
   NAME=$(basename "$MOD" .nii.gz)
-  flirt -in "$MOD" -ref "$FLAIR" -applyxfm -usesqform -out "$OUTDIR/${NAME}_to_FLAIR.nii.gz"
+  apply_transform "$MOD" "$FLAIR" "-usesqform" "$OUTDIR/${NAME}_to_FLAIR.nii.gz"
 done
 
-flirt -in "$BRAINSTEM_MASK" -ref "$FLAIR" -applyxfm -usesqform -interp nearestneighbour \
-  -out "$OUTDIR/brainstem_mask_to_FLAIR.nii.gz"
+apply_transform "$BRAINSTEM_MASK" "$FLAIR" "-usesqform" "$OUTDIR/brainstem_mask_to_FLAIR.nii.gz" "nearestneighbour"
 
 # ===============================
 # Apply brainstem mask to all

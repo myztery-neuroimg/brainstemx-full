@@ -83,6 +83,6 @@ fi
 # Prioritize sagittal 3D sequences explicitly
 export T1_PRIORITY_PATTERN="MPRAGE.*SAG"
 export FLAIR_PRIORITY_PATTERN="SPACE.*FLAIR.*SAG"
-export RESAMPLE_TO_ISOTROPIC=1
+export RESAMPLE_TO_ISOTROPIC=0
 export ISOTROPIC_SPACING=1.0
 
