@@ -358,6 +358,20 @@ run_pipeline() {
   log_message "T1 file: $t1_file"
   log_message "FLAIR file: $flair_file"
   
+  # Early orientation consistency checking
+  log_formatted "INFO" "===== ORIENTATION CONSISTENCY CHECK ====="
+  log_message "Checking if T1 and FLAIR have consistent orientations..."
+  
+  if check_orientation_consistency "$t1_file" "$flair_file"; then
+    log_formatted "SUCCESS" "No orientation issues detected"
+  else
+    log_formatted "WARNING" "Orientation inconsistencies found - this may cause FSL warnings"
+    log_message "Performing detailed orientation matrix comparison..."
+    check_detailed_orientation_matrices "$t1_file" "$flair_file"
+    log_message "Note: These warnings typically don't affect analysis quality"
+    log_message "Smart standardization will ensure consistent coordinate spaces"
+  fi
+  
   # Combine or select best multi-axial images
   # Note: For 3D isotropic sequences (MPRAGE, SPACE, etc.), this will
   # automatically detect and select the best quality single orientation.
@@ -431,14 +445,22 @@ run_pipeline() {
   # Moving this after standardization since t1_std is defined later
   # Will be launched after line 315 where t1_std is defined
   
-  # Standardize dimensions (run in parallel if available)
+  # Smart standardization: detect optimal resolution across T1 and FLAIR
+  log_formatted "INFO" "===== SMART RESOLUTION DETECTION ====="
+  local optimal_resolution=$(detect_optimal_resolution "$t1_brain" "$flair_brain")
+  log_formatted "SUCCESS" "Optimal resolution detected: $optimal_resolution mm"
+  log_message "This preserves the highest resolution data for clustering analysis"
+  
+  # Standardize dimensions using optimal resolution (run in parallel if available)
   if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
-    log_message "Running dimension standardization with parallel processing"
-    run_parallel_standardize_dimensions "$(get_module_dir "brain_extraction")" "*_brain.nii.gz"
+    log_message "Running smart dimension standardization with parallel processing"
+    run_parallel_standardize_dimensions "$(get_module_dir "brain_extraction")" "*_brain.nii.gz" "$PARALLEL_JOBS" 1 "$optimal_resolution"
   else
-    log_message "Running dimension standardization sequentially"
-    standardize_dimensions "$t1_brain"
-    standardize_dimensions "$flair_brain"
+    log_message "Running smart dimension standardization sequentially"
+    log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
+    standardize_dimensions "$t1_brain" "$optimal_resolution"
+    log_message "Standardizing FLAIR with optimal resolution: $optimal_resolution"
+    standardize_dimensions "$flair_brain" "$optimal_resolution"
   fi
   
   

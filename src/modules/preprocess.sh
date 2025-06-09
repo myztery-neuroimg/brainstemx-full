@@ -18,7 +18,7 @@ is_3d_isotropic_sequence() {
   local filename=$(basename "$file")
   
   # Check filename first (fast path)
-  if [[ "$filename" == *"T1"*"12" ]] || 
+  if [[ "$filename" == *"T1"*"14" ]] || 
      [[ "$filename" == *"T2_SPACE"*"SAG"*"17"* ]] || 
      [[ "$filename" == *"MP2RAGE"* ]] || 
      [[ "$filename" == *"3D"* ]]; then
@@ -365,6 +365,95 @@ calculate_inplane_resolution() {
   echo "$inplane_res"
 }
 
+# Function to check for orientation consistency between images
+check_orientation_consistency() {
+  local files=("$@")
+  local reference_orient=""
+  local reference_file=""
+  local inconsistent_files=()
+  
+  log_message "Checking orientation consistency across ${#files[@]} files..."
+  
+  for file in "${files[@]}"; do
+    if [ ! -f "$file" ]; then
+      log_formatted "WARNING" "File not found for orientation check: $file"
+      continue
+    fi
+    
+    # Get orientation string
+    local orient=$(fslorient -getorient "$file" 2>/dev/null || echo "UNKNOWN")
+    local filename=$(basename "$file")
+    
+    if [ -z "$reference_orient" ]; then
+      reference_orient="$orient"
+      reference_file="$filename"
+      log_message "Reference orientation: $orient (from $filename)"
+    else
+      if [ "$orient" != "$reference_orient" ]; then
+        inconsistent_files+=("$filename:$orient")
+        log_formatted "WARNING" "Orientation mismatch: $filename has $orient (expected $reference_orient)"
+      else
+        log_message "Orientation match: $filename has $orient ✓"
+      fi
+    fi
+  done
+  
+  if [ ${#inconsistent_files[@]} -gt 0 ]; then
+    log_formatted "WARNING" "Orientation inconsistencies detected:"
+    log_message "Reference: $reference_file ($reference_orient)"
+    for mismatch in "${inconsistent_files[@]}"; do
+      log_message "Mismatch: $mismatch"
+    done
+    log_message "This may cause FSL registration warnings but should not affect analysis"
+    return 1
+  else
+    log_formatted "SUCCESS" "All images have consistent orientation: $reference_orient"
+    return 0
+  fi
+}
+
+# Function to perform detailed orientation matrix comparison
+check_detailed_orientation_matrices() {
+  local file1="$1"
+  local file2="$2"
+  
+  log_message "Detailed orientation matrix comparison:"
+  log_message "  File 1: $(basename "$file1")"
+  log_message "  File 2: $(basename "$file2")"
+  
+  # Get sform and qform matrices
+  local sform1=$(fslinfo "$file1" | grep -E "^sto_xyz:" | head -4)
+  local sform2=$(fslinfo "$file2" | grep -E "^sto_xyz:" | head -4)
+  local qform1=$(fslinfo "$file1" | grep -E "^qto_xyz:" | head -4)
+  local qform2=$(fslinfo "$file2" | grep -E "^qto_xyz:" | head -4)
+  
+  # Compare sform matrices
+  if [ "$sform1" = "$sform2" ]; then
+    log_message "  Sform matrices: identical ✓"
+    local sform_match=true
+  else
+    log_formatted "WARNING" "  Sform matrices: different"
+    local sform_match=false
+  fi
+  
+  # Compare qform matrices
+  if [ "$qform1" = "$qform2" ]; then
+    log_message "  Qform matrices: identical ✓"
+    local qform_match=true
+  else
+    log_formatted "WARNING" "  Qform matrices: different"
+    local qform_match=false
+  fi
+  
+  if [ "$sform_match" = true ] && [ "$qform_match" = true ]; then
+    log_formatted "SUCCESS" "Orientation matrices are fully identical"
+    return 0
+  else
+    log_formatted "WARNING" "Orientation matrices show differences - may cause FSL warnings"
+    return 1
+  fi
+}
+
 # Function to detect optimal resolution across multiple images
 detect_optimal_resolution() {
   local files=("$@")
@@ -379,10 +468,10 @@ detect_optimal_resolution() {
       continue
     fi
     
-    # Get pixel dimensions
-    local pixdim1=$(fslval "$file" pixdim1)
-    local pixdim2=$(fslval "$file" pixdim2)
-    local pixdim3=$(fslval "$file" pixdim3)
+    # Get pixel dimensions (trim whitespace)
+    local pixdim1=$(fslval "$file" pixdim1 | xargs)
+    local pixdim2=$(fslval "$file" pixdim2 | xargs)
+    local pixdim3=$(fslval "$file" pixdim3 | xargs)
     
     # Calculate average in-plane resolution (finest detail indicator)
     local inplane_res=$(echo "scale=6; ($pixdim1 + $pixdim2) / 2" | bc -l)
@@ -397,10 +486,10 @@ detect_optimal_resolution() {
   done
   
   if [ -n "$best_file" ]; then
-    # Get the optimal file's dimensions for the target grid
-    local opt_pixdim1=$(fslval "$best_file" pixdim1)
-    local opt_pixdim2=$(fslval "$best_file" pixdim2)
-    local opt_pixdim3=$(fslval "$best_file" pixdim3)
+    # Get the optimal file's dimensions for the target grid (trim whitespace)
+    local opt_pixdim1=$(fslval "$best_file" pixdim1 | xargs)
+    local opt_pixdim2=$(fslval "$best_file" pixdim2 | xargs)
+    local opt_pixdim3=$(fslval "$best_file" pixdim3 | xargs)
     
     log_formatted "SUCCESS" "Optimal resolution detected from $(basename "$best_file")"
     log_message "Target grid: ${opt_pixdim1}x${opt_pixdim2}x${opt_pixdim3}mm"
@@ -667,8 +756,18 @@ run_parallel_standardize_dimensions() {
   local pattern="${2:-*_n4.nii.gz}"
   local jobs="${3:-$PARALLEL_JOBS}"
   local max_depth="${4:-1}"
+  local target_resolution="${5:-}"  # Optional optimal resolution
   
   log_message "Running standardize dimensions in parallel on files matching '$pattern' in $input_dir"
+  
+  if [ -n "$target_resolution" ]; then
+    log_message "Using smart standardization with resolution: $target_resolution"
+    # Export the target resolution for the parallel processes
+    export PARALLEL_TARGET_RESOLUTION="$target_resolution"
+  else
+    log_formatted "WARNING" "No target resolution specified - using legacy mode"
+    unset PARALLEL_TARGET_RESOLUTION
+  fi
   
   # Ensure output directory exists
   create_module_dir "standardized"
@@ -679,9 +778,23 @@ run_parallel_standardize_dimensions() {
   export -f get_output_path get_module_dir create_module_dir
   export -f log_diagnostic execute_with_logging
   
-  # Run in parallel using the common function
-  run_parallel "standardize_dimensions" "$pattern" "$input_dir" "$jobs" "$max_depth"
+  # Create wrapper function for parallel execution that uses the exported resolution
+  standardize_dimensions_wrapper() {
+    local input_file="$1"
+    if [ -n "${PARALLEL_TARGET_RESOLUTION:-}" ]; then
+      standardize_dimensions "$input_file" "$PARALLEL_TARGET_RESOLUTION"
+    else
+      standardize_dimensions "$input_file"
+    fi
+  }
+  export -f standardize_dimensions_wrapper
+  
+  # Run in parallel using the wrapper function
+  run_parallel "standardize_dimensions_wrapper" "$pattern" "$input_dir" "$jobs" "$max_depth"
   local status=$?
+  
+  # Clean up
+  unset PARALLEL_TARGET_RESOLUTION
   
   if [ $status -ne 0 ]; then
     log_error "Parallel dimension standardization failed with status $status" $ERR_PREPROC
@@ -825,6 +938,9 @@ export -f combine_multiaxis_images
 export -f combine_multiaxis_images_highres
 export -f is_3d_isotropic_sequence
 export -f calculate_resolution_quality
+export -f check_orientation_consistency
+export -f check_detailed_orientation_matrices
+export -f detect_optimal_resolution
 export -f perform_brain_extraction
 export -f calculate_inplane_resolution
 export -f get_n4_parameters

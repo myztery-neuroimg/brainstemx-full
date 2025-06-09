@@ -536,16 +536,16 @@ calculate_mi() {
     
     # First check if images exist and are valid
     if [ ! -f "$img1" ] || [ ! -f "$img2" ]; then
-        log_formatted "WARNING" "One or both input images missing for MI calculation"
-        echo "0.4"  # Use a reasonable default
-        return 0
+        log_formatted "WARNIERRORNG" "One or both input images missing for MI calculation"
+        echo "0"  # Use a reasonable default
+        return 1
     fi
     
     # Verify both images are readable
     if ! fslinfo "$img1" &>/dev/null || ! fslinfo "$img2" &>/dev/null; then
-        log_formatted "WARNING" "One or both input images are corrupted or unreadable for MI"
-        echo "0.4"  # Use a reasonable default
-        return 0
+        log_formatted "ERROR" "One or both input images are corrupted or unreadable for MI"
+        echo "0.0"  # Use a reasonable default
+        return 1
     fi
     
     # Check if ANTs MeasureImageSimilarity is available
@@ -555,8 +555,8 @@ calculate_mi() {
         if [ $? -eq 0 ] && [[ "$mi_output" =~ [0-9]+(\.[0-9]+)? ]]; then
             local mi=${BASH_REMATCH[0]}
             # Normalize to a reasonable range
-            if (( $(echo "$mi > 0.8" | bc -l) )); then mi=0.8; fi
-            if (( $(echo "$mi < 0.1" | bc -l) )); then mi=0.1; fi
+            #if (( $(echo "$mi > 0.8" | bc -l) )); then mi=0.8; fi
+            #if (( $(echo "$mi < 0.1" | bc -l) )); then mi=0.1; fi
             echo "$mi"
             return 0
         fi

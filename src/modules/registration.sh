@@ -126,7 +126,7 @@ register_modality_to_t1() {
     local t1_file="$1"
     local modality_file="$2"
     local modality_name="${3:-OTHER}"  # Default to OTHER if not specified
-    local out_prefix="${4:-${RESULTS_DIR}/registered/t1_to_${modality_name,,}}"  # Convert to lowercase
+    local out_prefix="${4:-${RESULTS_DIR}/registered/t1_to_${modality_name}}"  # Convert to lowercase
 
     if [ ! -f "$t1_file" ] || [ ! -f "$modality_file" ]; then
         log_formatted "ERROR" "T1 or $modality_name file not found"
@@ -143,7 +143,7 @@ register_modality_to_t1() {
     set_template_resolution "$detected_res"
     
     # Check if orientation preservation is enabled
-    local orientation_preservation="${ORIENTATION_PRESERVATION_ENABLED:-true}"
+    local orientation_preservation="${ORIENTATION_PRESERVATION_ENABLED:-false}"
     if [ "$orientation_preservation" = "true" ]; then
         log_message "Orientation preservation is enabled for this registration"
     else
@@ -590,8 +590,8 @@ register_modality_to_t1() {
                     registered_successfully=true
                     log_message "Output copied to: ${out_prefix}Warped.nii.gz"
                 else
-                    log_formatted "WARNING" "Method 2 registration failed with status $method2_status"
-                    
+                    log_formatted "ERROR" "Method 2 registration failed with status $method2_status"
+                    return 1
                     # Method 3: Simple affine registration only
                     attempted_methods=$((attempted_methods + 1))
                     log_message "Method 3: Affine registration only (no deformation)"
@@ -697,17 +697,17 @@ register_modality_to_t1() {
     validate_registration_output "$t1_file" "$modality_file" "${out_prefix}Warped.nii.gz" "${out_prefix}"
     
     # If orientation correction is enabled, add orientation metrics to validation
-    if [ "$orientation_preservation" = "true" ] && command -v calculate_orientation_deviation &>/dev/null; then
-        local orientation_deviation=$(calculate_orientation_deviation "$t1_file" "${out_prefix}Warped.nii.gz")
-        local orientation_quality=$(assess_orientation_quality "$orientation_deviation")
-        
-        log_message "Orientation deviation: $orientation_deviation radians (Quality: $orientation_quality)"
-        
-        # Add to validation report
-        mkdir -p "${out_prefix}_validation"
-        echo "$orientation_deviation" > "${out_prefix}_validation/orientation_deviation.txt"
-        echo "$orientation_quality" > "${out_prefix}_validation/orientation_quality.txt"
-    fi
+    #if [ "$orientation_preservation" = "true" ] && command -v calculate_orientation_deviation &>/dev/null; then
+    #    local orientation_deviation=$(calculate_orientation_deviation "$t1_file" "${out_prefix}Warped.nii.gz")
+    #    local orientation_quality=$(assess_orientation_quality "$orientation_deviation")
+    #    
+    #    log_message "Orientation deviation: $orientation_deviation radians (Quality: $orientation_quality)"
+    #    
+    #    # Add to validation report
+    #    mkdir -p "${out_prefix}_validation"
+    #    echo "$orientation_deviation" > "${out_prefix}_validation/orientation_deviation.txt"
+    #    echo "$orientation_quality" > "${out_prefix}_validation/orientation_quality.txt"
+    #fi
     
     return 0
 }
