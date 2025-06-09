@@ -198,5 +198,5 @@ export EXPECTED_QFORM_Z="Inferior-to-Superior"
 export PRESERVE_INTENSITY_IMAGES_DATATYPE=true  # Keep intensity images as FLOAT32
 export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
 
-export ORIGINAL_ACQUISITION_WEIGHT=0
-export USE_ANTS_SYN=true
+#export ORIGINAL_ACQUISITION_WEIGHT=0
+export USE_ANTS_SYN=false

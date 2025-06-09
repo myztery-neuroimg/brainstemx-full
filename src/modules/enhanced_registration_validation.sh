@@ -432,14 +432,14 @@ verify_registration_quality() {
     fslmaths "$flair_file" -inm 1 "$flair_norm"
     
     # Calculate difference map
-    local diff_map="${output_dir}/diff_map.nii.gz"
-    log_message "Calculating difference map..."
-    fslmaths "$t1_norm" -sub "$flair_norm" -abs "$diff_map"
+    #local diff_map="${output_dir}/diff_map.nii.gz"
+    #log_message "Calculating difference map..."
+    #fslmaths "$t1_norm" -sub "$flair_norm" -abs "$diff_map"
     
     # Calculate quantitative metrics
-    local mean_diff=$(fslstats "$diff_map" -M)
-    local std_diff=$(fslstats "$diff_map" -S)
-    local max_diff=$(fslstats "$diff_map" -R | awk '{print $2}')
+    #local mean_diff=$(fslstats "$diff_map" -M)
+    #local std_diff=$(fslstats "$diff_map" -S)
+    #local max_diff=$(fslstats "$diff_map" -R | awk '{print $2}')
     
     # Calculate mutual information (using FSL's implementation)
     local mutual_info=$(calculate_mutual_information "$t1_file" "$flair_file")
@@ -451,37 +451,37 @@ verify_registration_quality() {
     log_message "Creating overlay visualization..."
     slices "$t1_file" "$flair_file" -o "${output_dir}/registration_check.png" || true
     
-    # Create report
-    {
-        echo "Registration Quality Assessment"
-        echo "=============================="
-        echo "Date: $(date)"
-        echo ""
-        echo "Images:"
-        echo "  T1: $t1_file"
-        echo "  FLAIR: $flair_file"
-        echo ""
-        echo "Quantitative Metrics:"
-        echo "  Mean Absolute Difference: $mean_diff"
-        echo "  Standard Deviation of Difference: $std_diff"
-        echo "  Maximum Absolute Difference: $max_diff"
-        echo "  Mutual Information: $mutual_info"
-        echo "  Cross-Correlation: $cross_corr"
-        echo ""
-        echo "Overall Quality:"
-        if (( $(echo "$cross_corr > 0.7" | bc -l) )); then
-            echo "  EXCELLENT"
-        elif (( $(echo "$cross_corr > 0.5" | bc -l) )); then
-            echo "  GOOD"
-        elif (( $(echo "$cross_corr > 0.3" | bc -l) )); then
-            echo "  ACCEPTABLE"
-        else
-            echo "  POOR - REGISTRATION MAY NEED IMPROVEMENT"
-        fi
-    } > "${output_dir}/registration_quality_report.txt"
-    
-    log_message "Registration quality assessment complete"
-    cat "${output_dir}/registration_quality_report.txt"
+    ## Create report
+    #{
+    #    echo "Registration Quality Assessment"
+    #    echo "=============================="
+    #    echo "Date: $(date)"
+    #    echo ""
+    #    echo "Images:"
+    #    echo "  T1: $t1_file"
+    #    echo "  FLAIR: $flair_file"
+    #    echo ""
+    #    echo "Quantitative Metrics:"
+    #    echo "  Mean Absolute Difference: $mean_diff"
+    #    echo "  Standard Deviation of Difference: $std_diff"
+    #    echo "  Maximum Absolute Difference: $max_diff"
+    #    echo "  Mutual Information: $mutual_info"
+    #    echo "  Cross-Correlation: $cross_corr"
+    #    echo ""
+    #    echo "Overall Quality:"
+    #    if (( $(echo "$cross_corr > 0.7" | bc -l) )); then
+    #        echo "  EXCELLENT"
+    #    elif (( $(echo "$cross_corr > 0.5" | bc -l) )); then
+    #        echo "  GOOD"
+    #    elif (( $(echo "$cross_corr > 0.3" | bc -l) )); then
+    #        echo "  ACCEPTABLE"
+    #    else
+    #        echo "  POOR - REGISTRATION MAY NEED IMPROVEMENT"
+    #    fi
+    #} > "${output_dir}/registration_quality_report.txt"
+    #
+    #log_message "Registration quality assessment complete"
+    #cat "${output_dir}/registration_quality_report.txt"
     
     return 0
 }
