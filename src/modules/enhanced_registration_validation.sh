@@ -19,7 +19,8 @@ emergency_validate_paths() {
     shift
     local files=("$@")
     
-    log_formatted "INFO" "Emergency path validation for: $operation"
+    log_formatted "WARNING" "Emergency path validation triggered for: $operation"
+    log_message "This indicates the normal flow failed. Checking file availability..."
     
     local missing_count=0
     
@@ -999,12 +1000,55 @@ create_intensity_mask() {
     local mask_min=$(fslstats "$intensity_image" -k "$binary_mask" -R | awk '{print $1}')
     local mask_max=$(fslstats "$intensity_image" -k "$binary_mask" -R | awk '{print $2}')
     
-    # Create intensity mask with emergency validation
-    if emergency_validate_paths "intensity mask creation" "$intensity_image" "$binary_mask"; then
-        safe_fslmaths "Create intensity mask from binary mask" "$intensity_image" -mas "$binary_mask" "$output"
-    else
-        log_formatted "ERROR" "Cannot create intensity mask - missing input files"
+    # Validate inputs before creating intensity mask
+    log_message "Validating inputs for intensity mask creation..."
+    
+    # Check if intensity image exists and is valid
+    if [ ! -f "$intensity_image" ]; then
+        log_formatted "ERROR" "Intensity image not found: $intensity_image"
+        log_message "This is what triggered emergency path validation"
         return 1
+    fi
+    
+    # Check if binary mask exists and is valid
+    if [ ! -f "$binary_mask" ]; then
+        log_formatted "ERROR" "Binary mask not found: $binary_mask"
+        log_message "This is what triggered emergency path validation"
+        return 1
+    fi
+    
+    # Verify files are valid NIfTI
+    if ! fslinfo "$intensity_image" >/dev/null 2>&1; then
+        log_formatted "ERROR" "Invalid intensity image: $intensity_image"
+        return 1
+    fi
+    
+    if ! fslinfo "$binary_mask" >/dev/null 2>&1; then
+        log_formatted "ERROR" "Invalid binary mask: $binary_mask"
+        return 1
+    fi
+    
+    log_message "✓ Input validation passed"
+    
+    # Create intensity mask with emergency validation as fallback
+    log_message "Creating intensity mask: $intensity_image -mas $binary_mask -> $output"
+    
+    if ! safe_fslmaths "Create intensity mask from binary mask" "$intensity_image" -mas "$binary_mask" "$output"; then
+        log_formatted "ERROR" "safe_fslmaths failed - attempting emergency validation"
+        
+        if emergency_validate_paths "intensity mask creation (fallback)" "$intensity_image" "$binary_mask"; then
+            log_message "Emergency validation passed, retrying with direct fslmaths..."
+            # Try direct fslmaths as fallback
+            if fslmaths "$intensity_image" -mas "$binary_mask" "$output"; then
+                log_formatted "SUCCESS" "Direct fslmaths succeeded as fallback"
+            else
+                log_formatted "ERROR" "Both safe_fslmaths and direct fslmaths failed"
+                return 1
+            fi
+        else
+            log_formatted "ERROR" "Emergency validation failed - cannot create intensity mask"
+            return 1
+        fi
     fi
     
     # Log statistics
@@ -1047,10 +1091,49 @@ run_comprehensive_analysis() {
     log_message "Step 1: Verifying registration quality..."
     verify_registration_quality "$t1_std" "$flair_std" "$reg_dir"
     
-    # 2. Find all segmentation masks in standard space
-    log_message "Step 2: Finding segmentation masks..."
-    local masks=($(find "$segmentation_dir" -name "*.nii.gz" -type f))
-    log_message "Found ${#masks[@]} segmentation masks"
+    # 2. Find actual segmentation masks (not all .nii.gz files)
+    log_message "Step 2: Finding actual segmentation masks..."
+    local masks=()
+    
+    # Look for actual segmentation masks with specific patterns
+    local mask_patterns=(
+        "*brainstem*.nii.gz"
+        "*pons*.nii.gz"
+        "*seg*.nii.gz"
+        "*mask*.nii.gz"
+        "*atlas*.nii.gz"
+        "*label*.nii.gz"
+    )
+    
+    for pattern in "${mask_patterns[@]}"; do
+        while IFS= read -r -d '' file; do
+            # Skip temporary files and duplicates
+            if [[ ! "$file" =~ (temp|tmp|_temp|_tmp) ]] && [[ ! " ${masks[@]} " =~ " ${file} " ]]; then
+                masks+=("$file")
+            fi
+        done < <(find "$segmentation_dir" -name "$pattern" -type f -print0 2>/dev/null)
+    done
+    
+    log_message "Found ${#masks[@]} actual segmentation masks (filtered from broader search)"
+    
+    # Log what we found for debugging
+    if [ ${#masks[@]} -gt 0 ]; then
+        log_message "Segmentation masks found:"
+        for mask in "${masks[@]}"; do
+            log_message "  - $(basename "$mask")"
+        done
+    else
+        log_formatted "WARNING" "No segmentation masks found with standard patterns"
+        log_message "Falling back to broader search..."
+        # Fallback to find all .nii.gz files but exclude obvious non-masks
+        while IFS= read -r -d '' file; do
+            # Skip obvious non-mask files
+            if [[ ! "$(basename "$file")" =~ (T1|FLAIR|T2|DWI|SWI|EPI|brain\.nii\.gz|_n4\.nii\.gz|_brain\.nii\.gz|warped\.nii\.gz|registered\.nii\.gz) ]]; then
+                masks+=("$file")
+            fi
+        done < <(find "$segmentation_dir" -name "*.nii.gz" -type f -print0 2>/dev/null)
+        log_message "Fallback search found ${#masks[@]} potential masks"
+    fi
     
     # 3. Transform segmentations to original space
     local orig_space_dir="${output_dir}/original_space"

@@ -498,7 +498,7 @@ extract_brainstem_with_flair() {
         fi
     fi
     
-    if ! echo "$std_intensity" | grep -E '^[0-9]*\.?[0-9]+$' > /dev/null; then
+    if ! echo "$std_intensity" | grep -E '^[[:space:]]*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$' > /dev/null; then
         cleanup_and_fail 1 "Standard deviation is not a valid number: $std_intensity"
         return 1
     fi

@@ -94,13 +94,26 @@ safe_fslmaths() {
     local description="$1"
     shift
     
-    # Pre-validate all input files
+    # Pre-validate all input files (but NOT the output file)
     local has_input_files=false
     local input_files=()
+    local output_file=""
     
+    # First pass: identify the output file (typically the last .nii.gz argument)
+    local args=("$@")
+    for ((i=${#args[@]}-1; i>=0; i--)); do
+        local arg="${args[i]}"
+        if [[ "$arg" == *.nii.gz ]] && [[ ! "$arg" == -* ]]; then
+            output_file="$arg"
+            log_message "Identified output file: $output_file"
+            break
+        fi
+    done
+    
+    # Second pass: validate input files (excluding the output file)
     for arg in "$@"; do
-        # Skip flags and output files
-        if [[ "$arg" == -* ]] || [[ "$arg" == *"_output"* ]] || [[ "$arg" == *"_temp"* ]]; then
+        # Skip flags, operators, and the output file
+        if [[ "$arg" == -* ]] || [[ "$arg" == "$output_file" ]]; then
             continue
         fi
         
@@ -163,14 +176,43 @@ safe_fslmaths() {
     if [ $status -ne 0 ]; then
         log_formatted "ERROR" "$description: fslmaths failed with exit code $status"
         log_message "Command was: fslmaths $*"
+        log_message "Working directory: $(pwd)"
         log_message "Input files were:"
         for file in "${input_files[@]}"; do
             if [ -f "$file" ]; then
-                log_message "  ✓ $file (exists, $(stat -f%z "$file" 2>/dev/null || echo "?") bytes)"
+                local file_size=$(stat -f%z "$file" 2>/dev/null || stat --format="%s" "$file" 2>/dev/null || echo "?")
+                log_message "  ✓ $file (exists, $file_size bytes)"
+                
+                # Check if file is readable and get basic info
+                if fslinfo "$file" >/dev/null 2>&1; then
+                    local dims=$(fslinfo "$file" | grep -E "^dim[1-3]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+                    local datatype=$(fslinfo "$file" | grep "^data_type" | awk '{print $2}')
+                    log_message "    Dimensions: $dims, Datatype: $datatype"
+                else
+                    log_message "    WARNING: File exists but fslinfo failed - may be corrupted"
+                fi
             else
                 log_message "  ✗ $file (missing)"
             fi
         done
+        
+        # Check output file expectations (already identified during input validation)
+        
+        if [ -n "$output_file" ]; then
+            log_message "Expected output file: $output_file"
+            local output_dir=$(dirname "$output_file")
+            if [ -d "$output_dir" ]; then
+                log_message "Output directory exists: $output_dir"
+                if [ -w "$output_dir" ]; then
+                    log_message "Output directory is writable"
+                else
+                    log_message "ERROR: Output directory is not writable"
+                fi
+            else
+                log_message "ERROR: Output directory does not exist: $output_dir"
+            fi
+        fi
+        
         return $status
     fi
     
