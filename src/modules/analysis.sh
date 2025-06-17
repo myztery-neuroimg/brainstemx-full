@@ -174,30 +174,29 @@ detect_hyperintensities() {
         fslmaths "$wm_prob" -thr 0.9 -bin "$wm_mask"
     fi
     
-    # Create a supratentorial mask (excluding brainstem and cerebellum)
-    # Erode the whole brain mask 3 times from the bottom to approximate supratentorial region
+    # Create anatomically accurate supratentorial mask using atlas-based approach
     local brain_mask="${out_prefix}_brain_mask.nii.gz"
     fslmaths "$flair_brain" -bin "$brain_mask"
     
-    # Get dimensions
-    local dims=($(fslinfo "$brain_mask" | grep ^dim | awk '{print $2}'))
-    local z_dim=${dims[2]}
-    local z_20percent=$(echo "$z_dim * 0.2" | bc | cut -d. -f1)
+    # Use atlas-based supratentorial mask creation with fallback to z-cut
+    create_supratentorial_mask "$brain_mask" "$flair_brain" "$supratentorial_mask"
     
-    # Create a mask excluding the lower 20% of the brain (approximating infratentorial regions)
-    fslmaths "$brain_mask" -roi 0 -1 0 -1 $z_20percent -1 0 1 -binv -mul "$brain_mask" "$supratentorial_mask"
+    # Create a cortical ribbon mask (GM/WM boundary) using modal dilation
+    fslmaths "$wm_mask" -dilM -sub "$wm_mask" -mul "$gm_mask" -bin "$cortical_ribbon_mask"
     
-    # Create a cortical ribbon mask (GM/WM boundary)
-    fslmaths "$wm_mask" -dilate -sub "$wm_mask" -mul "$gm_mask" -bin "$cortical_ribbon_mask"
+    # 3) Implement regional WM statistics to address inhomogeneity
+    log_message "Computing regional WM statistics to address tissue inhomogeneity..."
     
-    # 3) Compute WM stats to define threshold, using the WM probability map for weighting
-    local mean_wm
-    local sd_wm
-    mean_wm=$(fslstats "$flair_brain" -k "$wm_mask" -M)
-    sd_wm=$(fslstats "$flair_brain" -k "$wm_mask" -S)
-    log_message "WM mean: $mean_wm   WM std: $sd_wm"
-
-    # Use the global THRESHOLD_WM_SD_MULTIPLIER or default to 2.0 if not set
+    # Get global WM stats for reference
+    local global_mean_wm=$(fslstats "$flair_brain" -k "$wm_mask" -M)
+    local global_sd_wm=$(fslstats "$flair_brain" -k "$wm_mask" -S)
+    log_message "Global WM mean: $global_mean_wm   Global WM std: $global_sd_wm"
+    
+    # Compute regional statistics using slice-by-slice analysis
+    local regional_stats_file="${out_prefix}_regional_wm_stats.txt"
+    compute_regional_wm_statistics "$flair_brain" "$wm_mask" "$regional_stats_file"
+    
+    # Use the global THRESHOLD_WM_SD_MULTIPLIER or default to 1.25 if not set
     local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
     log_message "Using threshold multiplier from config: $threshold_multiplier"
     
@@ -223,15 +222,17 @@ detect_hyperintensities() {
     
     log_message "Using thresholds: ${thresholds[*]}"
     
-    # Create multiple thresholds with improved filtering
+    # Create multiple thresholds with enhanced regional filtering
     for mult in "${thresholds[@]}"; do
-        local thr_val
-        thr_val=$(echo "$mean_wm + $mult * $sd_wm" | bc -l)
-        log_message "Threshold = WM_mean + $mult * WM_SD = $thr_val"
+        log_message "Processing threshold multiplier: $mult"
         
-        # Threshold FLAIR brain
+        # Create regional adaptive threshold map
+        local regional_thr_map="${out_prefix}_regional_thr_map_${mult}.nii.gz"
+        create_regional_threshold_map "$flair_brain" "$wm_mask" "$regional_stats_file" "$mult" "$regional_thr_map"
+        
+        # Apply regional threshold to FLAIR brain
         local init_thr="${out_prefix}_init_thr_${mult}.nii.gz"
-        ThresholdImage 3 "$flair_brain" "$init_thr" "$thr_val" 999999 "$flair_mask"
+        apply_regional_threshold "$flair_brain" "$regional_thr_map" "$flair_mask" "$init_thr"
         
         # Combine with tissue masks - focus on supratentorial white matter
         # Weight by WM probability to prioritize hyperintensities in WM
@@ -247,23 +248,37 @@ detect_hyperintensities() {
         local combined_thr="${out_prefix}_combined_thr_${mult}.nii.gz"
         fslmaths "$init_thr" -mas "$tissue_mask" "$combined_thr"
         
-        # Improved morphological cleanup
+        # Improved morphological cleanup using proper cluster command
         local cleaned="${out_prefix}_cleaned_${mult}.nii.gz"
         
-        # Use FSL's -cluster option to remove speckles
+        # Use FSL cluster command for proper connected components analysis
         # Default threshold of 2 voxels for initial cleaning
-        fslmaths "$combined_thr" -bin -cluster --thresh=2 -oindex "$cleaned"
+        local min_size_initial="${MIN_HYPERINTENSITY_SIZE:-2}"
+        log_message "Initial cluster filtering with minimum size: $min_size_initial voxels"
+        
+        if cluster --in="$combined_thr" --thresh=0.5 --connectivity=26 \
+                  --minextent="$min_size_initial" --oindex="$cleaned" > /dev/null 2>&1; then
+            log_message "✓ Initial cluster filtering successful"
+        else
+            log_formatted "WARNING" "Initial cluster filtering failed, using binary mask"
+            fslmaths "$combined_thr" -bin "$cleaned"
+        fi
         
         # Further cleanup with connected components analysis
-        # Use configurable minimum cluster size from the config file (default: 2)
-        local min_size="${MIN_HYPERINTENSITY_SIZE:-2}"
-        log_message "Using minimum hyperintensity size from config: $min_size"
+        # Use configurable minimum cluster size from the config file (default: 4)
+        local min_size="${MIN_HYPERINTENSITY_SIZE:-4}"
+        log_message "Final cluster filtering with minimum size: $min_size voxels"
         
         local final_mask="${out_prefix}_thresh${mult}.nii.gz"
         
-        # Using cluster command for more efficient connected components analysis
-        cluster --in="$cleaned" --thresh=0.5 --osize="${out_prefix}_cluster_sizes_${mult}" \
-                --connectivity=26 --minextent=$min_size --oindex="$final_mask"
+        # Using cluster command for final connected components analysis
+        if cluster --in="$cleaned" --thresh=0.5 --osize="${out_prefix}_cluster_sizes_${mult}" \
+                  --connectivity=26 --minextent="$min_size" --oindex="$final_mask" > /dev/null 2>&1; then
+            log_message "✓ Final cluster filtering successful"
+        else
+            log_formatted "WARNING" "Final cluster filtering failed, using cleaned mask"
+            cp "$cleaned" "$final_mask"
+        fi
         
         log_message "Final hyperintensity mask (threshold $mult) saved to: $final_mask"
         
@@ -275,6 +290,10 @@ detect_hyperintensities() {
         local intensity_version="${out_prefix}_thresh${mult}_intensity.nii.gz"
         fslmaths "$flair_brain" -mas "${out_prefix}_thresh${mult}_bin.nii.gz" "$intensity_version"
         log_message "Intensity-preserved hyperintensity mask created: $intensity_version"
+        
+        # Analyze clusters for this threshold
+        log_message "Analyzing clusters for threshold $mult..."
+        analyze_clusters "${out_prefix}_thresh${mult}_bin.nii.gz" "${out_prefix}_clusters_${mult}"
     done
     
     # Clean up temporary files
@@ -368,6 +387,273 @@ EOF
     return 0
 }
 
+# Function to create anatomically accurate supratentorial mask using atlas-based approach
+create_supratentorial_mask() {
+    local brain_mask="$1"
+    local reference_image="$2"
+    local output_mask="$3"
+    
+    log_message "Creating anatomically accurate supratentorial mask using atlas-based approach..."
+    
+    if [ ! -f "$brain_mask" ] || [ ! -f "$reference_image" ]; then
+        log_formatted "ERROR" "Missing input files for supratentorial mask creation"
+        return 1
+    fi
+    
+    local temp_dir=$(mktemp -d)
+    local atlas_success=false
+    
+    # Method 1: Try Harvard-Oxford atlas (if available)
+    if [ -n "$FSLDIR" ] && [ -d "$FSLDIR/data/atlases" ]; then
+        log_message "Attempting Harvard-Oxford atlas-based supratentorial mask..."
+        
+        local ho_cortical="$FSLDIR/data/atlases/HarvardOxford/HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"
+        local ho_subcortical="$FSLDIR/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr0-2mm.nii.gz"
+        
+        if [ -f "$ho_cortical" ] && [ -f "$ho_subcortical" ]; then
+            # Register Harvard-Oxford atlas to subject space
+            local atlas_registered="${temp_dir}/ho_atlas_registered.nii.gz"
+            local atlas_combined="${temp_dir}/ho_combined.nii.gz"
+            
+            # Combine cortical and subcortical atlases
+            fslmaths "$ho_cortical" -add "$ho_subcortical" -bin "$atlas_combined"
+            
+            # Register to subject space using FLIRT
+            if flirt -in "$atlas_combined" -ref "$reference_image" -out "$atlas_registered" \
+                    -interp nearestneighbour -dof 12 > /dev/null 2>&1; then
+                
+                # Create supratentorial mask by excluding brainstem regions
+                # Harvard-Oxford subcortical labels: 7=Brainstem
+                local ho_sub_reg="${temp_dir}/ho_sub_registered.nii.gz"
+                if flirt -in "$ho_subcortical" -ref "$reference_image" -out "$ho_sub_reg" \
+                        -interp nearestneighbour -dof 12 > /dev/null 2>&1; then
+                    
+                    # Create mask excluding brainstem (label 7) and cerebellum regions
+                    fslmaths "$ho_sub_reg" -thr 7 -uthr 7 -bin "${temp_dir}/brainstem_mask.nii.gz"
+                    
+                    # Create supratentorial mask (brain - brainstem - cerebellum)
+                    fslmaths "$atlas_registered" -sub "${temp_dir}/brainstem_mask.nii.gz" \
+                             -thr 0 -bin -mas "$brain_mask" "$output_mask"
+                    
+                    atlas_success=true
+                    log_message "✓ Successfully created Harvard-Oxford atlas-based supratentorial mask"
+                fi
+            fi
+        fi
+    fi
+    
+    # Method 2: Try MNI template-based approach (if available)
+    if [ "$atlas_success" = false ] && [ -n "$FSLDIR" ] && [ -d "$FSLDIR/data/standard" ]; then
+        log_message "Attempting MNI template-based supratentorial mask..."
+        
+        local mni_brain="$FSLDIR/data/standard/MNI152_T1_2mm_brain.nii.gz"
+        if [ -f "$mni_brain" ]; then
+            # Create MNI-based supratentorial mask using anatomical landmarks
+            local mni_registered="${temp_dir}/mni_registered.nii.gz"
+            
+            if flirt -in "$mni_brain" -ref "$reference_image" -out "$mni_registered" \
+                    -dof 12 > /dev/null 2>&1; then
+                
+                # Use MNI coordinates to exclude infratentorial regions
+                # Approximate supratentorial region: exclude inferior regions (z < -40mm in MNI space)
+                local mni_dims=($(fslinfo "$mni_brain" | grep ^dim | awk '{print $2}'))
+                local mni_z_dim=${mni_dims[2]}
+                local mni_exclude_slices=$(echo "$mni_z_dim * 0.25" | bc | cut -d. -f1)  # Bottom 25%
+                
+                # Create supratentorial mask in MNI space
+                local mni_supra="${temp_dir}/mni_supratentorial.nii.gz"
+                fslmaths "$mni_brain" -bin -roi 0 -1 0 -1 $mni_exclude_slices -1 0 1 \
+                         -binv -mul "$mni_brain" -bin "$mni_supra"
+                
+                # Register back to subject space
+                if flirt -in "$mni_supra" -ref "$reference_image" -out "$output_mask" \
+                        -interp nearestneighbour -dof 12 > /dev/null 2>&1; then
+                    
+                    fslmaths "$output_mask" -mas "$brain_mask" "$output_mask"
+                    atlas_success=true
+                    log_message "✓ Successfully created MNI template-based supratentorial mask"
+                fi
+            fi
+        fi
+    fi
+    
+    # Method 3: Fallback to enhanced z-cut method with morphological refinement
+    if [ "$atlas_success" = false ]; then
+        log_message "Atlas-based methods failed, using enhanced anatomical z-cut method..."
+        
+        # Get dimensions
+        local dims=($(fslinfo "$brain_mask" | grep ^dim | awk '{print $2}'))
+        local z_dim=${dims[2]}
+        
+        # Use more conservative exclusion (15% instead of 20%) and add morphological operations
+        local z_exclude=$(echo "$z_dim * 0.15" | bc | cut -d. -f1)
+        
+        # Create initial supratentorial mask
+        fslmaths "$brain_mask" -roi 0 -1 0 -1 $z_exclude -1 0 1 -binv -mul "$brain_mask" \
+                 "${temp_dir}/initial_supra.nii.gz"
+        
+        # Morphological operations to refine the mask
+        # Erode slightly to remove connections to brainstem
+        fslmaths "${temp_dir}/initial_supra.nii.gz" -ero -dilF "$output_mask"
+        
+        # Fill holes and smooth
+        fslmaths "$output_mask" -fillh -s 1 -thr 0.5 -bin "$output_mask"
+        
+        log_message "✓ Created enhanced z-cut based supratentorial mask"
+    fi
+    
+    # Quality check: ensure mask is reasonable
+    local mask_volume=$(fslstats "$output_mask" -V | awk '{print $2}')
+    local brain_volume=$(fslstats "$brain_mask" -V | awk '{print $2}')
+    local ratio=$(echo "scale=2; $mask_volume / $brain_volume" | bc)
+    
+    log_message "Supratentorial mask volume: ${mask_volume} mm³ (${ratio} of brain volume)"
+    
+    if (( $(echo "$ratio < 0.4" | bc -l) )) || (( $(echo "$ratio > 0.9" | bc -l) )); then
+        log_formatted "WARNING" "Supratentorial mask ratio seems unusual: $ratio"
+        log_message "Expected range: 0.4-0.9 of total brain volume"
+    fi
+    
+    rm -rf "$temp_dir"
+    return 0
+}
+
+# Function to compute regional WM statistics to address inhomogeneity
+compute_regional_wm_statistics() {
+    local flair_brain="$1"
+    local wm_mask="$2"
+    local output_file="$3"
+    
+    log_message "Computing regional WM statistics for adaptive thresholding..."
+    
+    if [ ! -f "$flair_brain" ] || [ ! -f "$wm_mask" ]; then
+        log_formatted "ERROR" "Missing input files for regional WM statistics"
+        return 1
+    fi
+    
+    # Get image dimensions
+    local dims=($(fslinfo "$flair_brain" | grep ^dim | awk '{print $2}'))
+    local z_dim=${dims[2]}
+    
+    # Create output file with header
+    {
+        echo "# Regional WM Statistics"
+        echo "# Generated: $(date)"
+        echo "# Slice\tMean\tStdDev\tVoxelCount\tMedian\tRobustRange"
+    } > "$output_file"
+    
+    # Process each axial slice
+    local temp_dir=$(mktemp -d)
+    for ((slice=0; slice<z_dim; slice++)); do
+        # Extract slice from FLAIR and WM mask
+        local flair_slice="${temp_dir}/flair_slice_${slice}.nii.gz"
+        local wm_slice="${temp_dir}/wm_slice_${slice}.nii.gz"
+        
+        fslroi "$flair_brain" "$flair_slice" 0 -1 0 -1 $slice 1
+        fslroi "$wm_mask" "$wm_slice" 0 -1 0 -1 $slice 1
+        
+        # Get statistics for this slice
+        local slice_stats=$(fslstats "$flair_slice" -k "$wm_slice" -M -S -V)
+        if [ -n "$slice_stats" ]; then
+            local slice_mean=$(echo "$slice_stats" | awk '{print $1}')
+            local slice_std=$(echo "$slice_stats" | awk '{print $2}')
+            local slice_nvoxels=$(echo "$slice_stats" | awk '{print $3}')
+            
+            # Get median and robust range (2nd-98th percentile)
+            local slice_median=$(fslstats "$flair_slice" -k "$wm_slice" -P 50)
+            local slice_p2=$(fslstats "$flair_slice" -k "$wm_slice" -P 2)
+            local slice_p98=$(fslstats "$flair_slice" -k "$wm_slice" -P 98)
+            local robust_range=$(echo "$slice_p98 - $slice_p2" | bc -l)
+            
+            # Only include slices with sufficient WM voxels
+            if [ "${slice_nvoxels%.*}" -gt 10 ]; then
+                echo -e "${slice}\t${slice_mean}\t${slice_std}\t${slice_nvoxels}\t${slice_median}\t${robust_range}" >> "$output_file"
+            fi
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    local num_slices=$(tail -n +5 "$output_file" | wc -l)
+    log_message "✓ Computed regional statistics for $num_slices slices"
+    
+    return 0
+}
+
+# Function to create regional threshold map
+create_regional_threshold_map() {
+    local flair_brain="$1"
+    local wm_mask="$2"
+    local stats_file="$3"
+    local multiplier="$4"
+    local output_map="$5"
+    
+    log_message "Creating regional threshold map with multiplier: $multiplier"
+    
+    if [ ! -f "$stats_file" ]; then
+        log_formatted "ERROR" "Regional statistics file not found: $stats_file"
+        return 1
+    fi
+    
+    # Get image dimensions
+    local dims=($(fslinfo "$flair_brain" | grep ^dim | awk '{print $2}'))
+    local z_dim=${dims[2]}
+    
+    # Create initial threshold map (copy of FLAIR brain structure)
+    fslmaths "$flair_brain" -mul 0 "$output_map"
+    
+    local temp_dir=$(mktemp -d)
+    
+    # Process each slice with regional threshold
+    while IFS=$'\t' read -r slice mean std nvoxels median robust_range; do
+        # Skip header lines
+        if [[ "$slice" =~ ^[0-9]+$ ]]; then
+            # Calculate regional threshold for this slice
+            local regional_threshold=$(echo "$mean + $multiplier * $std" | bc -l)
+            
+            # Create slice-specific threshold map
+            local slice_map="${temp_dir}/thresh_slice_${slice}.nii.gz"
+            fslmaths "$flair_brain" -roi 0 -1 0 -1 $slice 1 -mul 0 -add "$regional_threshold" "$slice_map"
+            
+            # Add this slice to the output map
+            if [ $slice -eq 0 ]; then
+                cp "$slice_map" "$output_map"
+            else
+                # Concatenate along z-axis
+                local temp_map="${temp_dir}/temp_concat.nii.gz"
+                fslmerge -z "$temp_map" "$output_map" "$slice_map"
+                mv "$temp_map" "$output_map"
+            fi
+        fi
+    done < <(tail -n +5 "$stats_file")
+    
+    rm -rf "$temp_dir"
+    
+    log_message "✓ Created regional adaptive threshold map"
+    return 0
+}
+
+# Function to apply regional threshold
+apply_regional_threshold() {
+    local flair_brain="$1"
+    local threshold_map="$2"
+    local brain_mask="$3"
+    local output_mask="$4"
+    
+    log_message "Applying regional adaptive threshold..."
+    
+    # Create binary mask where FLAIR > regional threshold
+    fslmaths "$flair_brain" -sub "$threshold_map" -thr 0 -bin "$output_mask"
+    
+    # Apply brain mask
+    if [ -f "$brain_mask" ]; then
+        fslmaths "$output_mask" -mas "$brain_mask" "$output_mask"
+    fi
+    
+    log_message "✓ Applied regional adaptive threshold"
+    return 0
+}
+
 # Function to analyze clusters
 analyze_clusters() {
     local input_mask="$1"
@@ -442,43 +728,115 @@ analyze_clusters() {
     return 0
 }
 
-# Function to quantify volumes
+# Function to quantify volumes with enhanced per-threshold cluster analysis
 quantify_volumes() {
     local prefix="$1"
     local output_file="${prefix}_volumes.csv"
     
-    log_message "Quantifying volumes for $prefix"
+    log_message "Quantifying volumes for $prefix with per-threshold cluster analysis"
     
-    # Create CSV header
-    echo "Threshold,Volume (mm³),NumClusters,LargestCluster (mm³)" > "$output_file"
+    # Create enhanced CSV header
+    echo "Threshold,Volume (mm³),Volume (voxels),NumClusters,LargestCluster (mm³),MeanClusterSize (mm³),RegionalMethod" > "$output_file"
     
-    # Process each threshold
-    for mult in 1.5 2.0 2.5 3.0; do
+    # Get threshold values from available files
+    local available_thresholds=()
+    for thresh_file in "${prefix}_thresh"*"_bin.nii.gz"; do
+        if [ -f "$thresh_file" ]; then
+            # Extract threshold value from filename
+            local thresh=$(basename "$thresh_file" | sed -n 's/.*_thresh\([0-9.]*\)_bin\.nii\.gz/\1/p')
+            if [ -n "$thresh" ]; then
+                available_thresholds+=("$thresh")
+            fi
+        fi
+    done
+    
+    # Sort thresholds numerically
+    IFS=$'\n' available_thresholds=($(sort -n <<<"${available_thresholds[*]}"))
+    unset IFS
+    
+    log_message "Found ${#available_thresholds[@]} threshold variants: ${available_thresholds[*]}"
+    
+    # Process each available threshold
+    for mult in "${available_thresholds[@]}"; do
         local mask_file="${prefix}_thresh${mult}_bin.nii.gz"
-        local cluster_file="${prefix}_clusters.txt"
+        local cluster_file="${prefix}_clusters_${mult}.txt"
+        local cluster_sorted="${prefix}_clusters_${mult}_sorted.txt"
         
         if [ ! -f "$mask_file" ]; then
             log_formatted "WARNING" "Mask file not found: $mask_file"
             continue
         fi
         
-        # Get total volume
-        local total_volume=$(fslstats "$mask_file" -V | awk '{print $1}')
+        # Get total volume in both mm³ and voxels
+        local volume_stats=$(fslstats "$mask_file" -V)
+        local total_volume_voxels=$(echo "$volume_stats" | awk '{print $1}')
+        local total_volume_mm3=$(echo "$volume_stats" | awk '{print $2}')
         
-        # Get number of clusters and largest cluster size
+        # Get cluster statistics for this specific threshold
         local num_clusters=0
         local largest_cluster=0
+        local mean_cluster_size=0
         
-        if [ -f "${prefix}_clusters_sorted.txt" ]; then
-            num_clusters=$(wc -l < "${prefix}_clusters_sorted.txt")
-            largest_cluster=$(head -1 "${prefix}_clusters_sorted.txt" | awk '{print $2}')
+        if [ -f "$cluster_file" ]; then
+            # Count clusters (subtract header line)
+            num_clusters=$(tail -n +2 "$cluster_file" | wc -l)
+            
+            # Create sorted version if it doesn't exist
+            if [ ! -f "$cluster_sorted" ]; then
+                tail -n +2 "$cluster_file" | sort -k2,2nr > "$cluster_sorted"
+            fi
+            
+            if [ -f "$cluster_sorted" ] && [ -s "$cluster_sorted" ]; then
+                # Get largest cluster size
+                largest_cluster=$(head -1 "$cluster_sorted" | awk '{print $2}')
+                
+                # Calculate mean cluster size
+                mean_cluster_size=$(awk '{sum+=$2; count+=1} END {if(count>0) print sum/count; else print 0}' "$cluster_sorted")
+            fi
+        else
+            log_message "No cluster analysis file found for threshold $mult, computing basic stats"
         fi
         
-        # Add to CSV
-        echo "${mult},${total_volume},${num_clusters},${largest_cluster}" >> "$output_file"
+        # Determine if regional method was used (check for regional stats file)
+        local regional_method="No"
+        if [ -f "${prefix}_regional_wm_stats.txt" ]; then
+            regional_method="Yes"
+        fi
+        
+        # Add to CSV with enhanced information
+        echo "${mult},${total_volume_mm3},${total_volume_voxels},${num_clusters},${largest_cluster},${mean_cluster_size},${regional_method}" >> "$output_file"
+        
+        log_message "✓ Threshold ${mult}: ${total_volume_mm3} mm³, ${num_clusters} clusters"
     done
     
+    # Create summary report
+    local summary_file="${prefix}_volume_summary.txt"
+    {
+        echo "Volume Quantification Summary"
+        echo "============================"
+        echo "Generated: $(date)"
+        echo "Prefix: $prefix"
+        echo ""
+        echo "Available thresholds: ${#available_thresholds[@]}"
+        echo "Regional adaptive method: $([ -f "${prefix}_regional_wm_stats.txt" ] && echo "Yes" || echo "No")"
+        echo ""
+        echo "Detailed results in: $(basename "$output_file")"
+        echo ""
+        
+        if [ -f "$output_file" ]; then
+            echo "Summary by threshold:"
+            echo "--------------------"
+            while IFS=, read -r thresh vol_mm3 vol_vox nclusters largest mean_size regional; do
+                if [[ "$thresh" != "Threshold" ]]; then  # Skip header
+                    printf "  %.1f SD: %8.1f mm³ (%3d clusters, largest: %6.1f mm³)\n" \
+                           "$thresh" "$vol_mm3" "$nclusters" "$largest"
+                fi
+            done < "$output_file"
+        fi
+    } > "$summary_file"
+    
     log_message "Volume quantification complete. Results saved to: $output_file"
+    log_message "Summary report created: $summary_file"
     return 0
 }
 
@@ -1952,6 +2310,10 @@ EOF
 
 # Export functions
 export -f detect_hyperintensities
+export -f create_supratentorial_mask
+export -f compute_regional_wm_statistics
+export -f create_regional_threshold_map
+export -f apply_regional_threshold
 export -f analyze_clusters
 export -f quantify_volumes
 export -f create_multi_threshold_comparison
@@ -1963,4 +2325,4 @@ export -f run_comprehensive_analysis
 export -f create_3d_visualization_script
 export -f create_comprehensive_flair_visualizations
 
-log_message "Analysis module loaded"
+log_message "Analysis module loaded with enhanced regional adaptive thresholding"
