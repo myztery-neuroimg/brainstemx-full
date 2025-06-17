@@ -35,7 +35,13 @@ track_pipeline_progress() {
     expected_outputs["T2_FLAIR_registered.nii.gz"]="calculate_cc:threshold=0.5"
     expected_outputs["brainstem_mask.nii.gz"]="check_image_statistics:min_nonzero=1000,max_nonzero=50000"
     expected_outputs["pons_mask.nii.gz"]="check_image_statistics:min_nonzero=500,max_nonzero=20000"
-    expected_outputs["dorsal_pons_mask.nii.gz"]="check_image_statistics:min_nonzero=200,max_nonzero=10000"
+    # Talairach detailed subdivisions
+    expected_outputs["left_medulla_mask.nii.gz"]="check_image_statistics:min_nonzero=100,max_nonzero=5000"
+    expected_outputs["right_medulla_mask.nii.gz"]="check_image_statistics:min_nonzero=100,max_nonzero=5000"
+    expected_outputs["left_pons_mask.nii.gz"]="check_image_statistics:min_nonzero=200,max_nonzero=8000"
+    expected_outputs["right_pons_mask.nii.gz"]="check_image_statistics:min_nonzero=200,max_nonzero=8000"
+    expected_outputs["left_midbrain_mask.nii.gz"]="check_image_statistics:min_nonzero=100,max_nonzero=4000"
+    expected_outputs["right_midbrain_mask.nii.gz"]="check_image_statistics:min_nonzero=100,max_nonzero=4000"
     
     # Check each expected output
     local all_present=true
@@ -1911,12 +1917,24 @@ qa_verify_all_segmentations() {
             local region_name=$(basename "$pons_file" .nii.gz)
             local reference_img
             
-            # Extract the specific pons type (pons, dorsal_pons, ventral_pons)
-            if [[ "$region_name" == *"dorsal_pons"* ]]; then
-                region_name="dorsal_pons"
+            # Extract the specific brainstem subdivision type
+            if [[ "$region_name" == *"left_pons"* ]]; then
+                region_name="left_pons"
                 reference_img="$t1_std"
-            elif [[ "$region_name" == *"ventral_pons"* ]]; then
-                region_name="ventral_pons"
+            elif [[ "$region_name" == *"right_pons"* ]]; then
+                region_name="right_pons"
+                reference_img="$t1_std"
+            elif [[ "$region_name" == *"left_medulla"* ]]; then
+                region_name="left_medulla"
+                reference_img="$t1_std"
+            elif [[ "$region_name" == *"right_medulla"* ]]; then
+                region_name="right_medulla"
+                reference_img="$t1_std"
+            elif [[ "$region_name" == *"left_midbrain"* ]]; then
+                region_name="left_midbrain"
+                reference_img="$t1_std"
+            elif [[ "$region_name" == *"right_midbrain"* ]]; then
+                region_name="right_midbrain"
                 reference_img="$t1_std"
             elif [[ "$region_name" == *"_orig"* ]]; then
                 # Original space pons

@@ -653,14 +653,191 @@ transform_segmentation_to_original() {
     return 0
 }
 
-# Function to analyze hyperintensities in Talairach brainstem regions
+# Helper function to analyze a specific region and modality
+analyze_region_modality() {
+    local region="$1"
+    local region_mask="$2"
+    local image_file="$3"
+    local modality="$4"        # "FLAIR" or "T1"
+    local intensity_type="$5"  # "hyper" or "hypo"
+    local base_hyper_dir="$6"
+    
+    # Create modality-specific output directory
+    local region_output_dir="${base_hyper_dir}/${region}_${modality}"
+    mkdir -p "$region_output_dir"
+    
+    # Create masked image for this region
+    local region_image="${region_output_dir}/${region}_${modality}.nii.gz"
+    if ! fslmaths "$image_file" -mas "$region_mask" "$region_image"; then
+        log_formatted "WARNING" "Failed to create masked ${modality} for $region"
+        return 1
+    fi
+    
+    # Get region statistics for adaptive thresholding
+    local region_stats=$(fslstats "$region_image" -k "$region_mask" -M -S)
+    local region_mean=$(echo "$region_stats" | awk '{print $1}')
+    local region_std=$(echo "$region_stats" | awk '{print $2}')
+    
+    if [ "$region_mean" = "0.000000" ] || [ -z "$region_std" ]; then
+        log_message "Skipping ${modality} ${intensity_type}intensities in $region - no signal detected"
+        return 1
+    fi
+    
+    log_message "$region ${modality} statistics - Mean: $region_mean, StdDev: $region_std"
+    
+    # Apply modality-specific thresholding
+    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+    local threshold_val
+    local abnormality_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities.nii.gz"
+    
+    if [ "$intensity_type" = "hyper" ]; then
+        # FLAIR hyperintensities: mean + multiplier * std (above threshold)
+        threshold_val=$(echo "$region_mean + $threshold_multiplier * $region_std" | bc -l)
+        log_message "Using hyperintensity threshold: $threshold_val for ${modality} $region"
+        
+        # Create hyperintensity mask (above threshold)
+        if ! fslmaths "$region_image" -thr "$threshold_val" -bin "$abnormality_mask"; then
+            log_formatted "WARNING" "Failed to create ${modality} hyperintensity mask for $region"
+            return 1
+        fi
+    else
+        # T1 hypointensities: mean - multiplier * std (below threshold)
+        threshold_val=$(echo "$region_mean - $threshold_multiplier * $region_std" | bc -l)
+        log_message "Using hypointensity threshold: $threshold_val for ${modality} $region"
+        
+        # Create hypointensity mask (below threshold)
+        if ! fslmaths "$region_image" -uthr "$threshold_val" -bin "$abnormality_mask"; then
+            log_formatted "WARNING" "Failed to create ${modality} hypointensity mask for $region"
+            return 1
+        fi
+    fi
+    
+    # Apply minimum cluster size filtering
+    local min_size="${MIN_HYPERINTENSITY_SIZE:-4}"
+    local filtered_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities_filtered.nii.gz"
+    
+    if cluster --in="$abnormality_mask" --thresh=0.5 \
+               --connectivity=26 --minextent="$min_size" \
+               --oindex="$filtered_mask" > /dev/null 2>&1; then
+        log_message "✓ Applied clustering filter (min size: $min_size voxels) to ${modality} $region"
+    else
+        log_message "Clustering failed for ${modality} $region, using unfiltered mask"
+        cp "$abnormality_mask" "$filtered_mask"
+    fi
+    
+    # Create intensity version
+    local abnormality_intensity="${region_output_dir}/${region}_${modality}_${intensity_type}intensities_intensity.nii.gz"
+    fslmaths "$region_image" -mas "$filtered_mask" "$abnormality_intensity"
+    
+    # Create RGB overlay for visualization
+    local overlay="${region_output_dir}/overlay.nii.gz"
+    log_message "Creating ${modality} RGB overlay for $region..."
+    
+    # Check dimensions match
+    local image_dims=$(fslinfo "$region_image" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local mask_dims=$(fslinfo "$filtered_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    
+    if [ "$image_dims" = "$mask_dims" ]; then
+        # Create RGB channels
+        local temp_dir=$(mktemp -d)
+        
+        # Red channel - background image
+        local max_val=$(fslstats "$region_image" -k "$region_mask" -R | awk '{print $2}')
+        if [ "$max_val" != "0.000000" ] && [ -n "$max_val" ]; then
+            fslmaths "$region_image" -div "$max_val" "${temp_dir}/r.nii.gz"
+        else
+            fslmaths "$region_image" -mul 0 "${temp_dir}/r.nii.gz"
+        fi
+        
+        # Green channel - abnormalities (hyperintensities green, hypointensities blue)
+        if [ "$intensity_type" = "hyper" ]; then
+            fslmaths "$filtered_mask" -mul 0.8 "${temp_dir}/g.nii.gz"
+            fslmaths "$filtered_mask" -mul 0 "${temp_dir}/b.nii.gz"
+        else
+            fslmaths "$filtered_mask" -mul 0 "${temp_dir}/g.nii.gz"
+            fslmaths "$filtered_mask" -mul 0.8 "${temp_dir}/b.nii.gz"
+        fi
+        
+        # Blue channel - mask outline (or hypointensities)
+        if [ "$intensity_type" = "hyper" ]; then
+            fslmaths "$region_mask" -edge -bin -mul 0.3 "${temp_dir}/b.nii.gz"
+        fi
+        
+        # Merge RGB channels
+        if fslmerge -t "$overlay" "${temp_dir}/r.nii.gz" "${temp_dir}/g.nii.gz" "${temp_dir}/b.nii.gz"; then
+            log_message "✓ Created ${modality} RGB overlay for $region"
+        else
+            log_formatted "WARNING" "Failed to create ${modality} RGB overlay for $region"
+            # Create fallback overlay
+            fslmaths "$region_image" -add "$filtered_mask" "$overlay"
+        fi
+        
+        rm -rf "$temp_dir"
+    else
+        log_formatted "WARNING" "Dimension mismatch for ${modality} $region overlay - creating fallback"
+        fslmaths "$region_image" -add "$filtered_mask" "$overlay"
+    fi
+    
+    # Quantify results
+    local abnormal_voxels=$(fslstats "$filtered_mask" -V | awk '{print $1}')
+    local abnormal_volume=$(fslstats "$filtered_mask" -V | awk '{print $2}')
+    local region_voxels=$(fslstats "$region_mask" -V | awk '{print $1}')
+    local region_volume=$(fslstats "$region_mask" -V | awk '{print $2}')
+    
+    local percentage="0"
+    if [ "$region_voxels" -gt 0 ]; then
+        percentage=$(echo "scale=2; $abnormal_voxels * 100 / $region_voxels" | bc)
+    fi
+    
+    log_message "✓ $region ${modality} ${intensity_type}intensities results:"
+    log_message "   Abnormal voxels: $abnormal_voxels ($abnormal_volume mm³)"
+    log_message "   Region coverage: ${percentage}%"
+    
+    # Create region summary
+    {
+        echo "Talairach Region ${modality} ${intensity_type^}intensity Analysis"
+        echo "=============================================="
+        echo "Region: $region"
+        echo "Modality: $modality"
+        echo "Analysis type: ${intensity_type}intensities"
+        echo "Date: $(date)"
+        echo ""
+        echo "Input files:"
+        echo "  Image: $(basename "$image_file")"
+        echo "  Mask: $(basename "$region_mask")"
+        echo ""
+        echo "Analysis parameters:"
+        echo "  Threshold multiplier: $threshold_multiplier"
+        echo "  Threshold value: $threshold_val"
+        echo "  Threshold direction: $([ "$intensity_type" = "hyper" ] && echo "above (>)" || echo "below (<)")"
+        echo "  Minimum cluster size: $min_size voxels"
+        echo ""
+        echo "Results:"
+        echo "  Region volume: $region_volume mm³ ($region_voxels voxels)"
+        echo "  Abnormal volume: $abnormal_volume mm³ ($abnormal_voxels voxels)"
+        echo "  Percentage affected: ${percentage}%"
+        echo ""
+        echo "Output files:"
+        echo "  Abnormality mask: $(basename "$filtered_mask")"
+        echo "  Abnormality intensity: $(basename "$abnormality_intensity")"
+        echo "  RGB overlay: $(basename "$overlay")"
+    } > "${region_output_dir}/${region}_${modality}_${intensity_type}intensity_report.txt"
+    
+    log_message "✓ Created ${modality} analysis report: ${region_output_dir}/${region}_${modality}_${intensity_type}intensity_report.txt"
+    
+    return 0
+}
+
+# Function to analyze intensity abnormalities in Talairach brainstem regions (both FLAIR and T1)
 analyze_talairach_hyperintensities() {
     local flair_file="$1"
     local analysis_dir="$2"
     local output_basename="$3"
+    local t1_file="${4:-}"  # Optional T1 file
     
-    log_formatted "INFO" "===== TALAIRACH HYPERINTENSITY ANALYSIS ====="
+    log_formatted "INFO" "===== TALAIRACH INTENSITY ABNORMALITY ANALYSIS ====="
     log_message "FLAIR input: $flair_file"
+    log_message "T1 input: ${t1_file:-none provided}"
     log_message "Analysis directory: $analysis_dir"
     log_message "Output basename: $output_basename"
     
@@ -673,6 +850,29 @@ analyze_talairach_hyperintensities() {
     if [ ! -d "$analysis_dir" ]; then
         log_formatted "ERROR" "Analysis directory not found: $analysis_dir"
         return 1
+    fi
+    
+    # Try to find T1 file if not provided
+    if [ -z "$t1_file" ] || [ ! -f "$t1_file" ]; then
+        log_message "Searching for T1 file..."
+        local t1_candidates=(
+            "${RESULTS_DIR}/standardized/"*"T1"*"_std.nii.gz"
+            "${RESULTS_DIR}/bias_corrected/"*"T1"*".nii.gz"
+            "${RESULTS_DIR}/preprocessing/"*"T1"*".nii.gz"
+        )
+        
+        for candidate in "${t1_candidates[@]}"; do
+            if [ -f "$candidate" ]; then
+                t1_file="$candidate"
+                log_message "Found T1 file: $t1_file"
+                break
+            fi
+        done
+        
+        if [ ! -f "$t1_file" ]; then
+            log_formatted "WARNING" "No T1 file found - will only analyze FLAIR hyperintensities"
+            t1_file=""
+        fi
     fi
     
     # Create hyperintensities output directory
@@ -690,9 +890,10 @@ analyze_talairach_hyperintensities() {
         "pons"  # combined pons
     )
     
-    log_message "Analyzing hyperintensities in Talairach brainstem regions..."
+    log_message "Analyzing intensity abnormalities in Talairach brainstem regions..."
+    log_message "Will analyze: FLAIR (hyperintensities) and T1 (hypointensities)"
     
-    # Process each Talairach region
+    # Process each Talairach region for both modalities
     for region in "${talairach_regions[@]}"; do
         # Look for region mask files
         local region_mask=""
@@ -713,167 +914,77 @@ analyze_talairach_hyperintensities() {
             continue
         fi
         
-        log_message "Processing hyperintensities in $region..."
+        log_message "Processing intensity abnormalities in $region..."
         log_message "Using mask: $(basename "$region_mask")"
         
-        # Create region-specific output directory
-        local region_hyper_dir="${hyper_dir}/${region}"
-        mkdir -p "$region_hyper_dir"
+        # Process FLAIR hyperintensities
+        analyze_region_modality "$region" "$region_mask" "$flair_file" "FLAIR" "hyper" "$hyper_dir"
         
-        # Create masked FLAIR for this region
-        local region_flair="${region_hyper_dir}/${region}_flair.nii.gz"
-        if ! fslmaths "$flair_file" -mas "$region_mask" "$region_flair"; then
-            log_formatted "WARNING" "Failed to create masked FLAIR for $region"
-            continue
+        # Process T1 hypointensities if T1 available
+        if [ -n "$t1_file" ] && [ -f "$t1_file" ]; then
+            analyze_region_modality "$region" "$region_mask" "$t1_file" "T1" "hypo" "$hyper_dir"
         fi
-        
-        # Get region statistics for adaptive thresholding
-        local region_stats=$(fslstats "$region_flair" -k "$region_mask" -M -S)
-        local region_mean=$(echo "$region_stats" | awk '{print $1}')
-        local region_std=$(echo "$region_stats" | awk '{print $2}')
-        
-        if [ "$region_mean" = "0.000000" ] || [ -z "$region_std" ]; then
-            log_message "Skipping $region - no signal detected"
-            continue
-        fi
-        
-        log_message "$region statistics - Mean: $region_mean, StdDev: $region_std"
-        
-        # Apply hyperintensity detection with region-specific thresholds
-        local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
-        local threshold_val=$(echo "$region_mean + $threshold_multiplier * $region_std" | bc -l)
-        
-        log_message "Using threshold: $threshold_val for $region"
-        
-        # Create hyperintensity mask
-        local region_hyper_mask="${region_hyper_dir}/${region}_hyperintensities.nii.gz"
-        if ! fslmaths "$region_flair" -thr "$threshold_val" -bin "$region_hyper_mask"; then
-            log_formatted "WARNING" "Failed to create hyperintensity mask for $region"
-            continue
-        fi
-        
-        # Apply minimum cluster size filtering
-        local min_size="${MIN_HYPERINTENSITY_SIZE:-4}"
-        local filtered_mask="${region_hyper_dir}/${region}_hyperintensities_filtered.nii.gz"
-        
-        if cluster --in="$region_hyper_mask" --thresh=0.5 \
-                   --connectivity=26 --minextent="$min_size" \
-                   --oindex="$filtered_mask" > /dev/null 2>&1; then
-            log_message "✓ Applied clustering filter (min size: $min_size voxels) to $region"
-        else
-            log_message "Clustering failed for $region, using unfiltered mask"
-            cp "$region_hyper_mask" "$filtered_mask"
-        fi
-        
-        # Create intensity version
-        local region_hyper_intensity="${region_hyper_dir}/${region}_hyperintensities_intensity.nii.gz"
-        fslmaths "$region_flair" -mas "$filtered_mask" "$region_hyper_intensity"
-        
-        # Create RGB overlay for visualization
-        local overlay="${region_hyper_dir}/overlay.nii.gz"
-        log_message "Creating RGB overlay for $region..."
-        
-        # Check dimensions match
-        local flair_dims=$(fslinfo "$region_flair" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-        local mask_dims=$(fslinfo "$filtered_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-        
-        if [ "$flair_dims" = "$mask_dims" ]; then
-            # Create RGB channels
-            local temp_dir=$(mktemp -d)
-            
-            # Red channel - background FLAIR
-            fslmaths "$region_flair" -div $(fslstats "$region_flair" -k "$region_mask" -R | awk '{print $2}') "${temp_dir}/r.nii.gz"
-            
-            # Green channel - hyperintensities
-            fslmaths "$filtered_mask" -mul 0.8 "${temp_dir}/g.nii.gz"
-            
-            # Blue channel - mask outline
-            fslmaths "$region_mask" -edge -bin -mul 0.3 "${temp_dir}/b.nii.gz"
-            
-            # Merge RGB channels
-            if fslmerge -t "$overlay" "${temp_dir}/r.nii.gz" "${temp_dir}/g.nii.gz" "${temp_dir}/b.nii.gz"; then
-                log_message "✓ Created RGB overlay for $region"
-            else
-                log_formatted "WARNING" "Failed to create RGB overlay for $region"
-                # Create fallback overlay
-                fslmaths "$region_flair" -add "$filtered_mask" "$overlay"
-            fi
-            
-            rm -rf "$temp_dir"
-        else
-            log_formatted "WARNING" "Dimension mismatch for $region overlay - creating fallback"
-            fslmaths "$region_flair" -add "$filtered_mask" "$overlay"
-        fi
-        
-        # Quantify results
-        local hyper_voxels=$(fslstats "$filtered_mask" -V | awk '{print $1}')
-        local hyper_volume=$(fslstats "$filtered_mask" -V | awk '{print $2}')
-        local region_voxels=$(fslstats "$region_mask" -V | awk '{print $1}')
-        local region_volume=$(fslstats "$region_mask" -V | awk '{print $2}')
-        
-        local percentage="0"
-        if [ "$region_voxels" -gt 0 ]; then
-            percentage=$(echo "scale=2; $hyper_voxels * 100 / $region_voxels" | bc)
-        fi
-        
-        log_message "✓ $region results:"
-        log_message "   Hyperintensity voxels: $hyper_voxels ($hyper_volume mm³)"
-        log_message "   Region coverage: ${percentage}%"
-        
-        # Create region summary
-        {
-            echo "Talairach Region Hyperintensity Analysis"
-            echo "======================================="
-            echo "Region: $region"
-            echo "Date: $(date)"
-            echo ""
-            echo "Input files:"
-            echo "  FLAIR: $(basename "$flair_file")"
-            echo "  Mask: $(basename "$region_mask")"
-            echo ""
-            echo "Analysis parameters:"
-            echo "  Threshold multiplier: $threshold_multiplier"
-            echo "  Threshold value: $threshold_val"
-            echo "  Minimum cluster size: $min_size voxels"
-            echo ""
-            echo "Results:"
-            echo "  Region volume: $region_volume mm³ ($region_voxels voxels)"
-            echo "  Hyperintensity volume: $hyper_volume mm³ ($hyper_voxels voxels)"
-            echo "  Percentage affected: ${percentage}%"
-            echo ""
-            echo "Output files:"
-            echo "  Hyperintensity mask: $(basename "$filtered_mask")"
-            echo "  Hyperintensity intensity: $(basename "$region_hyper_intensity")"
-            echo "  RGB overlay: $(basename "$overlay")"
-        } > "${region_hyper_dir}/${region}_hyperintensity_report.txt"
-        
-        log_message "✓ Created analysis report: ${region_hyper_dir}/${region}_hyperintensity_report.txt"
     done
     
     # Create combined summary across all Talairach regions
-    log_message "Creating combined Talairach hyperintensity summary..."
+    log_message "Creating combined Talairach intensity abnormality summary..."
     
-    local combined_report="${hyper_dir}/talairach_hyperintensity_summary.txt"
+    local combined_report="${hyper_dir}/talairach_intensity_abnormality_summary.txt"
     {
-        echo "Talairach Brainstem Hyperintensity Analysis Summary"
-        echo "=================================================="
+        echo "Talairach Brainstem Intensity Abnormality Analysis Summary"
+        echo "========================================================="
         echo "Date: $(date)"
         echo "FLAIR input: $(basename "$flair_file")"
+        if [ -n "$t1_file" ] && [ -f "$t1_file" ]; then
+            echo "T1 input: $(basename "$t1_file")"
+        else
+            echo "T1 input: Not available"
+        fi
         echo ""
+        echo "FLAIR HYPERINTENSITIES (lesions appear bright)"
+        echo "=============================================="
         echo "Region | Volume (mm³) | Hyperintensities (mm³) | % Affected"
         echo "-------|--------------|-------------------------|----------"
         
         for region in "${talairach_regions[@]}"; do
-            local region_report="${hyper_dir}/${region}/${region}_hyperintensity_report.txt"
-            if [ -f "$region_report" ]; then
-                local region_vol=$(grep "Region volume:" "$region_report" | awk '{print $3}')
-                local hyper_vol=$(grep "Hyperintensity volume:" "$region_report" | awk '{print $3}')
-                local percentage=$(grep "Percentage affected:" "$region_report" | awk '{print $3}')
-                printf "%-6s | %12s | %23s | %8s\n" "$region" "$region_vol" "$hyper_vol" "$percentage"
+            local flair_report="${hyper_dir}/${region}_FLAIR/${region}_FLAIR_hyperintensity_report.txt"
+            if [ -f "$flair_report" ]; then
+                local region_vol=$(grep "Region volume:" "$flair_report" | awk '{print $3}')
+                local abnormal_vol=$(grep "Abnormal volume:" "$flair_report" | awk '{print $3}')
+                local percentage=$(grep "Percentage affected:" "$flair_report" | awk '{print $3}')
+                printf "%-6s | %12s | %23s | %8s\n" "$region" "$region_vol" "$abnormal_vol" "$percentage"
             else
                 printf "%-6s | %12s | %23s | %8s\n" "$region" "N/A" "N/A" "N/A"
             fi
         done
+        
+        if [ -n "$t1_file" ] && [ -f "$t1_file" ]; then
+            echo ""
+            echo "T1 HYPOINTENSITIES (lesions appear dark)"
+            echo "========================================"
+            echo "Region | Volume (mm³) | Hypointensities (mm³) | % Affected"
+            echo "-------|--------------|------------------------|----------"
+            
+            for region in "${talairach_regions[@]}"; do
+                local t1_report="${hyper_dir}/${region}_T1/${region}_T1_hypointensity_report.txt"
+                if [ -f "$t1_report" ]; then
+                    local region_vol=$(grep "Region volume:" "$t1_report" | awk '{print $3}')
+                    local abnormal_vol=$(grep "Abnormal volume:" "$t1_report" | awk '{print $3}')
+                    local percentage=$(grep "Percentage affected:" "$t1_report" | awk '{print $3}')
+                    printf "%-6s | %12s | %22s | %8s\n" "$region" "$region_vol" "$abnormal_vol" "$percentage"
+                else
+                    printf "%-6s | %12s | %22s | %8s\n" "$region" "N/A" "N/A" "N/A"
+                fi
+            done
+        fi
+        
+        echo ""
+        echo "Analysis Parameters:"
+        echo "  Threshold multiplier: ${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+        echo "  Minimum cluster size: ${MIN_HYPERINTENSITY_SIZE:-4} voxels"
+        echo "  FLAIR thresholding: mean + multiplier × std (above threshold)"
+        echo "  T1 thresholding: mean - multiplier × std (below threshold)"
+        
     } > "$combined_report"
     
     log_formatted "SUCCESS" "Talairach hyperintensity analysis complete"
@@ -881,6 +992,134 @@ analyze_talairach_hyperintensities() {
     log_message "Individual reports in: $hyper_dir"
     
     return 0
+}
+
+# Function to run comprehensive analysis (wrapper for analyze_talairach_hyperintensities)
+run_comprehensive_analysis() {
+    local orig_t1="$1"
+    local orig_flair="$2"
+    local t1_std="$3"
+    local flair_std="$4"
+    local segmentation_dir="$5"
+    local comprehensive_dir="$6"
+    
+    log_formatted "INFO" "===== RUNNING COMPREHENSIVE ANALYSIS ====="
+    log_message "Original T1: $orig_t1"
+    log_message "Original FLAIR: $orig_flair"
+    log_message "Standardized T1: $t1_std"
+    log_message "Standardized FLAIR: $flair_std"
+    log_message "Segmentation directory: $segmentation_dir"
+    log_message "Output directory: $comprehensive_dir"
+    
+    # Validate inputs
+    if [ ! -f "$orig_flair" ]; then
+        log_formatted "ERROR" "Original FLAIR file not found: $orig_flair"
+        return 1
+    fi
+    
+    if [ ! -d "$segmentation_dir" ]; then
+        log_formatted "ERROR" "Segmentation directory not found: $segmentation_dir"
+        return 1
+    fi
+    
+    # Create comprehensive analysis output directory
+    mkdir -p "$comprehensive_dir"
+    
+    # Find Talairach analysis directory with masks
+    local analysis_dir=""
+    local output_basename=""
+    
+    # Look for Talairach masks in multiple possible locations
+    local possible_dirs=(
+        "${comprehensive_dir}/original_space"
+        "${segmentation_dir}/detailed_brainstem"
+        "${segmentation_dir}/../comprehensive_analysis/original_space"
+    )
+    
+    # Create the original_space directory if it doesn't exist
+    mkdir -p "${comprehensive_dir}/original_space"
+    
+    for dir in "${possible_dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            # Look for Talairach region files to determine the correct basename
+            local sample_files=($(find "$dir" -name "*_left_medulla*.nii.gz" -o -name "*_left_pons*.nii.gz" 2>/dev/null | head -2))
+            
+            if [ ${#sample_files[@]} -gt 0 ]; then
+                analysis_dir="$dir"
+                # Extract basename from first file (remove region suffix)
+                local sample_file=$(basename "${sample_files[0]}" .nii.gz)
+                output_basename=$(echo "$sample_file" | sed -E 's/_(left|right)_(medulla|pons|midbrain).*$//')
+                log_message "Found Talairach masks in: $analysis_dir"
+                log_message "Using output basename: $output_basename"
+                break
+            fi
+        fi
+    done
+    
+    # If no existing Talairach masks found, use original_space and derive basename from input
+    if [ -z "$analysis_dir" ]; then
+        analysis_dir="${comprehensive_dir}/original_space"
+        # Derive basename from FLAIR file (common approach)
+        local flair_basename=$(basename "$orig_flair" .nii.gz)
+        # Remove common suffixes to get clean basename
+        output_basename=$(echo "$flair_basename" | sed -E 's/_(brain|std|n4|FLAIR|flair).*$//' | sed -E 's/_[0-9]+$//')
+        
+        log_message "No existing Talairach masks found"
+        log_message "Will use analysis directory: $analysis_dir"
+        log_message "Will use output basename: $output_basename"
+        
+        # Check if we have any segmentation data to work with
+        local seg_files=($(find "$segmentation_dir" -name "*.nii.gz" 2>/dev/null))
+        if [ ${#seg_files[@]} -eq 0 ]; then
+            log_formatted "ERROR" "No segmentation files found in $segmentation_dir"
+            return 1
+        fi
+        
+        log_message "Found ${#seg_files[@]} segmentation files to analyze"
+    fi
+    
+    # Determine which FLAIR and T1 files to use for analysis
+    # For hyperintensity detection, original space is often preferred for native resolution
+    local analysis_flair="$orig_flair"
+    local analysis_t1="$orig_t1"
+    
+    # Check if we should use standardized versions based on mask location
+    if [[ "$analysis_dir" == *"standardized"* ]] || [[ "$analysis_dir" == *"std"* ]]; then
+        log_message "Analysis directory suggests standardized space, using standardized images"
+        analysis_flair="$flair_std"
+        analysis_t1="$t1_std"
+    fi
+    
+    log_message "Using FLAIR for analysis: $analysis_flair"
+    log_message "Using T1 for analysis: $analysis_t1"
+    
+    # Call the main Talairach hyperintensity analysis function
+    log_message "Running Talairach hyperintensity analysis..."
+    if analyze_talairach_hyperintensities "$analysis_flair" "$analysis_dir" "$output_basename" "$analysis_t1"; then
+        log_formatted "SUCCESS" "Comprehensive analysis completed successfully"
+        
+        # Create summary of results
+        local summary_file="${comprehensive_dir}/comprehensive_analysis_summary.txt"
+        {
+            echo "Comprehensive Analysis Summary"
+            echo "============================="
+            echo "Date: $(date)"
+            echo "Analysis directory: $analysis_dir"
+            echo "Output basename: $output_basename"
+            echo "FLAIR input: $(basename "$analysis_flair")"
+            echo "T1 input: $(basename "$analysis_t1")"
+            echo ""
+            echo "Analysis completed successfully."
+            echo "Results available in: ${comprehensive_dir}/hyperintensities/"
+            echo "Detailed reports in individual region subdirectories."
+        } > "$summary_file"
+        
+        log_message "Summary report created: $summary_file"
+        return 0
+    else
+        log_formatted "ERROR" "Talairach hyperintensity analysis failed"
+        return 1
+    fi
 }
 
 # Export functions
@@ -892,5 +1131,6 @@ export -f create_3d_rendering
 export -f create_intensity_profiles
 export -f transform_segmentation_to_original
 export -f analyze_talairach_hyperintensities
+export -f run_comprehensive_analysis
 
 log_message "Analysis module loaded"
