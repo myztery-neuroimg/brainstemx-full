@@ -448,32 +448,58 @@ run_pipeline() {
   # Smart standardization: detect optimal resolution across T1 and FLAIR
   log_formatted "INFO" "===== SMART RESOLUTION DETECTION ====="
   local optimal_resolution=$(detect_optimal_resolution "$t1_brain" "$flair_brain")
+  
+  # Validate the resolution format
+  if [ -z "$optimal_resolution" ] || ! echo "$optimal_resolution" | grep -E "^[0-9.]+x[0-9.]+x[0-9.]+$" > /dev/null; then
+    log_error "Invalid optimal resolution format: '$optimal_resolution'" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  
   log_formatted "SUCCESS" "Optimal resolution detected: $optimal_resolution mm"
-  log_message "This preserves the highest resolution data for clustering analysis"
+  log_message "T1 will be used as reference space for segmentation consistency"
   
   # Standardize dimensions using optimal resolution with reference grid approach
   log_message "Running smart dimension standardization with reference grid approach"
-  log_message "This ensures T1 and FLAIR have IDENTICAL matrix dimensions"
+  log_message "This ensures T1 and FLAIR have IDENTICAL matrix dimensions while preserving highest resolution"
   
-  # Step 1: Standardize T1 first (as reference)
+  # Always use T1 as reference for segmentation consistency
+  local ref_file="$t1_brain"
+  local other_file="$flair_brain"
+  local ref_name="T1"
+  local other_name="FLAIR"
+  
+  # Check if we're downsampling FLAIR
+  local t1_inplane=$(echo "scale=6; ($(fslval "$t1_brain" pixdim1) + $(fslval "$t1_brain" pixdim2)) / 2" | bc -l)
+  local flair_inplane=$(echo "scale=6; ($(fslval "$flair_brain" pixdim1) + $(fslval "$flair_brain" pixdim2)) / 2" | bc -l)
+  
+  if (( $(echo "$flair_inplane < $t1_inplane" | bc -l) )); then
+    log_formatted "INFO" "FLAIR has higher resolution (${flair_inplane}mm vs ${t1_inplane}mm) but using T1 as reference"
+    log_message "This maintains 'T1 native space' consistency for atlas-based segmentation"
+    log_message "FLAIR will be downsampled to match T1 grid for identical dimensions"
+  else
+    log_formatted "SUCCESS" "T1 has equal or higher resolution - optimal for segmentation"
+  fi
+  
+  # Step 1: Standardize T1 first (always reference for segmentation)
   log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
-  standardize_dimensions "$t1_brain" "$optimal_resolution"
+  standardize_dimensions "$ref_file" "$optimal_resolution"
   
   # Get the standardized T1 file path
-  local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
-  local t1_std_ref=$(get_output_path "standardized" "$t1_brain_basename" "_std")
+  local ref_basename=$(basename "$ref_file" .nii.gz)
+  local ref_std=$(get_output_path "standardized" "$ref_basename" "_std")
   
   # Step 2: Standardize FLAIR using T1 as reference grid
   log_message "Standardizing FLAIR using T1 as reference grid for identical dimensions"
-  standardize_dimensions "$flair_brain" "$optimal_resolution" "$t1_std_ref"
+  standardize_dimensions "$other_file" "$optimal_resolution" "$ref_std"
   
-  
-  # Update file paths
+  # Update file paths - T1 is always reference
   local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
   local flair_brain_basename=$(basename "$flair_brain" .nii.gz)
   
-  t1_std=$(get_output_path "standardized" "$t1_brain_basename" "_std")
-  flair_std=$(get_output_path "standardized" "$flair_brain_basename" "_std")
+  t1_std=$(get_output_path "standardized" "$t1_brain_basename" "_std")      # Reference T1 (native space)
+  flair_std=$(get_output_path "standardized" "$flair_brain_basename" "_std") # FLAIR resampled to T1 grid
+  
+  log_formatted "SUCCESS" "Both scans standardized in T1 native space with identical dimensions"
   
   # Validate standardization step
   validate_step "Standardize dimensions" "$(basename "$t1_std"),$(basename "$flair_std")" "standardized"
