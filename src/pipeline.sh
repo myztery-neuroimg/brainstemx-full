@@ -513,10 +513,6 @@ run_pipeline() {
   if [ $START_STAGE -le 3 ]; then
     log_message "Step 3: Registration"
     
-    # Now that standardization is complete, run registration fix
-    # This will check for coordinate space mismatches and fix datatypes
-    run_registration_fix
-    
     # If we're skipping previous steps, we need to find the standardized files
     if [ $START_STAGE -eq 3 ]; then
       log_message "Looking for standardized files..."
@@ -531,6 +527,19 @@ run_pipeline() {
       log_message "Found standardized data:"
       log_message "T1: $t1_std"
       log_message "FLAIR: $flair_std"
+      
+      # Clean up any previous registration outputs when starting from this stage
+      log_message "Cleaning up previous registration outputs for fresh start..."
+      local reg_dir="$RESULTS_DIR/registered"
+      if [ -d "$reg_dir" ]; then
+        rm -rf "$reg_dir"
+        log_message "Removed previous registration directory: $reg_dir"
+      fi
+    else
+      # Only run registration fix if we're continuing from previous stages
+      # This will check for coordinate space mismatches and fix datatypes
+      log_message "Running registration issue fixing tool for data continuity..."
+      run_registration_fix
     fi
     
     # Create output directory for registration
@@ -553,6 +562,38 @@ run_pipeline() {
         log_message "Using automatically registered FLAIR: $flair_registered"
       fi
     else
+      # MAIN REGISTRATION EXECUTION - This was missing!
+      log_formatted "INFO" "===== EXECUTING MAIN REGISTRATION ====="
+      log_message "Registering FLAIR to T1 using enhanced ANTs pipeline"
+      
+      # Check if registration already exists (for resume functionality)
+      local reg_prefix="${reg_dir}/$(basename "$flair_std" .nii.gz)_to_t1"
+      local existing_registered="${reg_prefix}Warped.nii.gz"
+      
+      if [ -f "$existing_registered" ] && [ -s "$existing_registered" ]; then
+        log_message "Found existing registration: $existing_registered"
+        log_message "Skipping registration (use clean output directory to force re-registration)"
+        flair_registered="$existing_registered"
+      else
+        log_message "Running FLAIR to T1 registration..."
+        log_message "Input T1: $t1_std"
+        log_message "Input FLAIR: $flair_std"
+        log_message "Output prefix: $reg_prefix"
+        
+        # Call the main registration function
+        register_modality_to_t1 "$t1_std" "$flair_std" "FLAIR" "$reg_prefix"
+        local reg_status=$?
+        
+        if [ $reg_status -eq 0 ] && [ -f "${reg_prefix}Warped.nii.gz" ]; then
+          log_formatted "SUCCESS" "Registration completed successfully"
+          flair_registered="${reg_prefix}Warped.nii.gz"
+        else
+          log_formatted "ERROR" "Registration failed with status $reg_status"
+          return $ERR_REGISTRATION
+        fi
+      fi
+      
+      log_message "Registration output: $flair_registered"
       # Validate coordinate spaces and datatypes
       log_formatted "INFO" "===== VALIDATING DATA BEFORE REGISTRATION ====="
       local val_dir="${reg_dir}/validation"

@@ -487,9 +487,15 @@ extract_brainstem_with_flair() {
     fi
     
     # Validate numeric format - FAIL HARD on non-numeric values
-    if ! echo "$mean_intensity" | grep -E '^[0-9]*\.?[0-9]+$' > /dev/null; then
-        cleanup_and_fail 1 "Mean intensity is not a valid number: $mean_intensity"
-        return 1
+    # More robust number validation that handles floating point numbers and whitespace
+    if ! echo "$mean_intensity" | grep -E '^[[:space:]]*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$' > /dev/null; then
+        # Fallback: try to use the number arithmetically to test if it's valid
+        if ! awk "BEGIN {exit !($mean_intensity >= 0 || $mean_intensity < 0)}" 2>/dev/null; then
+            cleanup_and_fail 1 "Mean intensity is not a valid number: '$mean_intensity'"
+            return 1
+        else
+            log_message "Number validation passed on fallback test: $mean_intensity"
+        fi
     fi
     
     if ! echo "$std_intensity" | grep -E '^[0-9]*\.?[0-9]+$' > /dev/null; then
