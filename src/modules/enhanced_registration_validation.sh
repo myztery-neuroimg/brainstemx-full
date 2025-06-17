@@ -777,10 +777,11 @@ analyze_hyperintensities_in_all_masks() {
         local roi_volume=$(fslstats "$mask" -V | awk '{print $1}')
         local percentage=$(echo "scale=2; 100 * $volume_voxels / $roi_volume" | bc -l)
         
-        # Create cluster analysis
+        # Create cluster analysis with minimum size enforcement
         local clusters="${mask_output_dir}/clusters.nii.gz"
-        log_message "Performing cluster analysis..."
-        cluster -i "$hyperintensity_bin" -t 0.5 -o "$clusters" > "${mask_output_dir}/cluster_report.txt"
+        local min_cluster_size="${MIN_HYPERINTENSITY_SIZE:-4}"  # Use environment setting or default to 4
+        log_message "Performing cluster analysis (minimum cluster size: $min_cluster_size voxels)..."
+        cluster -i "$hyperintensity_bin" -t 0.5 --minextent="$min_cluster_size" -o "$clusters" > "${mask_output_dir}/cluster_report.txt"
         
         # Create RGB overlay for visualization
         local overlay="${mask_output_dir}/overlay.nii.gz"
@@ -1341,8 +1342,37 @@ run_comprehensive_analysis() {
     log_message "Step 5: Analyzing hyperintensities in all masks..."
     analyze_hyperintensities_in_all_masks "$flair_file" "$t1_file" "$orig_space_dir" "${output_dir}/hyperintensities"
     
-    # 6. Create combined visualization
-    log_message "Step 6: Creating combined visualization..."
+    # 6. Analyze hyperintensities in Talairach brainstem regions
+    log_message "Step 6: Analyzing hyperintensities in Talairach brainstem regions..."
+    
+    # Check if the analyze_talairach_hyperintensities function is available
+    if declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
+        # Check if Talairach analysis files exist
+        if [ -d "${RESULTS_DIR}/comprehensive_analysis/original_space" ]; then
+            # Find the appropriate output basename for Talairach files
+            local talairach_basename=""
+            for basename_candidate in $(find "${RESULTS_DIR}/comprehensive_analysis/original_space" -name "*_left_medulla_flair_space.nii.gz" | head -1 | xargs basename 2>/dev/null | sed 's/_left_medulla_flair_space.nii.gz//' 2>/dev/null || echo ""); do
+                if [ -n "$basename_candidate" ]; then
+                    talairach_basename="$basename_candidate"
+                    break
+                fi
+            done
+            
+            if [ -n "$talairach_basename" ]; then
+                log_message "Found Talairach segmentation with basename: $talairach_basename"
+                analyze_talairach_hyperintensities "$flair_file" "${RESULTS_DIR}/comprehensive_analysis/original_space" "$talairach_basename"
+            else
+                log_message "No Talairach segmentation files found - skipping Talairach hyperintensity analysis"
+            fi
+        else
+            log_message "No original space directory found - skipping Talairach hyperintensity analysis"
+        fi
+    else
+        log_message "Talairach hyperintensity analysis function not available - ensure analysis module is loaded"
+    fi
+    
+    # 7. Create combined visualization
+    log_message "Step 7: Creating combined visualization..."
     # This is done inside analyze_hyperintensities_in_all_masks
     
     log_formatted "SUCCESS" "Comprehensive validation and analysis complete"
