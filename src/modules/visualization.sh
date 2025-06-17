@@ -22,10 +22,21 @@ generate_qc_visualizations() {
     local t2_flair=$(find "${subject_dir}" -name "*T2_SPACE_FLAIR*.nii.gz" | head -1)
     local t1=$(find "${subject_dir}" -name "*MPRAGE*.nii.gz" | head -1)
     
-    # Create edge overlays for segmentation validation
-    for region in "brainstem" "pons" "dorsal_pons" "ventral_pons"; do
+    # Create edge overlays for segmentation validation - using Talairach subdivisions
+    for region in "brainstem" "pons" "left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain"; do
         local mask="${subject_dir}/segmentation/${region}/${subject_id}_${region}.nii.gz"
-        local t2flair="${subject_dir}/registered/${subject_id}_${region}_t2flair.nii.gz"
+        # For brainstem and pons, look in their respective directories
+        if [[ "$region" == "brainstem" ]]; then
+            mask="${subject_dir}/segmentation/brainstem/${subject_id}_${region}.nii.gz"
+            local t2flair="${subject_dir}/registered/${subject_id}_${region}_t2flair.nii.gz"
+        elif [[ "$region" == "pons" ]]; then
+            mask="${subject_dir}/segmentation/pons/${subject_id}_${region}.nii.gz"
+            local t2flair="${subject_dir}/registered/${subject_id}_${region}_t2flair.nii.gz"
+        else
+            # Talairach detailed subdivisions are in detailed_brainstem directory
+            mask="${subject_dir}/segmentation/detailed_brainstem/${subject_id}_${region}.nii.gz"
+            local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"  # Use pons t2flair for all subdivisions
+        fi
         
         if [ -f "$mask" ] && [ -f "$t2flair" ]; then
             echo "Creating edge overlay for $region..."
@@ -59,10 +70,10 @@ generate_qc_visualizations() {
         fi
     done
     
-    # Create hyperintensity overlays at different thresholds
+    # Create hyperintensity overlays at different thresholds - using pons region
     for mult in 1.5 2.0 2.5 3.0; do
-        local hyper="${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh${mult}.nii.gz"
-        local t2flair="${subject_dir}/registered/${subject_id}_dorsal_pons_t2flair.nii.gz"
+        local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
+        local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
         
         if [ -f "$hyper" ] && [ -f "$t2flair" ]; then
             echo "Creating hyperintensity overlay for threshold ${mult}..."
@@ -166,10 +177,10 @@ generate_qc_visualizations() {
     fi
     
     # Create multi-threshold comparison for hyperintensities
-    if [ -f "${subject_dir}/registered/${subject_id}_dorsal_pons_t2flair.nii.gz" ]; then
+    if [ -f "${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz" ]; then
         echo "Creating multi-threshold comparison for hyperintensities..."
         
-        local t2flair="${subject_dir}/registered/${subject_id}_dorsal_pons_t2flair.nii.gz"
+        local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
         local thresholds=(1.5 2.0 2.5 3.0)
         local colors=("red" "orange" "yellow" "green")
         
@@ -179,7 +190,7 @@ generate_qc_visualizations() {
         for i in "${!thresholds[@]}"; do
             local mult="${thresholds[$i]}"
             local color="${colors[$i]}"
-            local hyper="${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh${mult}.nii.gz"
+            local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
             
             if [ -f "$hyper" ]; then
                 fsleyes_cmd="$fsleyes_cmd $hyper -cm $color -a 50"
@@ -190,23 +201,23 @@ generate_qc_visualizations() {
         chmod +x "${output_dir}/view_all_thresholds.sh"
         
         # Create a composite image showing all thresholds
-        if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh1.5.nii.gz" ]; then
+        if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.5.nii.gz" ]; then
             # Start with lowest threshold
-            fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh1.5.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
+            fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.5.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
             
             # Add higher thresholds with increasing values
-            if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.0.nii.gz" ]; then
-                fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.0.nii.gz" -bin -mul 2 \
+            if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.0.nii.gz" ]; then
+                fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.0.nii.gz" -bin -mul 2 \
                          -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
             fi
             
-            if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.5.nii.gz" ]; then
-                fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.5.nii.gz" -bin -mul 3 \
+            if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.5.nii.gz" ]; then
+                fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.5.nii.gz" -bin -mul 3 \
                          -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
             fi
             
-            if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh3.0.nii.gz" ]; then
-                fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh3.0.nii.gz" -bin -mul 4 \
+            if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh3.0.nii.gz" ]; then
+                fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh3.0.nii.gz" -bin -mul 4 \
                          -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
             fi
             
@@ -233,7 +244,7 @@ create_multi_threshold_overlays() {
     mkdir -p "$output_dir"
     
     # Get T2-FLAIR image
-    local t2flair="${subject_dir}/registered/${subject_id}_dorsal_pons_t2flair.nii.gz"
+    local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
     
     if [ ! -f "$t2flair" ]; then
         log_formatted "ERROR" "T2-FLAIR image not found: $t2flair"
@@ -250,7 +261,7 @@ create_multi_threshold_overlays() {
     for i in "${!thresholds[@]}"; do
         local mult="${thresholds[$i]}"
         local color="${colors[$i]}"
-        local hyper="${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh${mult}.nii.gz"
+        local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
         
         if [ -f "$hyper" ]; then
             fsleyes_cmd="$fsleyes_cmd $hyper -cm $color -a 50"
@@ -261,23 +272,23 @@ create_multi_threshold_overlays() {
     chmod +x "${output_dir}/view_all_thresholds.sh"
     
     # Create a composite image showing all thresholds
-    if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh1.5.nii.gz" ]; then
+    if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.5.nii.gz" ]; then
         # Start with lowest threshold
-        fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh1.5.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
+        fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.5.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
         
         # Add higher thresholds with increasing values
-        if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.0.nii.gz" ]; then
-            fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.0.nii.gz" -bin -mul 2 \
+        if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.0.nii.gz" ]; then
+            fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.0.nii.gz" -bin -mul 2 \
                      -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
         fi
         
-        if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.5.nii.gz" ]; then
-            fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh2.5.nii.gz" -bin -mul 3 \
+        if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.5.nii.gz" ]; then
+            fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.5.nii.gz" -bin -mul 3 \
                      -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
         fi
         
-        if [ -f "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh3.0.nii.gz" ]; then
-            fslmaths "${subject_dir}/hyperintensities/${subject_id}_dorsal_pons_thresh3.0.nii.gz" -bin -mul 4 \
+        if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh3.0.nii.gz" ]; then
+            fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh3.0.nii.gz" -bin -mul 4 \
                      -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
         fi
         
@@ -363,8 +374,18 @@ generate_html_report() {
         echo "      <table>"
         echo "        <tr><th>Region</th><th>Volume (mm³)</th></tr>"
         
-        for region in "brainstem" "pons" "dorsal_pons" "ventral_pons"; do
+        # Check both main regions and Talairach subdivisions
+        for region in "brainstem" "pons"; do
             local mask="${subject_dir}/segmentation/${region}/${subject_id}_${region}.nii.gz"
+            if [ -f "$mask" ]; then
+                local volume=$(fslstats "$mask" -V | awk '{print $1}')
+                echo "        <tr><td>${region}</td><td>${volume}</td></tr>"
+            fi
+        done
+        
+        # Add Talairach detailed subdivisions
+        for region in "left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain"; do
+            local mask="${subject_dir}/segmentation/detailed_brainstem/${subject_id}_${region}.nii.gz"
             if [ -f "$mask" ]; then
                 local volume=$(fslstats "$mask" -V | awk '{print $1}')
                 echo "        <tr><td>${region}</td><td>${volume}</td></tr>"
@@ -377,7 +398,8 @@ generate_html_report() {
         echo "      <h3>Segmentation Visualization</h3>"
         echo "      <div class='image-container'>"
         
-        for region in "brainstem" "pons" "dorsal_pons" "ventral_pons"; do
+        # Show both main regions and Talairach subdivisions
+        for region in "brainstem" "pons" "left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain"; do
             if [ -f "${subject_dir}/qc_visualizations/${region}_overlay.png" ]; then
                 echo "        <div class='image-box'>"
                 echo "          <img src='../qc_visualizations/${region}_overlay.png' alt='${region} segmentation'>"
@@ -580,7 +602,7 @@ launch_visual_qa() {
             echo "Please check in freeview that:"
             echo "1. Detected hyperintensities correspond to legitimate signal anomalies"
             echo "2. The threshold appears appropriate (not too many false positives)"
-            echo "3. Hyperintensities are within the dorsal pons region"
+            echo "3. Hyperintensities are within the pons region"
             echo "4. No obvious artifacts are labeled as hyperintensities"
             ;;
         *)

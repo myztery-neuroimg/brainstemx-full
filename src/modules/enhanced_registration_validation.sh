@@ -569,31 +569,27 @@ analyze_hyperintensities_in_all_masks() {
         mask_names+=("pons")
     fi
     
-    # Dorsal pons mask
-    local dorsal_pons
-    if [[ "$segmentation_dir" == *"original_space"* ]]; then
-        dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons*.nii.gz" | head -1)
-    else
-        dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons.nii.gz" | grep -v "orig" | head -1)
-    fi
-    if [ -f "$dorsal_pons" ]; then
-        log_message "Found dorsal pons mask: $dorsal_pons"
-        mask_files+=("$dorsal_pons")
-        mask_names+=("dorsal_pons")
-    fi
+    # Talairach detailed brainstem subdivisions
+    local detailed_regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain")
     
-    # Ventral pons mask
-    local ventral_pons
-    if [[ "$segmentation_dir" == *"original_space"* ]]; then
-        ventral_pons=$(find "$segmentation_dir" -name "*ventral_pons*.nii.gz" | head -1)
-    else
-        ventral_pons=$(find "$segmentation_dir" -name "*ventral_pons.nii.gz" | grep -v "orig" | head -1)
-    fi
-    if [ -f "$ventral_pons" ]; then
-        log_message "Found ventral pons mask: $ventral_pons"
-        mask_files+=("$ventral_pons")
-        mask_names+=("ventral_pons")
-    fi
+    for region in "${detailed_regions[@]}"; do
+        local region_mask
+        if [[ "$segmentation_dir" == *"original_space"* ]]; then
+            region_mask=$(find "$segmentation_dir" -name "*${region}*.nii.gz" | head -1)
+        else
+            # Look in detailed_brainstem directory
+            region_mask=$(find "${segmentation_dir}/../detailed_brainstem" -name "*${region}.nii.gz" 2>/dev/null | head -1)
+            if [ -z "$region_mask" ]; then
+                region_mask=$(find "$segmentation_dir" -name "*${region}.nii.gz" | grep -v "orig" | head -1)
+            fi
+        fi
+        
+        if [ -f "$region_mask" ]; then
+            log_message "Found $region mask: $region_mask"
+            mask_files+=("$region_mask")
+            mask_names+=("$region")
+        fi
+    done
     
     # Talairack atlas (if available)
     local talairack_mask=$(find "$segmentation_dir" -name "*talairack*.nii.gz" -o -name "*tailrack*.nii.gz" | head -1)
@@ -1127,12 +1123,15 @@ verify_segmentation_location() {
         elif [[ "$region_name" == *"pons"* ]]; then
             echo "  The pons should be located in the middle of the brainstem,"
             echo "  between the midbrain and the medulla oblongata."
-        elif [[ "$region_name" == *"dorsal_pons"* ]]; then
-            echo "  The dorsal pons should be located in the posterior (dorsal)"
-            echo "  portion of the pons, adjacent to the fourth ventricle."
-        elif [[ "$region_name" == *"ventral_pons"* ]]; then
-            echo "  The ventral pons should be located in the anterior (ventral)"
-            echo "  portion of the pons, adjacent to the basilar artery."
+        elif [[ "$region_name" == *"left_pons"* ]] || [[ "$region_name" == *"right_pons"* ]]; then
+            echo "  The pons should be located in the middle portion of the brainstem"
+            echo "  between the midbrain and the medulla oblongata."
+        elif [[ "$region_name" == *"left_medulla"* ]] || [[ "$region_name" == *"right_medulla"* ]]; then
+            echo "  The medulla should be located in the lower portion of the brainstem"
+            echo "  continuous with the spinal cord."
+        elif [[ "$region_name" == *"left_midbrain"* ]] || [[ "$region_name" == *"right_midbrain"* ]]; then
+            echo "  The midbrain should be located in the upper portion of the brainstem"
+            echo "  continuous with the diencephalon."
         else
             echo "  Unknown region. Please verify location manually."
         fi
@@ -1360,7 +1359,7 @@ run_comprehensive_analysis() {
             
             if [ -n "$talairach_basename" ]; then
                 log_message "Found Talairach segmentation with basename: $talairach_basename"
-                analyze_talairach_hyperintensities "$flair_file" "${RESULTS_DIR}/comprehensive_analysis/original_space" "$talairach_basename"
+                analyze_talairach_hyperintensities "$flair_file" "${RESULTS_DIR}/comprehensive_analysis/original_space" "$talairach_basename" "$t1_file"
             else
                 log_message "No Talairach segmentation files found - skipping Talairach hyperintensity analysis"
             fi

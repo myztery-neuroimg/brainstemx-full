@@ -112,16 +112,38 @@ extract_brainstem_talairach_with_transform() {
     # Skip registration - use provided transform instead
     log_message "Skipping duplicate registration - reusing Harvard-Oxford transform"
     
-    # Transform entire Talairach atlas to subject space using existing transform
-    log_message "Transforming Talairach atlas to subject native space using existing transform..."
+    # Transform entire Talairach atlas to subject space using existing composite transform
+    log_message "Transforming Talairach atlas to subject native space using existing composite transform..."
     
     local atlas_in_subject="${temp_dir}/talairach_atlas_in_subject.nii.gz"
+    
+    # CRITICAL FIX: Use composite transforms - both warp and affine components
+    # Composite transforms: replace -t "$transform" with -t "${out}_1Warp.nii.gz" -t "${out}_0GenericAffine.mat"
+    local ants_prefix=$(dirname "$ants_transform_matrix")/$(basename "$ants_transform_matrix" 0GenericAffine.mat)
+    local warp_component="${ants_prefix}1Warp.nii.gz"
+    
+    # Validate both transform components exist
+    if [ ! -f "$ants_transform_matrix" ]; then
+        log_formatted "ERROR" "Affine transform component not found: $ants_transform_matrix"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    if [ ! -f "$warp_component" ]; then
+        log_formatted "ERROR" "Warp transform component not found: $warp_component"
+        log_formatted "ERROR" "Single-file transform = full deformation is false for ANTs; SyN always emits two (affine + warp)"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    log_message "Using composite transforms: $ants_transform_matrix + $warp_component"
     
     antsApplyTransforms -d 3 \
         -i "$talairach_atlas" \
         -r "$orientation_corrected_input" \
         -o "$atlas_in_subject" \
         -t "[$ants_transform_matrix,1]" \
+        -t "$warp_component" \
         -n GenericLabel
     
     # Check if atlas transformation was successful
@@ -318,8 +340,15 @@ extract_brainstem_talairach_with_transform() {
     log_message "Creating intensity versions for QA module compatibility..."
     log_message "Files being created for each Talairach segmentation:"
     
+    # Only process original binary mask files, not intensity derivatives
     for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
         if [ -f "$region_file" ]; then
+            # Skip files that are already intensity derivatives to prevent recursive processing
+            local region_basename=$(basename "$region_file" .nii.gz)
+            if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_flair_"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
+                continue
+            fi
+            
             local region_name=$(basename "$region_file" .nii.gz)
             local base_region_name=$(echo "$region_name" | sed "s/${output_basename}_//")
             
@@ -355,8 +384,8 @@ extract_brainstem_talairach_with_transform() {
         fi
     done
     
-    # Create FLAIR-space versions for analysis compatibility
-    log_message "Creating FLAIR-space versions for analysis compatibility..."
+    # Create FLAIR-space versions for hyperintensity analysis compatibility
+    log_message "Creating FLAIR-space versions for hyperintensity analysis compatibility..."
     
     # Look for original FLAIR files
     local original_flair_files=()
@@ -365,6 +394,8 @@ extract_brainstem_talairach_with_transform() {
             original_flair_files+=("$orig_flair")
         done < <(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" -print0 2>/dev/null)
     fi
+    
+    log_message "Found ${#original_flair_files[@]} FLAIR files for hyperintensity analysis"
     
     # Create FLAIR-space versions for each original FLAIR found
     for orig_flair in "${original_flair_files[@]}"; do
@@ -375,10 +406,15 @@ extract_brainstem_talairach_with_transform() {
             local flair_analysis_dir="${RESULTS_DIR}/comprehensive_analysis/original_space"
             mkdir -p "$flair_analysis_dir"
             
-            # Process each Talairach region
+            # Process each Talairach region - only process original binary masks, not derivatives
             for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
                 if [ -f "$region_file" ]; then
+                    # Skip files that are already derivatives to prevent recursive processing
                     local region_basename=$(basename "$region_file" .nii.gz)
+                    if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_flair_"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
+                        continue
+                    fi
+                    
                     local region_name=$(echo "$region_basename" | sed "s/${output_basename}_//")
                     
                     # Resample T1-space mask to FLAIR space
@@ -423,7 +459,7 @@ extract_brainstem_talairach_with_transform() {
                         fi
                         
                         # Create analysis-compatible binary mask with proper naming
-                        # Analysis expects to find *pons*.nii.gz, *dorsal_pons*.nii.gz, *ventral_pons*.nii.gz etc.
+                        # Analysis expects to find *pons*.nii.gz and Talairach subdivisions
                         local analysis_region_mask="${flair_analysis_dir}/${region_basename}.nii.gz"
                         if cp "$flair_space_mask" "$analysis_region_mask"; then
                             log_message "✓ Created analysis-compatible ${region_name} mask: $(basename "$analysis_region_mask")"
@@ -644,43 +680,79 @@ extract_brainstem_talairach() {
     # Register to MNI space to get transformation matrix
     log_message "Registering to MNI space to obtain transformation for atlas-to-subject mapping..."
     
+    # CRITICAL FIX: Use full SyN registration (affine + warp) for proper composite transforms
+    # Single-file transform = full deformation is false for ANTs; SyN always emits two (affine + warp)
+    log_formatted "INFO" "Using composite SyN registration for Talairach (affine + nonlinear warp)"
+    
     if [ "$orientation_corrected" = "true" ]; then
-        execute_ants_command "talairach_to_mni_registration" "Talairach: Affine registration to MNI template (orientation corrected)" \
+        execute_ants_command "talairach_to_mni_syn_registration" "Talairach: Full SyN registration to MNI template (orientation corrected)" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
             -f "$mni_brain" \
             -m "$orientation_corrected_input" \
-            -t a \
+            -t s \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
     else
-        execute_ants_command "talairach_to_mni_registration" "Talairach: Affine registration to MNI template" \
+        execute_ants_command "talairach_to_mni_syn_registration" "Talairach: Full SyN registration to MNI template" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
             -f "$mni_brain" \
             -m "$orientation_corrected_input" \
-            -t a \
+            -t s \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
     fi
     
-    # Check registration success
+    # Check composite registration success - both components required
     if [ ! -f "${ants_prefix}0GenericAffine.mat" ]; then
-        log_formatted "ERROR" "Talairach ANTs registration failed"
+        log_formatted "ERROR" "Talairach ANTs registration failed - affine transform not created"
         rm -rf "$temp_dir"
         return 1
     fi
+    
+    if [ ! -f "${ants_prefix}1Warp.nii.gz" ]; then
+        log_formatted "ERROR" "Talairach ANTs registration failed - warp field not created"
+        log_formatted "ERROR" "Single-file transform = full deformation is false for ANTs; SyN always emits two (affine + warp)"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Validate transform files are non-empty and readable
+    local affine_size=$(stat -f "%z" "${ants_prefix}0GenericAffine.mat" 2>/dev/null || stat --format="%s" "${ants_prefix}0GenericAffine.mat" 2>/dev/null || echo "0")
+    local warp_size=$(stat -f "%z" "${ants_prefix}1Warp.nii.gz" 2>/dev/null || stat --format="%s" "${ants_prefix}1Warp.nii.gz" 2>/dev/null || echo "0")
+    
+    if [ "$affine_size" -lt 100 ]; then
+        log_formatted "ERROR" "Talairach affine transform file is suspiciously small or empty: $affine_size bytes"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    if [ "$warp_size" -lt 1000 ]; then
+        log_formatted "ERROR" "Talairach warp field file is suspiciously small or empty: $warp_size bytes"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    log_formatted "SUCCESS" "Talairach composite registration completed successfully"
+    log_message "  Affine component: ${ants_prefix}0GenericAffine.mat ($affine_size bytes)"
+    log_message "  Warp component: ${ants_prefix}1Warp.nii.gz ($warp_size bytes)"
     
     # Transform entire Talairach atlas to subject space (preserving native resolution)
     log_message "Transforming Talairach atlas to subject native space..."
     
     local atlas_in_subject="${temp_dir}/talairach_atlas_in_subject.nii.gz"
     
+    # CRITICAL FIX: Use composite transforms in correct order
+    # Composite transforms: replace -t "$transform" with -t "${out}_1Warp.nii.gz" -t "${out}_0GenericAffine.mat"
+    log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
+    
     antsApplyTransforms -d 3 \
         -i "$talairach_atlas" \
         -r "$orientation_corrected_input" \
         -o "$atlas_in_subject" \
         -t "[${ants_prefix}0GenericAffine.mat,1]" \
+        -t "${ants_prefix}1Warp.nii.gz" \
         -n GenericLabel
     
     # Check if atlas transformation was successful
@@ -836,8 +908,15 @@ extract_brainstem_talairach() {
     log_message "Creating intensity versions for QA module compatibility..."
     log_message "Files being created for each Talairach segmentation:"
     
+    # Only process original binary mask files, not intensity derivatives
     for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
         if [ -f "$region_file" ]; then
+            # Skip files that are already intensity derivatives to prevent recursive processing
+            local region_basename=$(basename "$region_file" .nii.gz)
+            if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_flair_"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
+                continue
+            fi
+            
             local region_name=$(basename "$region_file" .nii.gz)
             local base_region_name=$(echo "$region_name" | sed "s/${output_basename}_//")
             
