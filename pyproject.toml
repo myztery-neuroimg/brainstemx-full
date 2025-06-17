@@ -43,7 +43,7 @@ dependencies = [
     "platformdirs==4.3.7",
     "plotly==6.1.2",
     "protobuf==5.29.4",
-    "pyarrow==19.0.1",
+    "pyarrow==20.0.0",
     "pydeck==0.9.1",
     "pydicom==3.0.1",
     "pylint==3.3.6",
