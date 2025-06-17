@@ -1886,10 +1886,10 @@ qa_verify_all_segmentations() {
     local flair_orig=$(find "${results_dir}/brain_extraction" -name "*FLAIR*brain.nii.gz" | head -1)
     
     if [ -z "$t1_orig" ]; then
-        t1_orig=$(find "${results_dir}/bias_corrected" -name "*T1*.nii.gz" ! -name "*Mask*" | head -1)
+        t1_orig=$(find "${results_dir}/bias_corrected" -name "*T1*.nii.gz" ! -name "*Mask*" ! -name "*_intensity*" | head -1)
     fi
     if [ -z "$flair_orig" ]; then
-        flair_orig=$(find "${results_dir}/bias_corrected" -name "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
+        flair_orig=$(find "${results_dir}/bias_corrected" -name "*FLAIR*.nii.gz" ! -name "*Mask*" ! -name "*_intensity*" | head -1)
     fi
     
     local verified_count=0
@@ -2005,7 +2005,8 @@ qa_verify_all_segmentations() {
     log_message "Checking original space segmentations..."
     local orig_space_dir="${segmentation_dir}/original_space"
     if [ -d "$orig_space_dir" ]; then
-        local orig_files=$(find "$orig_space_dir" -name "*_orig.nii.gz" ! -name "*_intensity.nii.gz" 2>/dev/null || true)
+        # Exclude all intensity-related output files to prevent recursive processing
+        local orig_files=$(find "$orig_space_dir" -name "*_orig.nii.gz" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" 2>/dev/null || true)
         for orig_file in $orig_files; do
             if [ -f "$orig_file" ]; then
                 local output_dir="$orig_space_dir"
