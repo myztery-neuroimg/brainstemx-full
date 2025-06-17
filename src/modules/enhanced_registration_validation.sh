@@ -1347,9 +1347,9 @@ run_comprehensive_analysis() {
         log_formatted "WARNING" "No segmentation in original space found for dimension verification"
     fi
     
-    # 5. Analyze hyperintensities in all masks (in original space)
-    log_message "Step 5: Analyzing hyperintensities in all masks..."
-    analyze_hyperintensities_in_all_masks "$flair_file" "$t1_file" "$orig_space_dir" "${output_dir}/hyperintensities"
+    # 5. Analyze hyperintensities in all masks (using standardized FLAIR for better alignment)
+    log_message "Step 5: Analyzing hyperintensities in all masks using standardized FLAIR..."
+    analyze_hyperintensities_in_all_masks "$flair_std" "$t1_std" "$orig_space_dir" "${output_dir}/hyperintensities"
     
     # 6. Analyze hyperintensities in Talairach brainstem regions
     log_message "Step 6: Analyzing hyperintensities in Talairach brainstem regions..."
@@ -1369,7 +1369,7 @@ run_comprehensive_analysis() {
             
             if [ -n "$talairach_basename" ]; then
                 log_message "Found Talairach segmentation with basename: $talairach_basename"
-                analyze_talairach_hyperintensities "$flair_file" "${RESULTS_DIR}/comprehensive_analysis/original_space" "$talairach_basename" "$t1_file"
+                analyze_talairach_hyperintensities "$flair_std" "${RESULTS_DIR}/comprehensive_analysis/original_space" "$talairach_basename" "$t1_std"
             else
                 log_message "No Talairach segmentation files found - skipping Talairach hyperintensity analysis"
             fi
