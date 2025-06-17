@@ -574,38 +574,63 @@ analyze_hyperintensities_in_all_masks() {
     local mask_names=()
     
     # Harvard-Oxford brainstem - STANDARDIZED NAMING ONLY
-    local brainstem_mask=$(find "$segmentation_dir" -name "*brainstem_mask_orig.nii.gz" | head -1)
+    local brainstem_mask=""
+    
+    # Look for original space mask first
+    brainstem_mask=$(find "$segmentation_dir" -name "*brainstem_mask_orig.nii.gz" | head -1)
+    
+    # If not found, look for FLAIR space mask
+    if [ -z "$brainstem_mask" ]; then
+        brainstem_mask=$(find "$segmentation_dir" -name "*brainstem_mask_flair_space.nii.gz" | head -1)
+    fi
+    
     if [ -f "$brainstem_mask" ]; then
         log_message "Found Harvard-Oxford brainstem mask: $brainstem_mask"
         mask_files+=("$brainstem_mask")
         mask_names+=("harvard_brainstem")
     else
-        log_formatted "WARNING" "No Harvard-Oxford brainstem mask found with standardized naming (*brainstem_mask_orig.nii.gz) in $segmentation_dir"
+        log_formatted "WARNING" "No Harvard-Oxford brainstem mask found with standardized naming (*brainstem_mask_orig.nii.gz or *brainstem_mask_flair_space.nii.gz) in $segmentation_dir"
     fi
     
     # Pons mask - STANDARDIZED NAMING ONLY
-    local pons_mask=$(find "$segmentation_dir" -name "*pons_mask_orig.nii.gz" | head -1)
+    local pons_mask=""
+    
+    # Look for original space mask first
+    pons_mask=$(find "$segmentation_dir" -name "*pons_mask_orig.nii.gz" | head -1)
+    
+    # If not found, look for FLAIR space mask
+    if [ -z "$pons_mask" ]; then
+        pons_mask=$(find "$segmentation_dir" -name "*pons_mask_flair_space.nii.gz" | head -1)
+    fi
+    
     if [ -f "$pons_mask" ]; then
         log_message "Found pons mask: $pons_mask"
         mask_files+=("$pons_mask")
         mask_names+=("pons")
     else
-        log_formatted "WARNING" "No pons mask found with standardized naming (*pons_mask_orig.nii.gz) in $segmentation_dir"
+        log_formatted "WARNING" "No pons mask found with standardized naming (*pons_mask_orig.nii.gz or *pons_mask_flair_space.nii.gz) in $segmentation_dir"
     fi
     
     # Talairach detailed brainstem subdivisions - STANDARDIZED NAMING ONLY
     local detailed_regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain")
     
     for region in "${detailed_regions[@]}"; do
-        # Use ONLY standardized naming pattern
-        local region_mask=$(find "$segmentation_dir" -name "*${region}_orig.nii.gz" | head -1)
+        local region_mask=""
+        
+        # Look for original space mask first
+        region_mask=$(find "$segmentation_dir" -name "*${region}_orig.nii.gz" | head -1)
+        
+        # If not found, look for FLAIR space mask
+        if [ -z "$region_mask" ]; then
+            region_mask=$(find "$segmentation_dir" -name "*${region}_flair_space.nii.gz" | head -1)
+        fi
         
         if [ -f "$region_mask" ]; then
             log_message "Found $region mask: $region_mask"
             mask_files+=("$region_mask")
             mask_names+=("$region")
         else
-            log_formatted "WARNING" "No $region mask found with standardized naming (*${region}_orig.nii.gz) in $segmentation_dir"
+            log_formatted "WARNING" "No $region mask found with standardized naming (*${region}_orig.nii.gz or *${region}_flair_space.nii.gz) in $segmentation_dir"
         fi
     done
     
