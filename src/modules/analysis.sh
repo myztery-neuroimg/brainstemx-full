@@ -49,7 +49,12 @@ detect_hyperintensities() {
 
     mkdir -p "$brainextr_dir"
 
-    antsBrainExtraction.sh \
+    # Determine ANTs bin path
+    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+    
+    # Execute brain extraction using enhanced ANTs command execution
+    execute_ants_command "brain_extraction_flair" "Brain extraction for FLAIR hyperintensity analysis" \
+      ${ants_bin}/antsBrainExtraction.sh \
       -d 3 \
       -a "$flair_file" \
       -o "${brainextr_dir}/" \
@@ -619,7 +624,13 @@ transform_segmentation_to_original() {
     log_message "Output: $output_file"
     log_message "Transform: $transform_file"
     
-    antsApplyTransforms -d 3 \
+    # Determine ANTs bin path
+    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+    
+    # Execute transform using enhanced ANTs command execution
+    execute_ants_command "transform_segmentation" "Transforming segmentation from standard to original space" \
+        ${ants_bin}/antsApplyTransforms \
+        -d 3 \
         -i "$segmentation_file" \
         -r "$reference_file" \
         -o "$output_file" \
