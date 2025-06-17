@@ -39,7 +39,7 @@ export PARALLEL_JOBS=0
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
 
-export QUALITY_PRESET="HIGH"
+export QUALITY_PRESET="MEDIUM"
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
@@ -77,7 +77,7 @@ export TEMPLATE_WEIGHTS="100x50x50x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
-export ANTS_THREADS=64                 # Number of threads for ANTs processing
+export ANTS_THREADS=32                 # Number of threads for ANTs processing
 export REG_PRECISION=3                 # Registration precision (higher = more accurate but slower)
 
 # ANTs specific parameters - if not set, ANTs will use defaults
