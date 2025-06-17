@@ -649,6 +649,7 @@ process_n4_correction() {
 standardize_dimensions() {
   local input_file="$1"
   local target_resolution="${2:-}"  # Optional target resolution parameter
+  local reference_file="${3:-}"     # Optional reference file for matrix dimensions
   
   # Validate input file
   if ! validate_nifti "$input_file" "Input file for standardization"; then
@@ -672,7 +673,13 @@ standardize_dimensions() {
 
   # Determine target dimensions
   local target_dims=""
-  if [ -n "$target_resolution" ]; then
+  local use_reference_grid=false
+  
+  if [ -n "$reference_file" ] && [ -f "$reference_file" ]; then
+    # Use reference file for identical matrix dimensions
+    log_message "Using reference file for identical matrix dimensions: $(basename "$reference_file")"
+    use_reference_grid=true
+  elif [ -n "$target_resolution" ]; then
     # Use provided optimal resolution (smart standardization)
     target_dims="$target_resolution"
     log_message "Using smart standardization with optimal resolution: $target_dims mm"
@@ -693,20 +700,36 @@ standardize_dimensions() {
   fi
 
   log_message "Current resolution: ${x_pix}x${y_pix}x${z_pix}mm"
-  log_message "Target resolution: $target_dims mm"
+  if [ "$use_reference_grid" = true ]; then
+    log_message "Target: matching reference grid (ensures identical matrix dimensions)"
+  else
+    log_message "Target resolution: $target_dims mm"
+  fi
   
   # Determine ANTs bin path
   local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
   
   # Execute resampling using enhanced ANTs command execution
-  execute_ants_command "resample_image" "Resampling image to standardized dimensions ($target_dims mm)" \
-    ${ants_bin}/ResampleImage \
-    3 \
-    "$input_file" \
-    "$output_file" \
-    "$target_dims" \
-    0 \
-    4
+  if [ "$use_reference_grid" = true ]; then
+    # Resample to reference grid for identical matrix dimensions using antsApplyTransforms
+    execute_ants_command "resample_to_reference" "Resampling to reference grid for identical dimensions" \
+      ${ants_bin}/antsApplyTransforms \
+      -d 3 \
+      -i "$input_file" \
+      -r "$reference_file" \
+      -o "$output_file" \
+      -n Linear
+  else
+    # Standard resampling by voxel size
+    execute_ants_command "resample_image" "Resampling image to standardized dimensions ($target_dims mm)" \
+      ${ants_bin}/ResampleImage \
+      3 \
+      "$input_file" \
+      "$output_file" \
+      "$target_dims" \
+      0 \
+      4
+  fi
 
   # Validate output file
   validate_nifti "$output_file" "Standardized image"

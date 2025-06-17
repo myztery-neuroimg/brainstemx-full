@@ -451,17 +451,21 @@ run_pipeline() {
   log_formatted "SUCCESS" "Optimal resolution detected: $optimal_resolution mm"
   log_message "This preserves the highest resolution data for clustering analysis"
   
-  # Standardize dimensions using optimal resolution (run in parallel if available)
-  if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
-    log_message "Running smart dimension standardization with parallel processing"
-    run_parallel_standardize_dimensions "$(get_module_dir "brain_extraction")" "*_brain.nii.gz" "$PARALLEL_JOBS" 1 "$optimal_resolution"
-  else
-    log_message "Running smart dimension standardization sequentially"
-    log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
-    standardize_dimensions "$t1_brain" "$optimal_resolution"
-    log_message "Standardizing FLAIR with optimal resolution: $optimal_resolution"
-    standardize_dimensions "$flair_brain" "$optimal_resolution"
-  fi
+  # Standardize dimensions using optimal resolution with reference grid approach
+  log_message "Running smart dimension standardization with reference grid approach"
+  log_message "This ensures T1 and FLAIR have IDENTICAL matrix dimensions"
+  
+  # Step 1: Standardize T1 first (as reference)
+  log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
+  standardize_dimensions "$t1_brain" "$optimal_resolution"
+  
+  # Get the standardized T1 file path
+  local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
+  local t1_std_ref=$(get_output_path "standardized" "$t1_brain_basename" "_std")
+  
+  # Step 2: Standardize FLAIR using T1 as reference grid
+  log_message "Standardizing FLAIR using T1 as reference grid for identical dimensions"
+  standardize_dimensions "$flair_brain" "$optimal_resolution" "$t1_std_ref"
   
   
   # Update file paths
