@@ -288,6 +288,94 @@ extract_brainstem_talairach_with_transform() {
         fi
     done
     
+    # Create FLAIR-space versions for analysis compatibility
+    log_message "Creating FLAIR-space versions for analysis compatibility..."
+    
+    # Look for original FLAIR files
+    local original_flair_files=()
+    if [ -d "${RESULTS_DIR}/standardized" ]; then
+        while IFS= read -r -d '' orig_flair; do
+            original_flair_files+=("$orig_flair")
+        done < <(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" -print0 2>/dev/null)
+    fi
+    
+    # Create FLAIR-space versions for each original FLAIR found
+    for orig_flair in "${original_flair_files[@]}"; do
+        if [ -f "$orig_flair" ]; then
+            log_message "Creating FLAIR-space Talairach analysis versions from: $(basename "$orig_flair")"
+            
+            # Create output directory for FLAIR-space analysis files
+            local flair_analysis_dir="${RESULTS_DIR}/comprehensive_analysis/original_space"
+            mkdir -p "$flair_analysis_dir"
+            
+            # Process each Talairach region
+            for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
+                if [ -f "$region_file" ]; then
+                    local region_basename=$(basename "$region_file" .nii.gz)
+                    local region_name=$(echo "$region_basename" | sed "s/${output_basename}_//")
+                    
+                    # Resample T1-space mask to FLAIR space
+                    local flair_space_mask="${flair_analysis_dir}/${region_basename}_flair_space.nii.gz"
+                    
+                    # Use standardize_dimensions function from preprocessing module to resample mask to FLAIR grid
+                    if command -v standardize_dimensions &> /dev/null; then
+                        log_message "Resampling ${region_name} mask to FLAIR space..."
+                        
+                        # Use reference file mode for identical matrix dimensions
+                        if standardize_dimensions "$region_file" "" "$orig_flair"; then
+                            # standardize_dimensions creates output in standardized dir, so we need to find and move it
+                            local std_output="${RESULTS_DIR}/standardized/$(basename "$region_file" .nii.gz)_std.nii.gz"
+                            if [ -f "$std_output" ]; then
+                                mv "$std_output" "$flair_space_mask"
+                                log_message "✓ Moved resampled ${region_name} mask to FLAIR space"
+                            else
+                                # Fallback: use flirt
+                                log_message "Using flirt fallback for ${region_name}..."
+                                flirt -in "$region_file" -ref "$orig_flair" -out "$flair_space_mask" -applyxfm -usesqform -interp nearestneighbour
+                            fi
+                        else
+                            # Fallback: use flirt
+                            log_message "Using flirt fallback for ${region_name}..."
+                            flirt -in "$region_file" -ref "$orig_flair" -out "$flair_space_mask" -applyxfm -usesqform -interp nearestneighbour
+                        fi
+                    else
+                        # Fallback: use flirt
+                        log_message "Using flirt for ${region_name} (standardize_dimensions not available)..."
+                        flirt -in "$region_file" -ref "$orig_flair" -out "$flair_space_mask" -applyxfm -usesqform -interp nearestneighbour
+                    fi
+                    
+                    # Create FLAIR-space intensity version
+                    if [ -f "$flair_space_mask" ]; then
+                        local flair_space_intensity="${flair_analysis_dir}/${region_basename}_flair_intensity.nii.gz"
+                        
+                        # Apply mask to original FLAIR to create intensity version
+                        if fslmaths "$orig_flair" -mas "$flair_space_mask" "$flair_space_intensity"; then
+                            log_message "✓ Created FLAIR-space ${region_name} intensity version"
+                        else
+                            log_formatted "WARNING" "Failed to create FLAIR-space ${region_name} intensity version"
+                        fi
+                        
+                        # Create analysis-compatible binary mask with proper naming
+                        # Analysis expects to find *pons*.nii.gz, *dorsal_pons*.nii.gz, *ventral_pons*.nii.gz etc.
+                        local analysis_region_mask="${flair_analysis_dir}/${region_basename}.nii.gz"
+                        if cp "$flair_space_mask" "$analysis_region_mask"; then
+                            log_message "✓ Created analysis-compatible ${region_name} mask: $(basename "$analysis_region_mask")"
+                        else
+                            log_formatted "WARNING" "Failed to create analysis-compatible ${region_name} mask"
+                        fi
+                    fi
+                fi
+            done
+            
+            # Only process the first FLAIR file
+            break
+        fi
+    done
+    
+    if [ ${#original_flair_files[@]} -eq 0 ]; then
+        log_message "No original FLAIR files found for FLAIR-space Talairach versions"
+    fi
+    
     # Generate summary report
     {
         echo "Talairach Brainstem Subdivision Report (Reused Transform)"
