@@ -559,7 +559,7 @@ analyze_hyperintensities_in_all_masks() {
     local t1_file="$2"           # T1 image in standard space
     local segmentation_dir="$3"  # Directory containing segmentation masks
     local output_dir="$4"        # Output directory
-    local threshold="${5:-${THRESHOLD_WM_SD_MULTIPLIER:-1.25}}"  # Use config threshold or default to 1.25 SD above mean
+    local threshold="${5:-${THRESHOLD_WM_SD_MULTIPLIER:-1.5}}"  # Use config threshold or default to 1.25 SD above mean
     
     log_formatted "INFO" "===== ANALYZING HYPERINTENSITIES IN ALL SEGMENTATION MASKS ====="
     log_message "FLAIR: $flair_file"
