@@ -39,7 +39,7 @@ export PARALLEL_JOBS=0
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
 
-export QUALITY_PRESET="MEDIUM"
+export QUALITY_PRESET="HIGH"
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
@@ -85,7 +85,7 @@ export REG_PRECISION=3                 # Registration precision (higher = more a
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
 
 # Hyperintensity detection
-export THRESHOLD_WM_SD_MULTIPLIER=1.25 #Standard deviations from local norm
+export THRESHOLD_WM_SD_MULTIPLIER=1.5 #Standard deviations from local norm
 export MIN_HYPERINTENSITY_SIZE=4
 
 # Tissue segmentation parameters
@@ -163,9 +163,9 @@ unset ISOTROPIC_SPACING
 #   registration_optimized - Prioritize scans with aspect ratios similar to reference
 #   matched_dimensions - Prioritize scans with exact dimensions matching reference
 #   interactive - Show available scans and prompt for manual selection
-export SCAN_SELECTION_MODE="interactive"
-export T1_SELECTION_MODE="interactive"    # For T1, always prefer matched_dimensions
-export FLAIR_SELECTION_MODE="highest_resolution"  # For FLAIR generally prefer ORIGINAL  as we want to eliminate noise from the post-processing of the scanner software for brainstem lesions. Howeverthat post-processing does add valuable resolution, so try different options
+export SCAN_SELECTION_MODE="original"
+export T1_SELECTION_MODE="original"    # For T1, always prefer matched_dimensions
+export FLAIR_SELECTION_MODE="original"  # For FLAIR generally prefer ORIGINAL  as we want to eliminate noise from the post-processing of the scanner software for brainstem lesions. Howeverthat post-processing does add valuable resolution, so try different options
 
 # Advanced registration options
 
