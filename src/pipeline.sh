@@ -1034,6 +1034,78 @@ run_pipeline() {
     log_message "Found hyperintensity data directory: $hyperintensities_dir"
   fi  # End of Visualization (Step 6)
   
+  # Step 6.5: Advanced Visualization and Analysis
+  if [ $START_STAGE -le 6 ]; then
+    log_message "Step 6.5: Advanced Visualization and Analysis"
+    
+    # Create advanced visualization directory
+    local advanced_viz_dir="${RESULTS_DIR}/advanced_visualization"
+    mkdir -p "$advanced_viz_dir"
+    
+    # Find hyperintensity mask files
+    local hyperintensity_mask=""
+    local pons_mask=""
+    local flair_file=""
+    
+    # Look for hyperintensity mask in comprehensive analysis results first
+    if [ -d "${RESULTS_DIR}/comprehensive_analysis/hyperintensities" ]; then
+      hyperintensity_mask=$(find "${RESULTS_DIR}/comprehensive_analysis/hyperintensities" -name "*hyperintensities_bin.nii.gz" | head -1)
+    fi
+    
+    # Fallback to traditional hyperintensities directory
+    if [ -z "$hyperintensity_mask" ] && [ -d "${RESULTS_DIR}/hyperintensities" ]; then
+      hyperintensity_mask=$(find "${RESULTS_DIR}/hyperintensities" -name "*_bin.nii.gz" | head -1)
+    fi
+    
+    # Find pons mask
+    if [ -d "${RESULTS_DIR}/segmentation/pons" ]; then
+      pons_mask=$(find "${RESULTS_DIR}/segmentation/pons" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" | head -1)
+    fi
+    
+    # Find FLAIR file (prefer registered, fallback to standardized)
+    if [ -f "${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz" ]; then
+      flair_file="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
+    elif [ -d "${RESULTS_DIR}/standardized" ]; then
+      flair_file=$(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" ! -name "*_intensity*" | head -1)
+    fi
+    
+    # Generate advanced visualizations if we have the required files
+    if [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ] && [ -n "$flair_file" ] && [ -f "$flair_file" ]; then
+      log_message "Generating advanced visualizations..."
+      
+      # Create 3D rendering of hyperintensities
+      if [ -n "$pons_mask" ] && [ -f "$pons_mask" ]; then
+        log_message "Creating 3D rendering of hyperintensities and pons..."
+        create_3d_rendering "$hyperintensity_mask" "$pons_mask" "$advanced_viz_dir"
+      else
+        log_message "Creating 3D rendering of hyperintensities (pons mask not available)..."
+        create_3d_rendering "$hyperintensity_mask" "" "$advanced_viz_dir"
+      fi
+      
+      # Create multi-threshold comparison
+      log_message "Creating multi-threshold comparison visualization..."
+      local viz_prefix="${advanced_viz_dir}/$(basename "$flair_file" .nii.gz)"
+      create_multi_threshold_comparison "$flair_file" "$viz_prefix" "$advanced_viz_dir"
+      
+      # Create intensity profiles
+      log_message "Creating intensity profiles for analysis..."
+      create_intensity_profiles "$flair_file" "${advanced_viz_dir}/intensity_profiles"
+      
+      log_formatted "SUCCESS" "Advanced visualizations completed"
+      log_message "  3D renderings: $advanced_viz_dir"
+      log_message "  Multi-threshold comparison: ${viz_prefix}_*"
+      log_message "  Intensity profiles: ${advanced_viz_dir}/intensity_profiles"
+    else
+      log_formatted "WARNING" "Required files not found for advanced visualization"
+      log_message "  Hyperintensity mask: ${hyperintensity_mask:-'NOT FOUND'}"
+      log_message "  FLAIR file: ${flair_file:-'NOT FOUND'}"
+      log_message "  Pons mask: ${pons_mask:-'NOT FOUND'}"
+      log_message "Skipping advanced visualization generation"
+    fi
+  else
+    log_message 'Skipping Step 6.5 (Advanced Visualization) as requested'
+  fi  # End of Advanced Visualization (Step 6.5)
+  
   # Step 7: Track pipeline progress
   if [ $START_STAGE -le 7 ]; then
     log_message "Step 7: Tracking pipeline progress"
