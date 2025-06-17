@@ -377,8 +377,14 @@ extract_brainstem_juelich() {
                 -t "[${ants_prefix}0GenericAffine.mat,1]" \
                 -n Linear
         else
-            # Fallback to direct ANTs call
-            antsApplyTransforms -d 3 \
+            # Fallback to direct ANTs call using wrapper
+            # Determine ANTs bin path
+            local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+            
+            # Execute transform using enhanced ANTs command execution
+            execute_ants_command "transform_juelich_region_fallback" "Transforming Juelich region ${region} from MNI to subject space (fallback)" \
+                ${ants_bin}/antsApplyTransforms \
+                -d 3 \
                 -i "${temp_dir}/${region}_mni.nii.gz" \
                 -r "$input_file" \
                 -o "${temp_dir}/${region}_subject_tri.nii.gz" \

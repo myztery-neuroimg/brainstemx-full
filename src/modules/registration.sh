@@ -957,14 +957,38 @@ apply_transformation() {
     if [[ "$transform" == *".mat" ]]; then
         if [[ "$transform" == *"ants"* || "$transform" == *"Affine"* ]]; then
             # ANTs .mat transform — likely affine, must be inverted to go MNI -> subject
-            antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "[$transform,1]" -n "$interpolation" -j "$ANTS_THREADS"
+            # Determine ANTs bin path
+            local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+            
+            # Execute transform using enhanced ANTs command execution
+            execute_ants_command "apply_inverted_affine" "Applying inverted affine transform (MNI to subject)" \
+                ${ants_bin}/antsApplyTransforms \
+                -d 3 \
+                -i "$input" \
+                -r "$reference" \
+                -o "$output" \
+                -t "[$transform,1]" \
+                -n "$interpolation" \
+                -j "$ANTS_THREADS"
         else
             # FSL .mat transform
             apply_transform "$input" "$reference" "$transform" "$output" "$interpolation"
         fi
     else
         # ANTs .h5 or .txt transforms — typically don't need inversion unless explicitly known
-        antsApplyTransforms -d 3 -i "$input" -r "$reference" -o "$output" -t "$transform" -n "$interpolation" -j "$ANTS_THREADS"
+        # Determine ANTs bin path
+        local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+        
+        # Execute transform using enhanced ANTs command execution
+        execute_ants_command "apply_standard_transform" "Applying standard transform (MNI to subject)" \
+            ${ants_bin}/antsApplyTransforms \
+            -d 3 \
+            -i "$input" \
+            -r "$reference" \
+            -o "$output" \
+            -t "$transform" \
+            -n "$interpolation" \
+            -j "$ANTS_THREADS"
     fi
 
     log_message "Transformation applied. Output: $output"
