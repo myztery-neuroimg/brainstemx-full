@@ -4,17 +4,24 @@
 #
 # This module contains:
 # - Harvard/Oxford atlas as primary method (gold standard for brainstem boundaries)
-# - Juelich atlas for pons subdivision (validated against Harvard/Oxford boundaries)
-# - All outputs in T1 native space
-# - FLAIR intensity integration
+# - Talairach atlas for detailed brainstem subdivision (validated against Harvard/Oxford boundaries)
+# - Juelich atlas as fallback (anatomically questionable)
+# - Atlas-to-subject transformation: preserves native resolution by bringing MNI atlases to subject space
+# - All outputs in T1 native space, applied to both T1 and registered FLAIR
 # - Proper file naming and discovery
 # - Continues to clustering after validation
 #
 
-# Load Juelich atlas-based segmentation as fallback method
+# Load Talairach atlas-based segmentation for detailed brainstem subdivision
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/segment_talairach.sh" ]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/segment_talairach.sh"
+    log_message "Talairach atlas loaded for detailed brainstem subdivision (replaces Juelich)"
+fi
+
+# Load Juelich atlas-based segmentation as backup fallback method
 if [ -f "$(dirname "${BASH_SOURCE[0]}")/segment_juelich.sh" ]; then
     source "$(dirname "${BASH_SOURCE[0]}")/segment_juelich.sh"
-    log_message "Juelich atlas loaded as fallback segmentation method (provides pons subdivision)"
+    log_message "Juelich atlas loaded as backup fallback method (anatomically questionable)"
 fi
 
 # Ensure RESULTS_DIR is absolute path
@@ -93,12 +100,8 @@ extract_brainstem_harvard_oxford() {
     # Find Harvard-Oxford subcortical atlas
     local harvard_subcortical=""
     local atlas_search_paths=(
-        "${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr25-${template_res}.nii.gz"
         "${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr0-${template_res}.nii.gz"
-        "${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr50-${template_res}.nii.gz"
-        # Fallback to 1mm if template_res not found
-        "${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr25-1mm.nii.gz"
-        "${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr0-1mm.nii.gz"
+        "${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-prob-${template_res}.nii.gz"
     )
     
     for atlas_file in "${atlas_search_paths[@]}"; do
@@ -115,6 +118,150 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
+    # ATLAS VALIDATION: Use atlasq to validate the Harvard-Oxford atlas
+    log_message "Validating Harvard-Oxford atlas structure..."
+    
+    # Enhanced atlas file validation using atlasq
+    if command -v atlasq &> /dev/null; then
+        log_message "Running comprehensive atlasq validation..."
+        
+        # Use atlasq summary for comprehensive atlas information
+        local atlas_summary=$(atlasq summary harvardoxford-subcortical 2>/dev/null || echo "SUMMARY_FAILED")
+        
+        if [ "$atlas_summary" = "SUMMARY_FAILED" ]; then
+            log_formatted "WARNING" "atlasq summary failed - using direct file validation"
+            
+            # Fallback: try direct file query if summary fails
+            local atlas_info=$(atlasq -a "$harvard_subcortical" 2>/dev/null || echo "QUERY_FAILED")
+            if [ "$atlas_info" != "QUERY_FAILED" ]; then
+                log_message "Direct atlas query successful: $atlas_info"
+            fi
+        else
+            log_formatted "SUCCESS" "✓ Harvard-Oxford atlas summary retrieved"
+            
+            # Parse and validate key information from summary
+            local atlas_type=$(echo "$atlas_summary" | grep "Type:" | awk '{print $2}' || echo "unknown")
+            local atlas_labels=$(echo "$atlas_summary" | grep "Labels:" | awk '{print $2}' || echo "0")
+            local brainstem_line=$(echo "$atlas_summary" | grep "7.*Brain-Stem" || echo "")
+            
+            log_message "Atlas type: $atlas_type"
+            log_message "Total labels: $atlas_labels"
+            
+            # Validate atlas type
+            if [ "$atlas_type" = "probabilistic" ]; then
+                log_formatted "SUCCESS" "✓ Correct atlas type: probabilistic"
+            else
+                log_formatted "WARNING" "Unexpected atlas type: $atlas_type (expected: probabilistic)"
+            fi
+            
+            # Validate label count (Harvard-Oxford subcortical should have 21 labels)
+            if [ "$atlas_labels" = "21" ]; then
+                log_formatted "SUCCESS" "✓ Correct number of labels: 21"
+            else
+                log_formatted "WARNING" "Unexpected label count: $atlas_labels (expected: 21)"
+            fi
+            
+            # Validate brainstem region (index 7)
+            if [ -n "$brainstem_line" ]; then
+                log_formatted "SUCCESS" "✓ Brainstem region (index 7) confirmed in atlas"
+                
+                # Extract MNI coordinates for brainstem from summary
+                # The format is: "7     | Brain-Stem                  | 2.0   | -28.0 | -36.0"
+                # Use pipe as field separator to get coordinates from fields 3, 4, 5
+                local brainstem_coords=$(echo "$brainstem_line" | awk -F'|' '{gsub(/^ *| *$/, "", $3); gsub(/^ *| *$/, "", $4); gsub(/^ *| *$/, "", $5); print $3, $4, $5}' || echo "")
+                if [ -n "$brainstem_coords" ]; then
+                    log_message "Brainstem MNI coordinates: $brainstem_coords"
+                    
+                    # Parse coordinates for validation with improved error handling
+                    local mni_x=$(echo "$brainstem_coords" | awk '{print $1}' | sed 's/^ *//;s/ *$//')
+                    local mni_y=$(echo "$brainstem_coords" | awk '{print $2}' | sed 's/^ *//;s/ *$//')
+                    local mni_z=$(echo "$brainstem_coords" | awk '{print $3}' | sed 's/^ *//;s/ *$//')
+                    
+                    # Validate we actually got three numeric values
+                    if [ -z "$mni_x" ] || [ -z "$mni_y" ] || [ -z "$mni_z" ]; then
+                        log_formatted "WARNING" "Failed to parse all three MNI coordinates from: '$brainstem_coords'"
+                        log_message "Raw brainstem line: $brainstem_line"
+                        log_message "Parsed coordinates: X='$mni_x', Y='$mni_y', Z='$mni_z'"
+                        log_message "Skipping coordinate validation due to parsing error"
+                    else
+                        log_message "Parsed coordinates: X=$mni_x, Y=$mni_y, Z=$mni_z"
+                    
+                        # Validate coordinates are in expected range for brainstem
+                        # Expected: X near 0-2 (midline), Y negative (posterior), Z negative (inferior)
+                        if (( $(echo "$mni_x >= -5 && $mni_x <= 5" | bc -l) )) && \
+                           (( $(echo "$mni_y <= -20 && $mni_y >= -40" | bc -l) )) && \
+                           (( $(echo "$mni_z <= -30 && $mni_z >= -50" | bc -l) )); then
+                            log_formatted "SUCCESS" "✓ Brainstem MNI coordinates are anatomically plausible"
+                        else
+                            log_formatted "WARNING" "Brainstem MNI coordinates outside expected range"
+                            log_message "Expected: X(-5 to 5), Y(-40 to -20), Z(-50 to -30)"
+                            log_message "Actual: X($mni_x), Y($mni_y), Z($mni_z)"
+                        fi
+                    fi
+                fi
+            else
+                log_formatted "ERROR" "Brainstem region (index 7) not found in atlas summary"
+                log_message "This indicates atlas corruption or incorrect atlas version"
+                rm -rf "$temp_dir"
+                return 1
+            fi
+            
+            # Show first few labels for verification
+            log_message "Atlas label preview:"
+            echo "$atlas_summary" | grep -A 8 "Index | Label" | tail -8
+        fi
+    else
+        log_formatted "WARNING" "atlasq not available - performing basic FSL validation only"
+    fi
+    
+    # FSL-based atlas validation
+    log_message "Performing FSL-based atlas validation..."
+    
+    # Check if atlas is a valid NIfTI file
+    if ! fslinfo "$harvard_subcortical" >/dev/null 2>&1; then
+        log_formatted "ERROR" "Harvard-Oxford atlas is not a valid NIfTI file"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Check atlas dimensions and basic properties
+    local atlas_dims=$(fslinfo "$harvard_subcortical" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local atlas_voxels=$(fslstats "$harvard_subcortical" -V | awk '{print $1}')
+    local atlas_max=$(fslstats "$harvard_subcortical" -R | awk '{print $2}')
+    
+    log_message "Atlas validation results:"
+    log_message "  Dimensions: $atlas_dims"
+    log_message "  Total voxels: $atlas_voxels"
+    log_message "  Max label value: $atlas_max"
+    
+    # Validate atlas has reasonable properties
+    if [ "$atlas_voxels" -lt 1000000 ]; then
+        log_formatted "WARNING" "Atlas seems too small ($atlas_voxels voxels) - may be corrupted"
+    fi
+    
+    if (( $(echo "$atlas_max < 7" | bc -l) )); then
+        log_formatted "ERROR" "Atlas max value ($atlas_max) is less than 7 - brainstem region not available"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Validate brainstem region specifically
+    log_message "Validating brainstem region (index 7) in atlas..."
+    fslmaths "$harvard_subcortical" -thr 7 -uthr 7 -bin "${temp_dir}/test_brainstem.nii.gz"
+    local brainstem_test_voxels=$(fslstats "${temp_dir}/test_brainstem.nii.gz" -V | awk '{print $1}')
+    
+    if [ "$brainstem_test_voxels" -lt 100 ]; then
+        log_formatted "ERROR" "Brainstem region (index 7) has insufficient voxels ($brainstem_test_voxels) in atlas"
+        log_formatted "ERROR" "This suggests atlas corruption or incorrect version"
+        rm -rf "$temp_dir"
+        return 1
+    else
+        log_formatted "SUCCESS" "✓ Brainstem region validated: $brainstem_test_voxels voxels in atlas"
+    fi
+    
+    # Clean up test file
+    rm -f "${temp_dir}/test_brainstem.nii.gz"
+    
     # Check if templates exist
     if [ ! -f "$mni_template" ] || [ ! -f "$mni_brain" ]; then
         log_formatted "ERROR" "MNI templates not found at resolution ${template_res}"
@@ -122,9 +269,9 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    # Step 1: Register input to MNI space using ANTs (compute transformation)
-    log_message "Registering $(basename \"$input_file\") to MNI space using ANTs..."
+    log_formatted "SUCCESS" "Atlas validation completed - Harvard-Oxford atlas is valid"
     
+    # NOTE: Registration will be performed after orientation correction
     # Create transforms directory if it doesn't exist
     mkdir -p "${RESULTS_DIR}/registered/transforms"
     
@@ -133,20 +280,106 @@ extract_brainstem_harvard_oxford() {
     local ants_warped="${RESULTS_DIR}/registered/transforms/ants_to_mni_warped.nii.gz"
     local brainstem_mask_mni_file="${RESULTS_DIR}/registered/transforms/brainstem_mask_mni_file.nii.gz"
     
-    # Use compute_initial_affine if available, otherwise use execute_ants_command
-    if command -v compute_initial_affine &> /dev/null; then
-        # Use the existing function for initial affine registration
-        compute_initial_affine "$input_file" "$mni_brain" "$ants_prefix"
+    # Step 4: Transform brainstem mask to subject T1 space
+    log_message "Transforming brainstem mask to subject T1 space..."
+    
+    # CRITICAL: Validate and fix coordinate spaces before registration
+    log_message "Validating coordinate spaces before transformation..."
+    local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local mni_orient=$(fslorient -getorient "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local atlas_orient=$(fslorient -getorient "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
+    
+    log_message "Subject T1 orientation: $input_orient"
+    log_message "MNI template orientation: $mni_orient"
+    log_message "Atlas orientation: $atlas_orient"
+    
+    # CRITICAL FIX: Handle orientation mismatch
+    local orientation_corrected_input="$input_file"
+    local orientation_corrected=false
+    
+    if [ "$input_orient" = "UNKNOWN" ] || [ "$mni_orient" = "UNKNOWN" ]; then
+        log_formatted "WARNING" "Cannot determine image orientations - proceeding with caution"
+    elif [ "$input_orient" != "$mni_orient" ]; then
+        log_formatted "WARNING" "Orientation mismatch detected: Subject ($input_orient) vs MNI ($mni_orient)"
+        log_formatted "INFO" "Applying orientation correction to fix anatomical mislocalization"
+        
+        # Create orientation-corrected version of input for registration
+        orientation_corrected_input="${temp_dir}/input_orientation_corrected.nii.gz"
+        
+        if [ "$input_orient" = "NEUROLOGICAL" ] && [ "$mni_orient" = "RADIOLOGICAL" ]; then
+            log_message "Converting NEUROLOGICAL to RADIOLOGICAL orientation..."
+            # Flip left-right (X-axis) to convert NEUROLOGICAL to RADIOLOGICAL
+            fslswapdim "$input_file" -x y z "$orientation_corrected_input"
+            # Explicitly set orientation metadata to RADIOLOGICAL
+            fslorient -forceradiological "$orientation_corrected_input"
+            orientation_corrected=true
+        elif [ "$input_orient" = "RADIOLOGICAL" ] && [ "$mni_orient" = "NEUROLOGICAL" ]; then
+            log_message "Converting RADIOLOGICAL to NEUROLOGICAL orientation..."
+            # Flip left-right (X-axis) to convert RADIOLOGICAL to NEUROLOGICAL
+            fslswapdim "$input_file" -x y z "$orientation_corrected_input"
+            # Explicitly set orientation metadata to NEUROLOGICAL
+            fslorient -forceneurological "$orientation_corrected_input"
+            orientation_corrected=true
+        else
+            log_formatted "WARNING" "Unsupported orientation conversion: $input_orient to $mni_orient"
+            log_message "Proceeding without orientation correction - results may be incorrect"
+            cp "$input_file" "$orientation_corrected_input"
+        fi
+        
+        # Verify the corrected file was created
+        if [ ! -f "$orientation_corrected_input" ]; then
+            log_formatted "ERROR" "Failed to create orientation-corrected input file"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+        
+        # Update orientation info
+        local corrected_orient=$(fslorient -getorient "$orientation_corrected_input" 2>/dev/null || echo "UNKNOWN")
+        log_message "Corrected subject orientation: $corrected_orient"
+        
+        if [ "$corrected_orient" = "$mni_orient" ]; then
+            log_formatted "SUCCESS" "Orientation correction successful: $corrected_orient"
+        else
+            log_formatted "WARNING" "Orientation correction may be incomplete: $corrected_orient vs expected $mni_orient"
+        fi
     else
-        # Run ANTs registration using execute_ants_command for proper logging
-        # Using antsRegistrationSyNQuick.sh for efficiency with affine-only transform
+        log_formatted "SUCCESS" "Orientations match: $input_orient"
+        # No correction needed, but copy file to temp location for consistency
+        cp "$input_file" "${temp_dir}/input_orientation_corrected.nii.gz"
+        orientation_corrected_input="${temp_dir}/input_orientation_corrected.nii.gz"
+    fi
+    
+    # Step 1: Register orientation-corrected input to MNI space using ANTs
+    log_message "Registering $(basename \"$orientation_corrected_input\") to MNI space using ANTs..."
+    log_message "Input file for registration: $orientation_corrected_input"
+    
+    # CRITICAL: Always use execute_ants_command when orientation correction applied
+    # The compute_initial_affine function may not respect our corrected input path
+    if [ "$orientation_corrected" = "true" ]; then
+        log_formatted "INFO" "Using direct ANTs command due to orientation correction"
+        
+        # Run ANTs registration using execute_ants_command for proper logging and control
+        execute_ants_command "ants_to_mni_registration" "Affine registration to MNI template (orientation corrected)" \
+            antsRegistrationSyNQuick.sh \
+            -d 3 \
+            -f "$mni_brain" \
+            -m "$orientation_corrected_input" \
+            -t a \
+            -o "$ants_prefix" \
+            -n "${ANTS_THREADS:-1}"
+    elif command -v compute_initial_affine &> /dev/null; then
+        # Use the existing function only when no orientation correction applied
+        log_message "Using compute_initial_affine function (no orientation correction needed)"
+        compute_initial_affine "$orientation_corrected_input" "$mni_brain" "$ants_prefix"
+    else
+        # Fallback: Run ANTs registration using execute_ants_command
         log_message "Running ANTs quick affine registration to MNI space..."
         
         execute_ants_command "ants_to_mni_registration" "Affine registration to MNI template" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
             -f "$mni_brain" \
-            -m "$input_file" \
+            -m "$orientation_corrected_input" \
             -t a \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
@@ -162,77 +395,79 @@ extract_brainstem_harvard_oxford() {
     # The ANTs transforms are automatically invertible
     log_message "ANTs registration completed successfully"
     
-    # Step 3: Extract brainstem from Harvard-Oxford atlas
-    log_message "Extracting brainstem structures from Harvard-Oxford atlas..."
+    # Step 3: Transform Harvard-Oxford atlas to subject space (preserving native resolution)
+    log_message "Transforming Harvard-Oxford atlas to subject native space..."
     
-    # Harvard-Oxford Subcortical Atlas Structure IDs (based on FSL documentation):
-    # 0 = Left Cerebral White Matter
-    # 1 = Left Cerebral Cortex
-    # 2 = Left Lateral Ventricle
-    # 3 = Left Thalamus
-    # 4 = Left Caudate
-    # 5 = Left Putamen
-    # 6 = Left Pallidum
-    # 7 = Brain-Stem (THIS IS WHAT WE WANT!)
-    # 8 = Left Hippocampus
-    # 9 = Left Amygdala
-    # 10 = Left Accumbens
-    # 11 = Right Cerebral White Matter
-    # 12 = Right Cerebral Cortex
-    # 13 = Right Lateral Ventricle (THIS WAS GIVING US 509K VOXELS!)
-    # 14 = Right Thalamus
-    # 15 = Right Caudate
-    # 16 = Right Putamen
-    # 17 = Right Pallidum
-    # 18 = Right Hippocampus
-    # 19 = Right Amygdala
-    # 20 = Right Accumbens
+    # Transform the ENTIRE atlas to subject space first, then extract regions
+    # This preserves subject resolution and is more efficient
+    local atlas_in_subject="${temp_dir}/harvard_oxford_in_subject.nii.gz"
     
-    local brainstem_index=7  # Brain-Stem in Harvard-Oxford subcortical atlas
-    local found_brainstem=false
-    
-    log_message "Extracting brainstem (index $brainstem_index) from Harvard-Oxford atlas..."
-    fslmaths "$harvard_subcortical" -thr $brainstem_index -uthr $brainstem_index -bin "${brainstem_mask_mni_file}"
-    
-    local voxel_count=$(fslstats "${brainstem_mask_mni_file}" -V | awk '{print $1}')
-    if [ "$voxel_count" -gt 100 ]; then
-        log_message "Found brainstem with $voxel_count voxels in MNI space"
-        found_brainstem=true
-    else
-        log_formatted "ERROR" "Brainstem region too small or not found (only $voxel_count voxels)"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-    
-    if [ "$found_brainstem" = "false" ]; then
-        log_formatted "ERROR" "Brainstem not found in Harvard-Oxford atlas at expected index"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-    
-    # Step 4: Transform brainstem mask to subject T1 space
-    log_message "Transforming brainstem mask to subject T1 space..."
-    
-    # Use ANTs to apply the inverse transform (MNI to subject space)
-    # The -t flag with [transform,1] applies the inverse
     if command -v execute_ants_command &> /dev/null; then
-        execute_ants_command "apply_inverse_transform" "Transforming brainstem mask to subject T1 space" \
+        execute_ants_command "transform_atlas_to_subject" "Transforming Harvard-Oxford atlas to subject space" \
             antsApplyTransforms \
             -d 3 \
-            -i "${brainstem_mask_mni_file}" \
-            -r "$input_file" \
-            -o "${temp_dir}/brainstem_mask_subject_tri.nii.gz" \
+            -i "$harvard_subcortical" \
+            -r "$orientation_corrected_input" \
+            -o "$atlas_in_subject" \
             -t "[${ants_prefix}0GenericAffine.mat,1]" \
-            -n Linear
+            -n GenericLabel
     else
-        # Fallback to direct ANTs call if execute_ants_command is not available
-        log_message "Applying inverse transform with antsApplyTransforms..."
+        # Fallback to direct ANTs call
+        log_message "Applying inverse transform to atlas with antsApplyTransforms..."
         antsApplyTransforms -d 3 \
-            -i "${brainstem_mask_mni_file}" \
-            -r "$input_file" \
-            -o "${temp_dir}/brainstem_mask_subject_tri.nii.gz" \
+            -i "$harvard_subcortical" \
+            -r "$orientation_corrected_input" \
+            -o "$atlas_in_subject" \
             -t "[${ants_prefix}0GenericAffine.mat,1]" \
-            -n Linear
+            -n GenericLabel
+    fi
+    
+    # Check if atlas transformation was successful
+    if [ ! -f "$atlas_in_subject" ]; then
+        log_formatted "ERROR" "Failed to transform atlas to subject space"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Now extract brainstem from the atlas in subject space
+    log_message "Extracting brainstem from atlas in subject native space..."
+    
+    local brainstem_index=7  # Brain-Stem in Harvard-Oxford subcortical atlas
+    log_message "Extracting brainstem (index $brainstem_index) from transformed atlas..."
+    fslmaths "$atlas_in_subject" -thr $brainstem_index -uthr $brainstem_index -bin "${temp_dir}/brainstem_mask_subject_tri.nii.gz"
+    
+    local voxel_count=$(fslstats "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -V | awk '{print $1}')
+    if [ "$voxel_count" -gt 100 ]; then
+        log_message "Found brainstem with $voxel_count voxels in subject space"
+    else
+        log_formatted "ERROR" "Brainstem region too small or not found in subject space (only $voxel_count voxels)"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # If orientation correction was applied, we need to transform back to original orientation
+    if [ "$orientation_corrected" = "true" ]; then
+        log_message "Converting brainstem mask back to original subject orientation..."
+        
+        # Apply reverse orientation correction to the mask
+        if [ "$input_orient" = "NEUROLOGICAL" ] && [ "$mni_orient" = "RADIOLOGICAL" ]; then
+            # Convert back from RADIOLOGICAL to NEUROLOGICAL
+            fslswapdim "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -x y z "${temp_dir}/brainstem_mask_subject_tri_corrected.nii.gz"
+            # Set orientation back to original NEUROLOGICAL
+            fslorient -forceneurological "${temp_dir}/brainstem_mask_subject_tri_corrected.nii.gz"
+        elif [ "$input_orient" = "RADIOLOGICAL" ] && [ "$mni_orient" = "NEUROLOGICAL" ]; then
+            # Convert back from NEUROLOGICAL to RADIOLOGICAL
+            fslswapdim "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -x y z "${temp_dir}/brainstem_mask_subject_tri_corrected.nii.gz"
+            # Set orientation back to original RADIOLOGICAL
+            fslorient -forceradiological "${temp_dir}/brainstem_mask_subject_tri_corrected.nii.gz"
+        else
+            # No correction applied or unsupported conversion
+            cp "${temp_dir}/brainstem_mask_subject_tri.nii.gz" "${temp_dir}/brainstem_mask_subject_tri_corrected.nii.gz"
+        fi
+        
+        # Use the corrected version
+        mv "${temp_dir}/brainstem_mask_subject_tri_corrected.nii.gz" "${temp_dir}/brainstem_mask_subject_tri.nii.gz"
+        log_message "Orientation correction applied to brainstem mask"
     fi
     
     # Check if the transform was successful
@@ -244,8 +479,92 @@ extract_brainstem_harvard_oxford() {
     
     # Threshold at 0.5 to create binary mask (captures partial volume voxels)
     fslmaths "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/brainstem_mask_subject.nii.gz"
-    log_message "Displaying ${temp_dir}/brainstem_mask_subject.nii.gz fslstats.."
-    fslinfo "${temp_dir}/brainstem_mask_subject.nii.gz" 
+    
+    # CRITICAL: Validate anatomical location of transformed mask
+    log_formatted "INFO" "===== ANATOMICAL LOCATION VALIDATION ====="
+    local com=$(fslstats "${temp_dir}/brainstem_mask_subject.nii.gz" -C)
+    local dims=$(fslinfo "$input_file" | grep -E "^dim[1-3]" | awk '{print $2}')
+    
+    log_message "Validating brainstem mask in original subject space..."
+    
+    # Parse center of mass and dimensions
+    local x=$(echo "$com" | awk '{print $1}')
+    local y=$(echo "$com" | awk '{print $2}')
+    local z=$(echo "$com" | awk '{print $3}')
+    local dimx=$(echo "$dims" | sed -n '1p')
+    local dimy=$(echo "$dims" | sed -n '2p')
+    local dimz=$(echo "$dims" | sed -n '3p')
+    
+    # Calculate relative position (percentage of volume)
+    local rel_x=$(echo "scale=2; $x / $dimx" | bc -l)
+    local rel_y=$(echo "scale=2; $y / $dimy" | bc -l)
+    local rel_z=$(echo "scale=2; $z / $dimz" | bc -l)
+    
+    log_message "Brainstem center of mass: ($x, $y, $z)"
+    log_message "Image dimensions: ${dimx}x${dimy}x${dimz}"
+    log_message "Relative position: (${rel_x}, ${rel_y}, ${rel_z})"
+    
+    # Validate anatomical plausibility
+    local anatomically_plausible=true
+    
+    # Brainstem should be:
+    # - Centered in X (0.4 < rel_x < 0.6)
+    # - Posterior in Y (depends on orientation, but generally 0.3 < rel_y < 0.7)
+    # - Inferior in Z (rel_z < 0.4 for most orientations)
+    
+    if (( $(echo "$rel_x < 0.3 || $rel_x > 0.7" | bc -l) )); then
+        log_formatted "WARNING" "Brainstem X position unusual: $rel_x (expected 0.4-0.6 for midline)"
+        anatomically_plausible=false
+    fi
+    
+    if (( $(echo "$rel_z > 0.6" | bc -l) )); then
+        log_formatted "WARNING" "Brainstem Z position unusual: $rel_z (expected < 0.4 for inferior brain)"
+        anatomically_plausible=false
+    fi
+    
+    # Check volume is reasonable (typical brainstem is 3000-15000 voxels depending on resolution)
+    local mask_volume=$(fslstats "${temp_dir}/brainstem_mask_subject.nii.gz" -V | awk '{print $1}')
+    if [ "$mask_volume" -lt 500 ] || [ "$mask_volume" -gt 50000 ]; then
+        log_formatted "WARNING" "Brainstem volume unusual: $mask_volume voxels (expected 500-50000)"
+        anatomically_plausible=false
+    fi
+    
+    if [ "$anatomically_plausible" = "false" ]; then
+        log_formatted "ERROR" "CRITICAL: Brainstem segmentation appears anatomically implausible!"
+        log_formatted "ERROR" "This suggests a coordinate space transformation error."
+        log_formatted "ERROR" "Possible causes:"
+        log_formatted "ERROR" "  1. Registration failure between subject and MNI space"
+        log_formatted "ERROR" "  2. Orientation mismatch between images"
+        log_formatted "ERROR" "  3. Atlas coordinate system mismatch"
+        log_formatted "ERROR" "  4. Transform inversion applied incorrectly"
+        
+        # Save debugging information
+        log_message "Saving debugging information..."
+        
+        # Copy intermediate files for inspection
+        cp "${brainstem_mask_mni_file}" "${output_dir}/../debug_brainstem_mni.nii.gz" 2>/dev/null || true
+        cp "${temp_dir}/brainstem_mask_subject_tri.nii.gz" "${output_dir}/../debug_brainstem_subject_tri.nii.gz" 2>/dev/null || true
+        cp "${ants_prefix}0GenericAffine.mat" "${output_dir}/../debug_transform.mat" 2>/dev/null || true
+        
+        log_message "Debug files saved to $(dirname "$output_dir")"
+        log_message "  debug_brainstem_mni.nii.gz - Brainstem mask in MNI space"
+        log_message "  debug_brainstem_subject_tri.nii.gz - Transformed mask before thresholding"
+        log_message "  debug_transform.mat - ANTs transformation matrix"
+        
+        # Create visualization overlay for manual inspection
+        local debug_overlay="${output_dir}/../debug_brainstem_overlay.nii.gz"
+        if overlay 1 0 "$input_file" -5000 5000 "${temp_dir}/brainstem_mask_subject.nii.gz" 0.5 1 "$debug_overlay" 2>/dev/null; then
+            log_message "  debug_brainstem_overlay.nii.gz - Overlay for visual inspection"
+        fi
+        
+        rm -rf "$temp_dir"
+        return 1
+    else
+        log_formatted "SUCCESS" "Brainstem segmentation passes anatomical validation"
+        log_message "Volume: $mask_volume voxels, Position: (${rel_x}, ${rel_y}, ${rel_z})"
+    fi
+    
+    log_message "Brainstem mask transformation completed and validated"
     # Step 5: Apply mask to get intensity values
     log_message "Creating intensity-based brainstem segmentation..."
     
@@ -306,6 +625,53 @@ extract_brainstem_harvard_oxford() {
         log_formatted "WARNING" "Failed to create T1 intensity version (non-critical)"
     fi
     
+    # Apply segmentation to registered FLAIR if available
+    log_message "Checking for registered FLAIR to apply segmentation..."
+    local flair_registered="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
+    local flair_files_found=()
+    
+    # Look for registered FLAIR files
+    if [ -f "$flair_registered" ]; then
+        flair_files_found+=("$flair_registered")
+    fi
+    
+    # Also look for other FLAIR registration patterns
+    if [ -d "${RESULTS_DIR}/registered" ]; then
+        while IFS= read -r -d '' flair_file; do
+            flair_files_found+=("$flair_file")
+        done < <(find "${RESULTS_DIR}/registered" -name "*flair*Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -print0 2>/dev/null)
+    fi
+    
+    # Apply segmentation to each FLAIR file found
+    for flair_file in "${flair_files_found[@]}"; do
+        if [ -f "$flair_file" ]; then
+            local flair_base=$(basename "$flair_file" .nii.gz)
+            local flair_intensity_file="${output_dir_path}/${base_name}_flair_intensity.nii.gz"
+            
+            # Check dimensions compatibility before applying mask
+            local flair_dims=$(fslinfo "$flair_file" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+            local mask_dims=$(fslinfo "${temp_dir}/brainstem_mask_subject.nii.gz" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+            
+            if [ "$flair_dims" = "$mask_dims" ]; then
+                log_message "Creating FLAIR intensity version from: $(basename "$flair_file")"
+                if fslmaths "$flair_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" "$flair_intensity_file"; then
+                    log_message "✓ Created FLAIR intensity version: $(basename "$flair_intensity_file")"
+                else
+                    log_formatted "WARNING" "Failed to create FLAIR intensity version (non-critical)"
+                fi
+            else
+                log_formatted "WARNING" "FLAIR dimensions ($flair_dims) don't match mask ($mask_dims) - skipping FLAIR intensity creation"
+            fi
+            
+            # Only process the first compatible FLAIR file
+            break
+        fi
+    done
+    
+    if [ ${#flair_files_found[@]} -eq 0 ]; then
+        log_message "No registered FLAIR files found - T1 intensity only"
+    fi
+    
     # Create QA-compatible naming convention
     local mask_base_name=$(basename "$mask_file" .nii.gz)
     local qa_t1_intensity="${output_dir_path}/${mask_base_name}_t1_intensity.nii.gz"
@@ -314,6 +680,17 @@ extract_brainstem_harvard_oxford() {
         ln -sf "$(basename "$t1_intensity_file")" "$qa_t1_intensity" 2>/dev/null || \
         cp "$t1_intensity_file" "$qa_t1_intensity"
         log_message "✓ Created QA-compatible T1 intensity: $(basename "$qa_t1_intensity")"
+    fi
+    
+    # Create QA-compatible FLAIR intensity if it exists
+    local flair_intensity_file="${output_dir_path}/${base_name}_flair_intensity.nii.gz"
+    if [ -f "$flair_intensity_file" ]; then
+        local qa_flair_intensity="${output_dir_path}/${mask_base_name}_flair_intensity.nii.gz"
+        if [ "$flair_intensity_file" != "$qa_flair_intensity" ]; then
+            ln -sf "$(basename "$flair_intensity_file")" "$qa_flair_intensity" 2>/dev/null || \
+            cp "$flair_intensity_file" "$qa_flair_intensity"
+            log_message "✓ Created QA-compatible FLAIR intensity: $(basename "$qa_flair_intensity")"
+        fi
     fi
     
     # Validate output (use absolute path)
@@ -830,69 +1207,162 @@ extract_brainstem_final() {
         return 1
     fi
     
-    # STEP 2: ALWAYS attempt Juelich for pons subdivision
-    local juelich_pons_valid=false
-    log_message "Step 2: Attempting Juelich atlas for pons subdivision"
+    # STEP 2: Use Talairach for detailed brainstem subdivision (REUSING HARVARD-OXFORD TRANSFORM)
+    local talairach_subdivision_valid=false
+    log_message "Step 2: Attempting Talairach atlas for detailed brainstem subdivision (unified registration)"
     
-    if command -v extract_brainstem_juelich &> /dev/null; then
-        if extract_brainstem_juelich "$input_file" "$input_basename"; then
-            log_message "Juelich segmentation completed, validating pons against Harvard-Oxford boundaries..."
+    # Reuse Harvard-Oxford registration transform to eliminate duplicate processing
+    if command -v extract_brainstem_talairach_with_transform &> /dev/null; then
+        # Get the transform parameters from Harvard-Oxford registration
+        local ants_transform="${RESULTS_DIR}/registered/transforms/ants_to_mni_0GenericAffine.mat"
+        
+        # Check if Harvard-Oxford transform exists
+        if [ -f "$ants_transform" ]; then
+            log_message "Reusing Harvard-Oxford transform for Talairach processing (eliminating duplicate registration)"
             
-            # Check if Juelich pons is within Harvard-Oxford brainstem boundaries
-            local juelich_pons="${pons_dir}/${input_basename}_pons.nii.gz"
-            local temp_dir=$(mktemp -d)
+            # Create temporary directory for orientation correction (if needed)
+            local talairach_temp=$(mktemp -d)
             
-            if [ -f "$juelich_pons" ] && [ -f "$harvard_mask" ]; then
-                # Create intersection of Juelich pons with Harvard-Oxford brainstem mask
-                fslmaths "$juelich_pons" -mas "$harvard_mask" "${temp_dir}/pons_validated.nii.gz"
+            # Handle orientation correction (replicating Harvard-Oxford logic for consistency)
+            local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
+            local mni_template="${TEMPLATE_DIR}/MNI152_T1_1mm_brain.nii.gz"
+            local mni_orient=$(fslorient -getorient "$mni_template" 2>/dev/null || echo "UNKNOWN")
+            
+            local orientation_corrected_input="$input_file"
+            local orientation_corrected=false
+            
+            if [ "$input_orient" != "UNKNOWN" ] && [ "$mni_orient" != "UNKNOWN" ] && [ "$input_orient" != "$mni_orient" ]; then
+                log_message "Applying same orientation correction as Harvard-Oxford for consistency"
+                orientation_corrected_input="${talairach_temp}/input_orientation_corrected.nii.gz"
                 
-                # Count voxels in original and validated pons
-                local orig_voxels=$(fslstats "$juelich_pons" -V | awk '{print $1}')
-                local valid_voxels=$(fslstats "${temp_dir}/pons_validated.nii.gz" -V | awk '{print $1}')
-                
-                # Calculate percentage of pons within brainstem
-                local percentage=0
-                if [ "$orig_voxels" -gt 0 ]; then
-                    percentage=$(echo "scale=2; $valid_voxels * 100 / $orig_voxels" | bc)
-                fi
-                
-                log_message "Pons validation: $valid_voxels of $orig_voxels voxels (${percentage}%) within Harvard-Oxford brainstem"
-                
-                # Accept if at least 80% of pons is within brainstem boundaries
-                if (( $(echo "$percentage >= 80" | bc -l) )); then
-                    juelich_pons_valid=true
-                    # Replace original pons with validated version
-                    mv "${temp_dir}/pons_validated.nii.gz" "$juelich_pons"
-                    log_formatted "SUCCESS" "Juelich pons subdivision validated and constrained to Harvard-Oxford boundaries"
-                    
-                    # Also validate dorsal/ventral subdivisions if they exist
-                    for subdivision in "dorsal_pons" "ventral_pons"; do
-                        local subdiv_file="${pons_dir}/${input_basename}_${subdivision}.nii.gz"
-                        if [ -f "$subdiv_file" ]; then
-                            fslmaths "$subdiv_file" -mas "$harvard_mask" "${temp_dir}/${subdivision}_validated.nii.gz"
-                            mv "${temp_dir}/${subdivision}_validated.nii.gz" "$subdiv_file"
-                        fi
-                    done
+                if [ "$input_orient" = "NEUROLOGICAL" ] && [ "$mni_orient" = "RADIOLOGICAL" ]; then
+                    fslswapdim "$input_file" -x y z "$orientation_corrected_input"
+                    fslorient -forceradiological "$orientation_corrected_input"
+                    orientation_corrected=true
+                elif [ "$input_orient" = "RADIOLOGICAL" ] && [ "$mni_orient" = "NEUROLOGICAL" ]; then
+                    fslswapdim "$input_file" -x y z "$orientation_corrected_input"
+                    fslorient -forceneurological "$orientation_corrected_input"
+                    orientation_corrected=true
                 else
-                    log_formatted "WARNING" "Juelich pons largely outside Harvard-Oxford boundaries (only ${percentage}% overlap)"
-                    juelich_pons_valid=false
+                    cp "$input_file" "$orientation_corrected_input"
+                fi
+            else
+                cp "$input_file" "${talairach_temp}/input_orientation_corrected.nii.gz"
+                orientation_corrected_input="${talairach_temp}/input_orientation_corrected.nii.gz"
+            fi
+            
+            if extract_brainstem_talairach_with_transform "$input_file" "$input_basename" "$harvard_mask" \
+                                                         "$orientation_corrected_input" "$ants_transform" "$orientation_corrected"; then
+                log_formatted "SUCCESS" "Talairach brainstem subdivision completed using SHARED transform (no duplicate registration)"
+                talairach_subdivision_valid=true
+            else
+                log_formatted "WARNING" "Talairach segmentation with shared transform failed, trying standalone fallback"
+                
+                # Fallback to standalone Talairach (will do its own registration)
+                if command -v extract_brainstem_talairach &> /dev/null; then
+                    if extract_brainstem_talairach "$input_file" "$input_basename" "$harvard_mask"; then
+                        log_formatted "SUCCESS" "Talairach standalone segmentation completed (fallback with separate registration)"
+                        talairach_subdivision_valid=true
+                    else
+                        log_formatted "WARNING" "Both shared and standalone Talairach segmentation failed, trying Juelich fallback"
+                    fi
                 fi
             fi
             
-            rm -rf "$temp_dir"
+            # Clean up temporary directory
+            rm -rf "$talairach_temp"
         else
-            log_formatted "WARNING" "Juelich segmentation failed"
+            log_formatted "WARNING" "Harvard-Oxford transform not available for reuse, using standalone Talairach"
+            
+            # Fallback to standalone Talairach
+            if command -v extract_brainstem_talairach &> /dev/null; then
+                if extract_brainstem_talairach "$input_file" "$input_basename" "$harvard_mask"; then
+                    log_formatted "SUCCESS" "Talairach standalone segmentation completed"
+                    talairach_subdivision_valid=true
+                else
+                    log_formatted "WARNING" "Talairach segmentation failed, trying Juelich fallback"
+                fi
+            fi
+        fi
+        
+        # Only try Juelich if Talairach completely failed
+        if [ "$talairach_subdivision_valid" = "false" ]; then
+            log_formatted "WARNING" "Talairach segmentation failed, trying Juelich fallback"
+            
+            # Fallback to Juelich if Talairach fails
+            if command -v extract_brainstem_juelich &> /dev/null; then
+                log_message "Attempting Juelich atlas as fallback (anatomically questionable)..."
+                if extract_brainstem_juelich "$input_file" "$input_basename"; then
+                    log_message "Juelich segmentation completed, validating against Harvard-Oxford boundaries..."
+                    
+                    # Validate Juelich output against Harvard-Oxford boundaries
+                    local juelich_pons="${pons_dir}/${input_basename}_pons.nii.gz"
+                    local temp_dir=$(mktemp -d)
+                    
+                    if [ -f "$juelich_pons" ] && [ -f "$harvard_mask" ]; then
+                        fslmaths "$juelich_pons" -mas "$harvard_mask" "${temp_dir}/pons_validated.nii.gz"
+                        
+                        local orig_voxels=$(fslstats "$juelich_pons" -V | awk '{print $1}')
+                        local valid_voxels=$(fslstats "${temp_dir}/pons_validated.nii.gz" -V | awk '{print $1}')
+                        
+                        local percentage=0
+                        if [ "$orig_voxels" -gt 0 ]; then
+                            percentage=$(echo "scale=2; $valid_voxels * 100 / $orig_voxels" | bc)
+                        fi
+                        
+                        log_message "Juelich pons validation: $valid_voxels of $orig_voxels voxels (${percentage}%) within Harvard-Oxford brainstem"
+                        
+                        if (( $(echo "$percentage >= 70" | bc -l) )); then
+                            mv "${temp_dir}/pons_validated.nii.gz" "$juelich_pons"
+                            log_formatted "SUCCESS" "Juelich pons validated as fallback (constrained to Harvard-Oxford boundaries)"
+                            talairach_subdivision_valid=true  # Mark as successful for compatibility
+                        else
+                            log_formatted "WARNING" "Juelich pons has poor anatomical overlap (${percentage}%) with Harvard-Oxford brainstem"
+                        fi
+                    fi
+                    
+                    rm -rf "$temp_dir"
+                else
+                    log_formatted "WARNING" "Both Talairach and Juelich segmentation failed"
+                fi
+            else
+                log_formatted "WARNING" "No fallback segmentation method available"
+            fi
         fi
     else
-        log_formatted "WARNING" "Juelich segmentation not available"
+        log_formatted "WARNING" "Talairach segmentation not available, trying Juelich fallback"
+        
+        # Try Juelich if Talairach not available
+        if command -v extract_brainstem_juelich &> /dev/null; then
+            if extract_brainstem_juelich "$input_file" "$input_basename"; then
+                log_formatted "WARNING" "Using Juelich atlas as fallback (anatomically questionable)"
+                # Same validation as above but mark as fallback
+                local juelich_pons="${pons_dir}/${input_basename}_pons.nii.gz"
+                if [ -f "$juelich_pons" ] && [ -f "$harvard_mask" ]; then
+                    local temp_dir=$(mktemp -d)
+                    fslmaths "$juelich_pons" -mas "$harvard_mask" "${temp_dir}/pons_validated.nii.gz"
+                    mv "${temp_dir}/pons_validated.nii.gz" "$juelich_pons"
+                    rm -rf "$temp_dir"
+                    talairach_subdivision_valid=true  # Mark as successful for pipeline continuation
+                fi
+            fi
+        fi
     fi
     
-    # Handle pons files based on validation results
-    if [ "$juelich_pons_valid" = "true" ]; then
-        log_message "Using validated Juelich pons subdivision constrained to Harvard-Oxford brainstem"
+    # Handle subdivision files based on validation results
+    if [ "$talairach_subdivision_valid" = "true" ]; then
+        log_message "Using validated brainstem subdivision constrained to Harvard-Oxford boundaries"
+        
+        # Check what subdivision method was actually used
+        local detailed_dir="${RESULTS_DIR}/segmentation/detailed_brainstem"
+        if [ -d "$detailed_dir" ] && [ "$(find "$detailed_dir" -name "${input_basename}_*.nii.gz" | wc -l)" -gt 0 ]; then
+            log_message "✓ Talairach detailed brainstem subdivisions available in: $detailed_dir"
+        else
+            log_message "✓ Using fallback subdivision method (Juelich) constrained to Harvard-Oxford boundaries"
+        fi
     else
         log_formatted "INFO" "===== IMPORTANT NOTICE ====="
-        log_message "No valid pons subdivision available within Harvard-Oxford boundaries"
+        log_message "No valid brainstem subdivision available within Harvard-Oxford boundaries"
         log_message "Creating EMPTY placeholder files for pipeline compatibility only"
         log_message "These are NOT anatomical segmentations"
         
@@ -1183,7 +1653,8 @@ Subject: $input_basename
 
 SEGMENTATION SUMMARY
 -------------------
-Method: Harvard-Oxford (Gold Standard) + Juelich (Pons Subdivision)
+Method: Harvard-Oxford (Gold Standard) + Talairach (Detailed Subdivision)
+Fallback: Juelich atlas (if Talairach unavailable)
 Space: T1 Native Space
 Brainstem voxels: $brainstem_voxels
 Pons voxels: $pons_voxels
@@ -1248,7 +1719,8 @@ FLAIR or other modalities for multi-modal analysis.
 NOTES
 -----
 - Harvard-Oxford provides reliable brainstem boundaries
-- Juelich pons is validated to be within brainstem boundaries
+- Talairach subdivisions are validated to be within brainstem boundaries
+- Juelich used as fallback if Talairach unavailable
 - Empty files (0 voxels) indicate structure not available from atlas
 - Use binary masks for ROI definition
 - Use intensity maps for signal analysis

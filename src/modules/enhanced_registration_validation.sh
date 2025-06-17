@@ -633,11 +633,125 @@ analyze_hyperintensities_in_all_masks() {
         log_message "Creating brain mask from FLAIR..."
         fslmaths "$flair_file" -bin "$brain_mask"
         
+        # CRITICAL: Validate orientation and dimensions before image operations
+        log_message "Validating image compatibility before NAWM mask creation..."
+        local flair_orient=$(fslorient -getorient "$flair_file" 2>/dev/null || echo "UNKNOWN")
+        local mask_orient=$(fslorient -getorient "$mask" 2>/dev/null || echo "UNKNOWN")
+        local brain_orient=$(fslorient -getorient "$brain_mask" 2>/dev/null || echo "UNKNOWN")
+        
+        log_message "FLAIR orientation: $flair_orient"
+        log_message "Mask orientation: $mask_orient"
+        log_message "Brain mask orientation: $brain_orient"
+        
+        # Get dimensions for validation
+        local flair_dims=$(fslinfo "$flair_file" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        local mask_dims=$(fslinfo "$mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        local brain_dims=$(fslinfo "$brain_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        
+        log_message "FLAIR dimensions: $flair_dims"
+        log_message "Mask dimensions: $mask_dims"
+        log_message "Brain mask dimensions: $brain_dims"
+        
+        # Check if dimensions match
+        if [ "$flair_dims" != "$mask_dims" ] || [ "$brain_dims" != "$mask_dims" ]; then
+            log_formatted "WARNING" "Dimension mismatch detected - images need resampling"
+            log_message "FLAIR: $flair_dims, Mask: $mask_dims, Brain: $brain_dims"
+            
+            # Create resampled mask to match FLAIR space
+            local resampled_mask="${mask_output_dir}/mask_resampled.nii.gz"
+            log_message "Resampling mask to match FLAIR dimensions..."
+            
+            # Use flirt with identity matrix to resample to FLAIR space
+            if flirt -in "$mask" -ref "$flair_file" -out "$resampled_mask" -applyxfm -usesqform -interp nearestneighbour; then
+                log_message "✓ Mask resampled successfully"
+                mask="$resampled_mask"
+                
+                # Update mask dimensions for verification
+                mask_dims=$(fslinfo "$mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+                log_message "Resampled mask dimensions: $mask_dims"
+            else
+                log_formatted "ERROR" "Failed to resample mask - skipping NAWM creation for this mask"
+                # Create empty NAWM mask as fallback
+                fslmaths "$brain_mask" -mul 0 "${mask_output_dir}/nawm_mask.nii.gz"
+                nawm_mask="${mask_output_dir}/nawm_mask.nii.gz"
+                log_message "Created empty NAWM mask as fallback"
+                
+                # Skip to intensity analysis with brain mask as reference
+                local nawm_mean=$(fslstats "$flair_file" -k "$brain_mask" -M)
+                local nawm_std=$(fslstats "$flair_file" -k "$brain_mask" -S)
+                log_message "Using whole brain as reference: mean=$nawm_mean, std=$nawm_std"
+                
+                # Continue with the rest of the analysis using these values
+                local intensity_threshold=$(echo "$nawm_mean + $threshold * $nawm_std" | bc -l)
+                log_message "Brain reference threshold: $intensity_threshold"
+                
+                # Skip the normal NAWM creation and go directly to hyperintensity analysis
+                local hyperintensity_mask="${mask_output_dir}/hyperintensities.nii.gz"
+                local hyperintensity_bin="${mask_output_dir}/hyperintensities_bin.nii.gz"
+                
+                log_message "Thresholding FLAIR at $intensity_threshold within $mask_name..."
+                if fslmaths "$flair_file" -thr "$intensity_threshold" -mas "$mask" "$hyperintensity_mask" 2>/dev/null; then
+                    fslmaths "$hyperintensity_mask" -bin "$hyperintensity_bin"
+                else
+                    log_formatted "WARNING" "Failed to create hyperintensity mask for $mask_name"
+                    continue
+                fi
+                
+                # Continue with volume calculations...
+                local volume_voxels=$(fslstats "$hyperintensity_bin" -V | awk '{print $1}')
+                local volume_mm3=$(fslstats "$hyperintensity_bin" -V | awk '{print $2}')
+                local roi_volume=$(fslstats "$mask" -V | awk '{print $1}')
+                local percentage=$(echo "scale=2; 100 * $volume_voxels / $roi_volume" | bc -l)
+                
+                # Create simplified report and continue to next mask
+                {
+                    echo "Hyperintensity Analysis for $mask_name (SIMPLIFIED - dimension mismatch)"
+                    echo "=================================================================="
+                    echo "Date: $(date)"
+                    echo ""
+                    echo "WARNING: Dimension mismatch prevented normal NAWM analysis"
+                    echo "Used whole brain as reference instead of NAWM"
+                    echo ""
+                    echo "Results:"
+                    echo "  Hyperintensity volume: $volume_mm3 mm³ ($volume_voxels voxels)"
+                    echo "  Region of interest volume: $(fslstats "$mask" -V | awk '{print $2}') mm³ ($roi_volume voxels)"
+                    echo "  Percentage of region affected: $percentage%"
+                } > "${mask_output_dir}/hyperintensity_report.txt"
+                
+                log_message "Completed simplified analysis for $mask_name due to dimension mismatch"
+                continue
+            fi
+        fi
+        
+        # Check orientations match after any resampling
+        if [ "$flair_orient" != "UNKNOWN" ] && [ "$mask_orient" != "UNKNOWN" ] && [ "$flair_orient" != "$mask_orient" ]; then
+            log_formatted "WARNING" "Orientation mismatch detected: FLAIR ($flair_orient) vs Mask ($mask_orient)"
+            log_message "This may cause anatomical misalignment in analysis"
+        fi
+        
         # Create NAWM mask (normal-appearing white matter) by excluding the region of interest
         # This gives us a reference for normal tissue intensity
         local nawm_mask="${mask_output_dir}/nawm_mask.nii.gz"
         log_message "Creating NAWM mask for reference..."
-        fslmaths "$brain_mask" -sub "$mask" -thr 0 -bin "$nawm_mask"
+        
+        # Validate dimensions one more time before subtraction
+        local final_brain_dims=$(fslinfo "$brain_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        local final_mask_dims=$(fslinfo "$mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        
+        if [ "$final_brain_dims" != "$final_mask_dims" ]; then
+            log_formatted "ERROR" "CRITICAL: Dimensions still don't match after resampling"
+            log_message "Brain: $final_brain_dims, Mask: $final_mask_dims"
+            log_message "Creating whole-brain NAWM as fallback..."
+            
+            # Use whole brain as NAWM reference
+            cp "$brain_mask" "$nawm_mask"
+        else
+            log_message "✓ Dimensions match, proceeding with NAWM creation"
+            if ! fslmaths "$brain_mask" -sub "$mask" -thr 0 -bin "$nawm_mask"; then
+                log_formatted "ERROR" "fslmaths subtraction failed, using whole brain as NAWM"
+                cp "$brain_mask" "$nawm_mask"
+            fi
+        fi
         
         # Calculate mean and standard deviation of NAWM
         local nawm_mean=$(fslstats "$flair_file" -k "$nawm_mask" -M)
