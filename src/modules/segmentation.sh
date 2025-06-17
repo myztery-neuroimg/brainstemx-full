@@ -326,9 +326,14 @@ extract_brainstem_with_flair() {
     local flair_file="$2"
     local output_prefix="${3:-${RESULTS_DIR}/segmentation/brainstem/$(basename "$t1_file" .nii.gz)}"
     
-    # Validate inputs
-    if [ ! -f "$t1_file" ] || [ ! -f "$flair_file" ]; then
-        log_formatted "ERROR" "T1 or FLAIR file not found"
+    # Validate inputs - FAIL HARD on missing files
+    if [ ! -f "$t1_file" ]; then
+        log_formatted "ERROR" "T1 file not found: $t1_file"
+        return 1
+    fi
+    
+    if [ ! -f "$flair_file" ]; then
+        log_formatted "ERROR" "FLAIR file not found: $flair_file"
         return 1
     fi
     
@@ -344,22 +349,39 @@ extract_brainstem_with_flair() {
     fi
     
     log_formatted "INFO" "===== ENHANCED SEGMENTATION WITH FLAIR INTEGRATION ====="
+    log_formatted "WARNING" "STRICT MODE: Pipeline will FAIL HARD on any data quality issues"
     
     # Create temporary directory
     local temp_dir=$(mktemp -d)
     
-    # First get Harvard-Oxford segmentation from T1
-    local t1_brainstem="${output_prefix}_brainstem_t1based.nii.gz"
-    extract_brainstem_harvard_oxford "$t1_file" "$t1_brainstem"
-    
-    if [ ! -f "$t1_brainstem" ]; then
-        log_formatted "WARNING" "T1-based segmentation failed, proceeding without FLAIR enhancement"
+    # Cleanup function for error cases
+    cleanup_and_fail() {
+        local exit_code="$1"
+        local error_msg="$2"
+        log_formatted "ERROR" "SEGMENTATION FAILURE: $error_msg"
+        log_formatted "ERROR" "Segmentation failed due to data quality issues"
         rm -rf "$temp_dir"
+        return "$exit_code"
+    }
+    
+    # First get Harvard-Oxford segmentation from T1 - FAIL HARD if this fails
+    local t1_brainstem="${output_prefix}_brainstem_t1based.nii.gz"
+    if ! extract_brainstem_harvard_oxford "$t1_file" "$t1_brainstem"; then
+        cleanup_and_fail 1 "T1-based Harvard-Oxford segmentation failed - cannot proceed"
         return 1
     fi
     
-    # Get the binary mask
+    if [ ! -f "$t1_brainstem" ]; then
+        cleanup_and_fail 1 "T1-based segmentation output not created: $t1_brainstem"
+        return 1
+    fi
+    
+    # Get the binary mask - FAIL HARD if missing
     local t1_mask="${output_prefix}_brainstem_t1based_mask.nii.gz"
+    if [ ! -f "$t1_mask" ]; then
+        cleanup_and_fail 1 "T1 brainstem mask not found: $t1_mask"
+        return 1
+    fi
     
     # Check if FLAIR is already in T1 space (from registration step)
     local flair_in_t1="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
@@ -368,40 +390,301 @@ extract_brainstem_with_flair() {
         flair_in_t1="$flair_file"
     fi
     
+    # Validate FLAIR file exists - FAIL HARD
+    if [ ! -f "$flair_in_t1" ]; then
+        cleanup_and_fail 1 "FLAIR file not found: $flair_in_t1"
+        return 1
+    fi
+    
     # Create FLAIR-enhanced mask using intensity information
     log_message "Enhancing segmentation with FLAIR intensity information..."
     
-    # Extract FLAIR intensities within brainstem region
-    fslmaths "$flair_in_t1" -mas "$t1_mask" "${temp_dir}/flair_brainstem.nii.gz"
+    # Check dimensions compatibility - FAIL HARD on mismatch
+    log_message "Validating image dimensions and orientations..."
+    local flair_dims=$(fslinfo "$flair_in_t1" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local mask_dims=$(fslinfo "$t1_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
     
-    # Calculate intensity statistics within brainstem
-    local mean_intensity=$(fslstats "${temp_dir}/flair_brainstem.nii.gz" -M)
-    local std_intensity=$(fslstats "${temp_dir}/flair_brainstem.nii.gz" -S)
+    log_message "FLAIR dimensions: $flair_dims"
+    log_message "Mask dimensions: $mask_dims"
+    
+    if [ "$flair_dims" != "$mask_dims" ]; then
+        log_formatted "ERROR" "CRITICAL: FLAIR and mask have incompatible dimensions"
+        log_formatted "ERROR" "FLAIR: $flair_dims, Mask: $mask_dims"
+        cleanup_and_fail 1 "Image dimension mismatch prevents reliable FLAIR integration"
+        return 1
+    fi
+    
+    # Check orientations are consistent - FAIL HARD on orientation mismatch
+    local flair_orient=$(fslorient -getorient "$flair_in_t1" 2>/dev/null)
+    local mask_orient=$(fslorient -getorient "$t1_mask" 2>/dev/null)
+    
+    if [ "$flair_orient" != "$mask_orient" ]; then
+        log_formatted "ERROR" "CRITICAL: FLAIR and mask have inconsistent orientations"
+        log_formatted "ERROR" "FLAIR: $flair_orient, Mask: $mask_orient"
+        cleanup_and_fail 1 "Orientation mismatch prevents reliable FLAIR integration"
+        return 1
+    fi
+    
+    # Extract FLAIR intensities within brainstem region - FAIL HARD on any error
+    log_message "Extracting FLAIR intensities within brainstem region..."
+    
+    # Validate input files exist before fslmaths operation
+    if [ ! -f "$flair_in_t1" ]; then
+        cleanup_and_fail 1 "FLAIR input file missing before extraction: $flair_in_t1"
+        return 1
+    fi
+    if [ ! -f "$t1_mask" ]; then
+        cleanup_and_fail 1 "T1 mask file missing before extraction: $t1_mask"
+        return 1
+    fi
+    
+    if ! fslmaths "$flair_in_t1" -mas "$t1_mask" "${temp_dir}/flair_brainstem.nii.gz"; then
+        cleanup_and_fail 1 "Failed to extract FLAIR intensities - fslmaths operation failed"
+        return 1
+    fi
+    
+    # Verify the output file was created and has non-zero voxels - FAIL HARD
+    if [ ! -f "${temp_dir}/flair_brainstem.nii.gz" ]; then
+        cleanup_and_fail 1 "FLAIR brainstem extraction failed - output file not created"
+        return 1
+    fi
+    
+    # Get voxel count and validate it's a number
+    local flair_voxel_count=$(fslstats "${temp_dir}/flair_brainstem.nii.gz" -V 2>/dev/null | awk '{print $1}')
+    if [ -z "$flair_voxel_count" ] || ! [[ "$flair_voxel_count" =~ ^[0-9]+$ ]]; then
+        cleanup_and_fail 1 "Failed to get valid voxel count from FLAIR brainstem (got: '$flair_voxel_count')"
+        return 1
+    fi
+    
+    if [ "$flair_voxel_count" -eq 0 ]; then
+        cleanup_and_fail 1 "FLAIR brainstem region is empty - no valid data for enhancement"
+        return 1
+    fi
+    
+    log_message "Extracted FLAIR data: $flair_voxel_count voxels"
+    
+    # Calculate intensity statistics within brainstem - FAIL HARD on invalid stats
+    log_message "Calculating FLAIR intensity statistics..."
+    
+    # Validate input file exists before fslstats operations
+    if [ ! -f "${temp_dir}/flair_brainstem.nii.gz" ]; then
+        cleanup_and_fail 1 "FLAIR brainstem file missing before statistics calculation: ${temp_dir}/flair_brainstem.nii.gz"
+        return 1
+    fi
+    
+    local mean_intensity=$(fslstats "${temp_dir}/flair_brainstem.nii.gz" -M 2>/dev/null)
+    local std_intensity=$(fslstats "${temp_dir}/flair_brainstem.nii.gz" -S 2>/dev/null)
+    
+    # Validate statistics - FAIL HARD on invalid values
+    if [ -z "$mean_intensity" ] || [ -z "$std_intensity" ]; then
+        cleanup_and_fail 1 "Failed to calculate FLAIR intensity statistics"
+        return 1
+    fi
+    
+    if [ "$mean_intensity" = "0.000000" ] || [ "$std_intensity" = "0.000000" ]; then
+        cleanup_and_fail 1 "Invalid FLAIR intensity statistics (mean=$mean_intensity, std=$std_intensity)"
+        return 1
+    fi
+    
+    # Validate numeric format - FAIL HARD on non-numeric values
+    if ! echo "$mean_intensity" | grep -E '^[0-9]*\.?[0-9]+$' > /dev/null; then
+        cleanup_and_fail 1 "Mean intensity is not a valid number: $mean_intensity"
+        return 1
+    fi
+    
+    if ! echo "$std_intensity" | grep -E '^[0-9]*\.?[0-9]+$' > /dev/null; then
+        cleanup_and_fail 1 "Standard deviation is not a valid number: $std_intensity"
+        return 1
+    fi
     
     log_message "FLAIR brainstem statistics: mean=$mean_intensity, std=$std_intensity"
     
     # Create refined mask based on FLAIR intensities
-    # Include voxels within reasonable intensity range
-    local lower_threshold=$(echo "$mean_intensity - 2 * $std_intensity" | bc -l)
-    local upper_threshold=$(echo "$mean_intensity + 2 * $std_intensity" | bc -l)
+    log_message "Creating refined mask based on FLAIR intensities..."
     
-    fslmaths "${temp_dir}/flair_brainstem.nii.gz" \
-             -thr "$lower_threshold" -uthr "$upper_threshold" -bin \
-             "${temp_dir}/flair_refined_mask.nii.gz"
+    # Calculate thresholds - FAIL HARD on calculation failure
+    local lower_threshold=$(echo "$mean_intensity - 2 * $std_intensity" | bc -l 2>/dev/null)
+    local upper_threshold=$(echo "$mean_intensity + 2 * $std_intensity" | bc -l 2>/dev/null)
     
-    # Combine T1 and FLAIR information
-    fslmaths "$t1_mask" -mul "${temp_dir}/flair_refined_mask.nii.gz" \
-             "${output_prefix}_brainstem_mask.nii.gz"
+    if [ -z "$lower_threshold" ] || [ -z "$upper_threshold" ]; then
+        cleanup_and_fail 1 "Failed to calculate intensity thresholds using bc"
+        return 1
+    fi
     
-    # Apply refined mask to T1 for final output
-    fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
-             "${output_prefix}_brainstem.nii.gz"
+    log_message "Intensity thresholds: lower=$lower_threshold, upper=$upper_threshold"
     
-    # Also create FLAIR intensity version
-    fslmaths "$flair_in_t1" -mas "${output_prefix}_brainstem_mask.nii.gz" \
-             "${output_prefix}_brainstem_flair_intensity.nii.gz"
+    # Create refined mask - FAIL HARD on any error
+    # Validate input file exists before threshold operation
+    if [ ! -f "${temp_dir}/flair_brainstem.nii.gz" ]; then
+        cleanup_and_fail 1 "FLAIR brainstem file missing before threshold operation: ${temp_dir}/flair_brainstem.nii.gz"
+        return 1
+    fi
+    
+    if ! fslmaths "${temp_dir}/flair_brainstem.nii.gz" \
+                  -thr "$lower_threshold" -uthr "$upper_threshold" -bin \
+                  "${temp_dir}/flair_refined_mask.nii.gz"; then
+        cleanup_and_fail 1 "Failed to create refined FLAIR mask using intensity thresholds"
+        return 1
+    fi
+    
+    # Verify refined mask was created and is valid - FAIL HARD
+    if [ ! -f "${temp_dir}/flair_refined_mask.nii.gz" ]; then
+        cleanup_and_fail 1 "Refined FLAIR mask file not created"
+        return 1
+    fi
+    
+    # Get voxel count and validate it's a number
+    local refined_voxels=$(fslstats "${temp_dir}/flair_refined_mask.nii.gz" -V 2>/dev/null | awk '{print $1}')
+    if [ -z "$refined_voxels" ] || ! [[ "$refined_voxels" =~ ^[0-9]+$ ]]; then
+        cleanup_and_fail 1 "Failed to get valid voxel count from refined FLAIR mask (got: '$refined_voxels')"
+        return 1
+    fi
+    
+    if [ "$refined_voxels" -eq 0 ]; then
+        cleanup_and_fail 1 "Refined FLAIR mask is empty - intensity thresholding removed all voxels"
+        return 1
+    fi
+    
+    # Combine T1 and FLAIR information - FAIL HARD on error
+    log_message "Combining T1 and FLAIR information..."
+    
+    # Validate input files exist before combination operation
+    if [ ! -f "$t1_mask" ]; then
+        cleanup_and_fail 1 "T1 mask file missing before combination: $t1_mask"
+        return 1
+    fi
+    if [ ! -f "${temp_dir}/flair_refined_mask.nii.gz" ]; then
+        cleanup_and_fail 1 "Refined FLAIR mask file missing before combination: ${temp_dir}/flair_refined_mask.nii.gz"
+        return 1
+    fi
+    
+    if ! fslmaths "$t1_mask" -mul "${temp_dir}/flair_refined_mask.nii.gz" \
+                  "${output_prefix}_brainstem_mask.nii.gz"; then
+        cleanup_and_fail 1 "Failed to combine T1 and FLAIR masks"
+        return 1
+    fi
+    
+    # Apply refined mask to T1 for final output - FAIL HARD on error
+    # Validate input files exist before T1 masking operation
+    if [ ! -f "$t1_file" ]; then
+        cleanup_and_fail 1 "T1 file missing before final masking: $t1_file"
+        return 1
+    fi
+    if [ ! -f "${output_prefix}_brainstem_mask.nii.gz" ]; then
+        cleanup_and_fail 1 "Combined brainstem mask missing before T1 masking: ${output_prefix}_brainstem_mask.nii.gz"
+        return 1
+    fi
+    
+    if ! fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
+                  "${output_prefix}_brainstem.nii.gz"; then
+        cleanup_and_fail 1 "Failed to create final T1-masked segmentation output"
+        return 1
+    fi
+    
+    # Create FLAIR intensity version - FAIL HARD on error
+    # Validate input files exist before FLAIR masking operation
+    if [ ! -f "$flair_in_t1" ]; then
+        cleanup_and_fail 1 "FLAIR file missing before final masking: $flair_in_t1"
+        return 1
+    fi
+    if [ ! -f "${output_prefix}_brainstem_mask.nii.gz" ]; then
+        cleanup_and_fail 1 "Combined brainstem mask missing before FLAIR masking: ${output_prefix}_brainstem_mask.nii.gz"
+        return 1
+    fi
+    
+    if ! fslmaths "$flair_in_t1" -mas "${output_prefix}_brainstem_mask.nii.gz" \
+                  "${output_prefix}_brainstem_flair_intensity.nii.gz"; then
+        cleanup_and_fail 1 "Failed to create FLAIR intensity segmentation output"
+        return 1
+    fi
+    
+    # Final validation - FAIL HARD if outputs are invalid
+    # Validate final mask exists before statistics calculation
+    if [ ! -f "${output_prefix}_brainstem_mask.nii.gz" ]; then
+        cleanup_and_fail 1 "Final brainstem mask missing before validation: ${output_prefix}_brainstem_mask.nii.gz"
+        return 1
+    fi
+    
+    # Get final voxel count and validate it's a number
+    local final_voxels=$(fslstats "${output_prefix}_brainstem_mask.nii.gz" -V 2>/dev/null | awk '{print $1}')
+    if [ -z "$final_voxels" ] || ! [[ "$final_voxels" =~ ^[0-9]+$ ]]; then
+        cleanup_and_fail 1 "Failed to get valid voxel count from final mask (got: '$final_voxels')"
+        return 1
+    fi
+    
+    if [ "$final_voxels" -eq 0 ]; then
+        cleanup_and_fail 1 "Final enhanced segmentation resulted in empty mask"
+        return 1
+    fi
+    
+    # Validate all expected outputs exist and are non-empty
+    log_message "Performing comprehensive output validation..."
+    
+    # Use validation flag to ensure proper termination
+    local validation_failed=false
+    
+    # Define expected output files
+    local expected_files=(
+        "${output_prefix}_brainstem_mask.nii.gz"
+        "${output_prefix}_brainstem.nii.gz"
+        "${output_prefix}_brainstem_flair_intensity.nii.gz"
+    )
+    
+    # First pass: check all files exist - FAIL IMMEDIATELY if any missing
+    for output_file in "${expected_files[@]}"; do
+        if [ ! -f "$output_file" ]; then
+            cleanup_and_fail 1 "Required output file not created: $output_file"
+            validation_failed=true
+            break
+        fi
+    done
+    
+    # Exit immediately if first pass failed
+    if [ "$validation_failed" = "true" ]; then
+        return 1
+    fi
+    
+    # Second pass: validate each file thoroughly - FAIL IMMEDIATELY on any issue
+    for output_file in "${expected_files[@]}"; do
+        
+        # Check file is readable
+        if [ ! -r "$output_file" ]; then
+            cleanup_and_fail 1 "Required output file not readable: $output_file"
+            return 1
+        fi
+        
+        # Check file size with proper empty variable handling
+        local file_size=$(stat -f "%z" "$output_file" 2>/dev/null || stat --format="%s" "$output_file" 2>/dev/null)
+        if [ -z "$file_size" ]; then
+            cleanup_and_fail 1 "Could not determine file size for: $output_file"
+            return 1
+        fi
+        
+        # Validate file_size is numeric before comparison
+        if ! [[ "$file_size" =~ ^[0-9]+$ ]]; then
+            cleanup_and_fail 1 "Invalid file size value for: $output_file (got: '$file_size')"
+            return 1
+        fi
+        
+        if [ "$file_size" -lt 1000 ]; then
+            cleanup_and_fail 1 "Output file suspiciously small: $output_file ($file_size bytes)"
+            return 1
+        fi
+        
+        # Validate file as proper NIfTI by checking fslinfo works
+        if ! fslinfo "$output_file" >/dev/null 2>&1; then
+            cleanup_and_fail 1 "Output file is not a valid NIfTI file: $output_file"
+            return 1
+        fi
+        
+        log_message "✓ Validated output: $output_file ($file_size bytes)"
+    done
     
     log_formatted "SUCCESS" "Enhanced brainstem segmentation complete with FLAIR integration"
+    log_message "  Final enhanced mask: $final_voxels voxels"
+    log_message "  T1 intensities: ${output_prefix}_brainstem.nii.gz"
+    log_message "  FLAIR intensities: ${output_prefix}_brainstem_flair_intensity.nii.gz"
+    log_message "  Binary mask: ${output_prefix}_brainstem_mask.nii.gz"
     
     # Clean up
     rm -rf "$temp_dir"
@@ -474,6 +757,10 @@ extract_brainstem_final() {
                 [ -f "${enhanced_prefix}_brainstem.nii.gz" ] && \
                     mv "${enhanced_prefix}_brainstem.nii.gz" "$harvard_output"
                 log_formatted "SUCCESS" "FLAIR-enhanced segmentation completed"
+            else
+                log_formatted "ERROR" "FLAIR enhancement failed with critical data quality issues"
+                log_formatted "ERROR" "Pipeline configured to FAIL HARD on data quality problems"
+                return 1
             fi
         fi
     else
