@@ -668,7 +668,13 @@ run_pipeline() {
     log_message "Attempting all available segmentation methods..."
     
     # Use the comprehensive method that tries all approaches
-    extract_brainstem_final "$t1_std"
+    if ! extract_brainstem_final "$t1_std"; then
+        log_formatted "ERROR" "Segmentation failed - critical pipeline step failed"
+        log_formatted "ERROR" "Cannot proceed without valid segmentation data"
+        return 1
+    fi
+    
+    log_formatted "SUCCESS" "Segmentation completed successfully"
     
     # Get output files (should have been created by extract_brainstem_final)
     # Use the basename of the T1 file, not subject_id
