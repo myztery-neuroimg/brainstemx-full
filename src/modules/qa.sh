@@ -1965,7 +1965,7 @@ qa_verify_all_segmentations() {
     log_message "Checking original space segmentations..."
     local orig_space_dir="${segmentation_dir}/original_space"
     if [ -d "$orig_space_dir" ]; then
-        local orig_files=$(find "$orig_space_dir" -name "*_orig.nii.gz" 2>/dev/null || true)
+        local orig_files=$(find "$orig_space_dir" -name "*_orig.nii.gz" ! -name "*_intensity.nii.gz" 2>/dev/null || true)
         for orig_file in $orig_files; do
             if [ -f "$orig_file" ]; then
                 local output_dir="$orig_space_dir"

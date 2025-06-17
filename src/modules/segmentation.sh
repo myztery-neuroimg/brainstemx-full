@@ -294,6 +294,28 @@ extract_brainstem_harvard_oxford() {
     
     cp "${temp_dir}/brainstem_mask_subject.nii.gz" "$mask_file"
     
+    # Create T1 intensity version for QA module compatibility
+    local output_dir_path="$(dirname "$abs_output_file")"
+    local base_name=$(basename "$abs_output_file" .nii.gz)
+    local t1_intensity_file="${output_dir_path}/${base_name}_t1_intensity.nii.gz"
+    
+    log_message "Creating T1 intensity version for QA module..."
+    if fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" "$t1_intensity_file"; then
+        log_message "✓ Created T1 intensity version: $(basename "$t1_intensity_file")"
+    else
+        log_formatted "WARNING" "Failed to create T1 intensity version (non-critical)"
+    fi
+    
+    # Create QA-compatible naming convention
+    local mask_base_name=$(basename "$mask_file" .nii.gz)
+    local qa_t1_intensity="${output_dir_path}/${mask_base_name}_t1_intensity.nii.gz"
+    
+    if [ -f "$t1_intensity_file" ] && [ "$t1_intensity_file" != "$qa_t1_intensity" ]; then
+        ln -sf "$(basename "$t1_intensity_file")" "$qa_t1_intensity" 2>/dev/null || \
+        cp "$t1_intensity_file" "$qa_t1_intensity"
+        log_message "✓ Created QA-compatible T1 intensity: $(basename "$qa_t1_intensity")"
+    fi
+    
     # Validate output (use absolute path)
     if [ ! -f "$abs_output_file" ]; then
         log_formatted "ERROR" "Failed to create output file: $abs_output_file"
@@ -604,6 +626,14 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
+    # Create T1 intensity version for QA module compatibility
+    log_message "Creating T1 intensity version for QA module..."
+    if ! fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
+                  "${output_prefix}_brainstem_t1_intensity.nii.gz"; then
+        cleanup_and_fail 1 "Failed to create T1 intensity segmentation output"
+        return 1
+    fi
+    
     # Final validation - FAIL HARD if outputs are invalid
     # Validate final mask exists before statistics calculation
     if [ ! -f "${output_prefix}_brainstem_mask.nii.gz" ]; then
@@ -634,6 +664,7 @@ extract_brainstem_with_flair() {
         "${output_prefix}_brainstem_mask.nii.gz"
         "${output_prefix}_brainstem.nii.gz"
         "${output_prefix}_brainstem_flair_intensity.nii.gz"
+        "${output_prefix}_brainstem_t1_intensity.nii.gz"
     )
     
     # First pass: check all files exist - FAIL IMMEDIATELY if any missing
@@ -689,8 +720,33 @@ extract_brainstem_with_flair() {
     log_formatted "SUCCESS" "Enhanced brainstem segmentation complete with FLAIR integration"
     log_message "  Final enhanced mask: $final_voxels voxels"
     log_message "  T1 intensities: ${output_prefix}_brainstem.nii.gz"
+    log_message "  T1 intensity mask: ${output_prefix}_brainstem_t1_intensity.nii.gz"
     log_message "  FLAIR intensities: ${output_prefix}_brainstem_flair_intensity.nii.gz"
     log_message "  Binary mask: ${output_prefix}_brainstem_mask.nii.gz"
+    
+    # Create QA-compatible naming convention
+    log_message "Creating QA-compatible intensity file naming..."
+    local output_dir="$(dirname "${output_prefix}")"
+    local mask_file="${output_prefix}_brainstem_mask.nii.gz"
+    
+    if [ -f "$mask_file" ]; then
+        local base_name=$(basename "$mask_file" .nii.gz)
+        local qa_t1_intensity="${output_dir}/${base_name}_t1_intensity.nii.gz"
+        local qa_flair_intensity="${output_dir}/${base_name}_flair_intensity.nii.gz"
+        
+        # Create symbolic links or copies for QA module compatibility
+        if [ -f "${output_prefix}_brainstem_t1_intensity.nii.gz" ]; then
+            ln -sf "$(basename "${output_prefix}_brainstem_t1_intensity.nii.gz")" "$qa_t1_intensity" 2>/dev/null || \
+            cp "${output_prefix}_brainstem_t1_intensity.nii.gz" "$qa_t1_intensity"
+            log_message "✓ Created QA-compatible T1 intensity: $(basename "$qa_t1_intensity")"
+        fi
+        
+        if [ -f "${output_prefix}_brainstem_flair_intensity.nii.gz" ]; then
+            ln -sf "$(basename "${output_prefix}_brainstem_flair_intensity.nii.gz")" "$qa_flair_intensity" 2>/dev/null || \
+            cp "${output_prefix}_brainstem_flair_intensity.nii.gz" "$qa_flair_intensity"
+            log_message "✓ Created QA-compatible FLAIR intensity: $(basename "$qa_flair_intensity")"
+        fi
+    fi
     
     # Clean up
     rm -rf "$temp_dir"

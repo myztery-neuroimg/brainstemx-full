@@ -544,7 +544,12 @@ analyze_hyperintensities_in_all_masks() {
     local mask_names=()
     
     # Harvard-Oxford brainstem
-    local brainstem_mask=$(find "$segmentation_dir" -name "*brainstem*.nii.gz" | grep -v "orig" | head -1)
+    local brainstem_mask
+    if [[ "$segmentation_dir" == *"original_space"* ]]; then
+        brainstem_mask=$(find "$segmentation_dir" -name "*brainstem*.nii.gz" | head -1)
+    else
+        brainstem_mask=$(find "$segmentation_dir" -name "*brainstem*.nii.gz" | grep -v "orig" | head -1)
+    fi
     if [ -f "$brainstem_mask" ]; then
         log_message "Found Harvard-Oxford brainstem mask: $brainstem_mask"
         mask_files+=("$brainstem_mask")
@@ -552,7 +557,12 @@ analyze_hyperintensities_in_all_masks() {
     fi
     
     # Pons mask
-    local pons_mask=$(find "$segmentation_dir" -name "*pons.nii.gz" | grep -v "dorsal" | grep -v "ventral" | grep -v "orig" | head -1)
+    local pons_mask
+    if [[ "$segmentation_dir" == *"original_space"* ]]; then
+        pons_mask=$(find "$segmentation_dir" -name "*pons*.nii.gz" | grep -v "dorsal" | grep -v "ventral" | head -1)
+    else
+        pons_mask=$(find "$segmentation_dir" -name "*pons.nii.gz" | grep -v "dorsal" | grep -v "ventral" | grep -v "orig" | head -1)
+    fi
     if [ -f "$pons_mask" ]; then
         log_message "Found pons mask: $pons_mask"
         mask_files+=("$pons_mask")
@@ -560,7 +570,12 @@ analyze_hyperintensities_in_all_masks() {
     fi
     
     # Dorsal pons mask
-    local dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons.nii.gz" | grep -v "orig" | head -1)
+    local dorsal_pons
+    if [[ "$segmentation_dir" == *"original_space"* ]]; then
+        dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons*.nii.gz" | head -1)
+    else
+        dorsal_pons=$(find "$segmentation_dir" -name "*dorsal_pons.nii.gz" | grep -v "orig" | head -1)
+    fi
     if [ -f "$dorsal_pons" ]; then
         log_message "Found dorsal pons mask: $dorsal_pons"
         mask_files+=("$dorsal_pons")
@@ -568,7 +583,12 @@ analyze_hyperintensities_in_all_masks() {
     fi
     
     # Ventral pons mask
-    local ventral_pons=$(find "$segmentation_dir" -name "*ventral_pons.nii.gz" | grep -v "orig" | head -1)
+    local ventral_pons
+    if [[ "$segmentation_dir" == *"original_space"* ]]; then
+        ventral_pons=$(find "$segmentation_dir" -name "*ventral_pons*.nii.gz" | head -1)
+    else
+        ventral_pons=$(find "$segmentation_dir" -name "*ventral_pons.nii.gz" | grep -v "orig" | head -1)
+    fi
     if [ -f "$ventral_pons" ]; then
         log_message "Found ventral pons mask: $ventral_pons"
         mask_files+=("$ventral_pons")
@@ -927,10 +947,46 @@ verify_segmentation_location() {
     # Create overlay for visual inspection
     local overlay="${output_dir}/${region_name}_location_check.nii.gz"
     log_message "Creating overlay for visual inspection..."
-    overlay 1 0 "$reference" 1000 2000 "$segmentation" 1 1 0 "$overlay"
     
-    # Create visual slices
-    slicer "$overlay" -a "${output_dir}/${region_name}_location.png" || true
+    # Get intensity range for background image (reference)
+    local ref_range=$(fslstats "$reference" -R)
+    local ref_min=$(echo "$ref_range" | awk '{print $1}')
+    local ref_max=$(echo "$ref_range" | awk '{print $2}')
+    
+    # Use FSL overlay with correct syntax: overlay <use_mm> <bg_thresh> <bgimage> <minval> <maxval> <statimage> <minval2> <maxval2> <outname>
+    # Create overlay with segmentation in red color
+    if overlay 1 0 "$reference" "$ref_min" "$ref_max" "$segmentation" 0.5 1 "$overlay" 2>/dev/null; then
+        log_message "✓ Overlay created successfully: $overlay"
+        
+        # Create visual slices
+        if slicer "$overlay" -a "${output_dir}/${region_name}_location.png" 2>/dev/null; then
+            log_message "✓ Visual slices created: ${region_name}_location.png"
+        else
+            log_formatted "WARNING" "Failed to create visual slices, but overlay exists"
+        fi
+    else
+        log_formatted "WARNING" "FSL overlay command failed, creating fallback visualization"
+        
+        # Fallback: create simple visualization by directly using slicer on the segmentation
+        if slicer "$segmentation" -a "${output_dir}/${region_name}_segmentation.png" 2>/dev/null; then
+            log_message "✓ Fallback segmentation slices created: ${region_name}_segmentation.png"
+        else
+            log_formatted "WARNING" "Both overlay and fallback visualization failed"
+        fi
+        
+        # Also try to create a simple overlay using fslmaths
+        log_message "Attempting simple overlay using fslmaths..."
+        if fslmaths "$reference" -add "$segmentation" "$overlay" 2>/dev/null; then
+            log_message "✓ Simple overlay created with fslmaths"
+            
+            # Try slicer again with the simple overlay
+            if slicer "$overlay" -a "${output_dir}/${region_name}_location.png" 2>/dev/null; then
+                log_message "✓ Visual slices created from simple overlay"
+            fi
+        else
+            log_formatted "WARNING" "Simple fslmaths overlay also failed"
+        fi
+    fi
     
     # Calculate centroid
     local com=$(fslstats "$segmentation" -C)
