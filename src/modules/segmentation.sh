@@ -625,10 +625,11 @@ extract_brainstem_harvard_oxford() {
         log_formatted "WARNING" "Failed to create T1 intensity version (non-critical)"
     fi
     
-    # Apply segmentation to registered FLAIR if available
-    log_message "Checking for registered FLAIR to apply segmentation..."
+    # Apply segmentation to FLAIR AND create FLAIR-space versions for analysis compatibility
+    log_message "Checking for FLAIR to apply segmentation and create analysis-compatible versions..."
     local flair_registered="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
     local flair_files_found=()
+    local original_flair_files=()
     
     # Look for registered FLAIR files
     if [ -f "$flair_registered" ]; then
@@ -642,7 +643,14 @@ extract_brainstem_harvard_oxford() {
         done < <(find "${RESULTS_DIR}/registered" -name "*flair*Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -print0 2>/dev/null)
     fi
     
-    # Apply segmentation to each FLAIR file found
+    # Look for original FLAIR files for FLAIR-space analysis
+    if [ -d "${RESULTS_DIR}/standardized" ]; then
+        while IFS= read -r -d '' orig_flair; do
+            original_flair_files+=("$orig_flair")
+        done < <(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" -print0 2>/dev/null)
+    fi
+    
+    # Apply segmentation to each registered FLAIR file found (T1 space)
     for flair_file in "${flair_files_found[@]}"; do
         if [ -f "$flair_file" ]; then
             local flair_base=$(basename "$flair_file" .nii.gz)
@@ -668,8 +676,84 @@ extract_brainstem_harvard_oxford() {
         fi
     done
     
-    if [ ${#flair_files_found[@]} -eq 0 ]; then
-        log_message "No registered FLAIR files found - T1 intensity only"
+    # Create FLAIR-space versions for analysis compatibility
+    for orig_flair in "${original_flair_files[@]}"; do
+        if [ -f "$orig_flair" ]; then
+            log_message "Creating FLAIR-space analysis versions from: $(basename "$orig_flair")"
+            
+            # Create output directory for FLAIR-space analysis files
+            local flair_analysis_dir="${RESULTS_DIR}/comprehensive_analysis/original_space"
+            mkdir -p "$flair_analysis_dir"
+            
+            # Resample T1-space mask to FLAIR space using standardize_dimensions function
+            local flair_space_mask="${flair_analysis_dir}/${base_name}_brainstem_mask_flair_space.nii.gz"
+            
+            # Use standardize_dimensions function from preprocessing module to resample mask to FLAIR grid
+            if command -v standardize_dimensions &> /dev/null; then
+                log_message "Resampling brainstem mask to FLAIR space using standardize_dimensions..."
+                
+                # Use reference file mode for identical matrix dimensions
+                if standardize_dimensions "${temp_dir}/brainstem_mask_subject.nii.gz" "" "$orig_flair"; then
+                    # standardize_dimensions creates output in standardized dir, so we need to find and move it
+                    local std_output="${RESULTS_DIR}/standardized/$(basename "${temp_dir}/brainstem_mask_subject.nii.gz" .nii.gz)_std.nii.gz"
+                    if [ -f "$std_output" ]; then
+                        mv "$std_output" "$flair_space_mask"
+                        log_message "✓ Moved resampled mask to: $(basename "$flair_space_mask")"
+                    else
+                        log_formatted "WARNING" "Standardized output not found, using direct flirt approach"
+                    fi
+                else
+                    log_formatted "WARNING" "standardize_dimensions failed, using direct flirt approach"
+                fi
+            fi
+            
+            # Fallback: use flirt for resampling if standardize_dimensions failed
+            if [ ! -f "$flair_space_mask" ]; then
+                log_message "Using flirt fallback to resample mask to FLAIR space..."
+                if flirt -in "${temp_dir}/brainstem_mask_subject.nii.gz" -ref "$orig_flair" -out "$flair_space_mask" -applyxfm -usesqform -interp nearestneighbour; then
+                    log_message "✓ Flirt resampling successful"
+                else
+                    log_formatted "WARNING" "Failed to resample mask to FLAIR space"
+                    continue
+                fi
+            fi
+            
+            # Create FLAIR-space intensity version with correct naming for analysis discovery
+            local flair_space_intensity="${flair_analysis_dir}/${base_name}_brainstem_intensity.nii.gz"
+            
+            if [ -f "$flair_space_mask" ]; then
+                # Apply mask to original FLAIR to create intensity version
+                if fslmaths "$orig_flair" -mas "$flair_space_mask" "$flair_space_intensity"; then
+                    log_message "✓ Created FLAIR-space intensity version: $(basename "$flair_space_intensity")"
+                else
+                    log_formatted "WARNING" "Failed to create FLAIR-space intensity version"
+                fi
+                
+                # Create analysis-compatible binary mask with proper naming
+                # Analysis expects to find *brainstem*.nii.gz and use it as a binary mask
+                local analysis_brainstem_mask="${flair_analysis_dir}/${base_name}_brainstem.nii.gz"
+                if cp "$flair_space_mask" "$analysis_brainstem_mask"; then
+                    log_message "✓ Created analysis-compatible brainstem mask: $(basename "$analysis_brainstem_mask")"
+                else
+                    log_formatted "WARNING" "Failed to create analysis-compatible brainstem mask"
+                fi
+                
+                # Also create legacy naming for backward compatibility
+                local legacy_brainstem="${flair_analysis_dir}/brainstem_location_check_intensity.nii.gz"
+                if cp "$flair_space_mask" "$legacy_brainstem"; then
+                    log_message "✓ Created legacy-compatible file: $(basename "$legacy_brainstem")"
+                else
+                    log_formatted "WARNING" "Failed to create legacy-compatible file"
+                fi
+            fi
+            
+            # Only process the first FLAIR file
+            break
+        fi
+    done
+    
+    if [ ${#flair_files_found[@]} -eq 0 ] && [ ${#original_flair_files[@]} -eq 0 ]; then
+        log_message "No FLAIR files found - T1 intensity only"
     fi
     
     # Create QA-compatible naming convention
