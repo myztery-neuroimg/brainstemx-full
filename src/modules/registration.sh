@@ -213,112 +213,239 @@ register_modality_to_t1() {
             log_formatted "ERROR" "Matrix file does not exist: $ants_wm_init_matrix"
         fi
         
-        # For ANTs transform files, we should use the .mat file directly in antsRegistrationSyN
-        # No conversion to ITK format is needed for ANTs-to-ANTs workflows
-        log_message "Using ANTs transform file directly (no conversion needed for ANTs workflow)"
+        # Detect and validate transform file format (FSL vs ANTs)
+        log_formatted "INFO" "===== TRANSFORM FORMAT DETECTION AND VALIDATION ====="
+        log_message "Analyzing transform file format: $ants_wm_init_matrix"
         
-        # Verify the ANTs transform file exists and is valid
-        if [ -f "$ants_wm_init_matrix" ] && [ -s "$ants_wm_init_matrix" ]; then
-            # Check if it's a valid ANTs transform by looking for the binary signature
-            if file "$ants_wm_init_matrix" | grep -q "data" 2>/dev/null; then
-                log_formatted "SUCCESS" "Valid ANTs transform file detected"
-                transform_converted=true
-                # We'll use the .mat file directly with antsRegistrationSyN
-                cp "$ants_wm_init_matrix" "${out_prefix}_wm_init_itk.txt"
+        local transform_format="unknown"
+        local transform_valid=false
+        
+        if [ ! -f "$ants_wm_init_matrix" ]; then
+            log_formatted "ERROR" "Transform file does not exist: $ants_wm_init_matrix"
+            transform_converted=false
+        elif [ ! -s "$ants_wm_init_matrix" ]; then
+            log_formatted "ERROR" "Transform file is empty: $ants_wm_init_matrix"
+            transform_converted=false
+        else
+            # Detect format based on file content
+            local file_size=$(stat -f %z "$ants_wm_init_matrix" 2>/dev/null || stat --format="%s" "$ants_wm_init_matrix" 2>/dev/null)
+            log_message "Transform file size: $file_size bytes"
+            
+            # Check if it's a text-based FSL format
+            if head -n 5 "$ants_wm_init_matrix" 2>/dev/null | grep -E '^[[:space:]]*[-]?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?[[:space:]]*$' >/dev/null; then
+                transform_format="FSL"
+                log_message "Detected FSL format transformation matrix (text-based)"
+                
+                # Validate FSL format - should have 4 rows of 4 numbers each
+                local line_count=$(wc -l < "$ants_wm_init_matrix")
+                if [ "$line_count" -eq 4 ]; then
+                    log_formatted "SUCCESS" "Valid FSL 4x4 transformation matrix detected"
+                    transform_valid=true
+                else
+                    log_formatted "WARNING" "FSL matrix has $line_count lines (expected 4)"
+                    transform_valid=false
+                fi
+                
+            # Check if it's a binary ANTs format
+            elif file "$ants_wm_init_matrix" 2>/dev/null | grep -q "data\|binary" || [ "$file_size" -gt 100 ]; then
+                transform_format="ANTs"
+                log_message "Detected ANTs format transformation matrix (binary)"
+                
+                # Validate ANTs format using ANTs tools
+                local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+                if command -v "${ants_bin}/antsApplyTransforms" &>/dev/null; then
+                    # Create a small test image for validation (macOS compatible)
+                    local test_img=$(mktemp "${TMPDIR:-/tmp}/ants_test_XXXXXX")
+                    test_img="${test_img}.nii.gz"
+                    if command -v "${ants_bin}/CreateImage" &>/dev/null; then
+                        "${ants_bin}/CreateImage" 3 "$test_img" "10x10x10" 0 1 0 &>/dev/null 2>&1
+                        
+                        # Try to apply transform to validate it
+                        if "${ants_bin}/antsApplyTransforms" -d 3 -i "$test_img" -r "$test_img" \
+                           -t "$ants_wm_init_matrix" -o /dev/null --float 1 &>/dev/null 2>&1; then
+                            log_formatted "SUCCESS" "Valid ANTs transformation matrix validated"
+                            transform_valid=true
+                        else
+                            log_formatted "WARNING" "ANTs transform validation failed"
+                            transform_valid=false
+                        fi
+                        rm -f "$test_img"
+                    else
+                        # Fallback: assume valid if reasonable size
+                        log_message "CreateImage not available, using size-based validation"
+                        transform_valid=true
+                    fi
+                else
+                    log_formatted "WARNING" "antsApplyTransforms not available for validation"
+                    transform_valid=true  # Assume valid, let ANTs handle any issues
+                fi
+                
             else
-                log_formatted "WARNING" "Transform file may be corrupted or invalid format"
+                log_formatted "WARNING" "Could not determine transformation matrix format"
+                transform_valid=false
+            fi
+            
+            # Report format detection results
+            log_message "Transform format: $transform_format, Valid: $transform_valid"
+            
+            # Handle format-specific requirements
+            if [ "$transform_valid" = "true" ]; then
+                if [ "$transform_format" = "FSL" ]; then
+                    log_formatted "WARNING" "FSL format matrix detected in ANTs pipeline"
+                    log_message "This may cause compatibility issues - consider converting to ANTs format"
+                    
+                    # Option 1: Try to convert FSL to ANTs format
+                    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+                    if command -v "${ants_bin}/ConvertTransformFile" &>/dev/null; then
+                        log_message "Attempting to convert FSL matrix to ANTs format"
+                        local converted_transform="${ants_wm_init_matrix}.ants"
+                        
+                        if "${ants_bin}/ConvertTransformFile" 3 "$ants_wm_init_matrix" "$converted_transform" --hm &>/dev/null; then
+                            log_formatted "SUCCESS" "Successfully converted FSL matrix to ANTs format"
+                            ants_wm_init_matrix="$converted_transform"
+                            transform_format="ANTs"
+                        else
+                            log_formatted "WARNING" "FSL to ANTs conversion failed, proceeding with original"
+                        fi
+                    else
+                        log_formatted "INFO" "ConvertTransformFile not available, using FSL matrix as-is"
+                    fi
+                fi
+                transform_converted=true
+            else
+                log_formatted "ERROR" "Transform validation failed for format: $transform_format"
                 transform_converted=false
             fi
-        else
-            log_formatted "WARNING" "Transform file is missing or empty: $ants_wm_init_matrix"
-            transform_converted=false
         fi
         
-        # If transform conversion failed, fall back to standard registration
+        # Final validation result
         if [ "$transform_converted" = "false" ]; then
-            log_formatted "WARNING" "Transform initialization failed, falling back to standard registration"
+            log_formatted "WARNING" "Transform validation failed, falling back to standard registration"
             wm_init_completed=false
+        else
+            log_formatted "SUCCESS" "Transform file validated and ready for use (format: $transform_format)"
         fi
         
         if [ "$transform_converted" = "true" ]; then
             # Run antsRegistrationSyN with the white matter guided initialization
-            log_formatted "INFO" "===== WM-GUIDED REGISTRATION ATTEMPT ====="
-            log_message "Running ANTs registration with WM-guided initialization"
+            log_formatted "INFO" "===== WM-GUIDED REGISTRATION EXECUTION ====="
+            log_message "Executing ANTs registration with white matter guided initialization"
             log_message "Fixed image: $t1_file"
             log_message "Moving image: $modality_file"
             log_message "Output prefix: $out_prefix"
-            log_message "Transform: $ants_wm_init_matrix"
-            log_message "Command: ${ants_bin}/antsRegistrationSyN.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"$out_prefix\" -t r -i \"$ants_wm_init_matrix\" -n \"$ANTS_THREADS\" -p f -j \"$ANTS_THREADS\" -x \"$REG_METRIC_CROSS_MODALITY\""
+            log_message "Transform format: $transform_format"
+            log_message "Transform file: $ants_wm_init_matrix"
             
-            # Capture start time
-            local start_time=$(date +%s)
+            # Pre-execution validation
+            local can_execute=true
             
-            # Use the ANTs transform file directly
-            log_message "Running ANTs registration with ANTs transform initialization"
+            # Verify input files exist and are valid
+            if ! validate_nifti "$t1_file" "Fixed image (T1)" >/dev/null 2>&1; then
+                log_formatted "ERROR" "Fixed image validation failed: $t1_file"
+                can_execute=false
+            fi
             
-            # Execute ANTs command directly using the original ANTs transform
-            execute_ants_command "ants_registration" "T1-to-$modality_name white matter guided registration" \
-              ${ants_bin}/antsRegistrationSyN.sh \
-              -d 3 \
-              -f "$t1_file" \
-              -m "$modality_file" \
-              -o "$out_prefix" \
-              -t r \
-              -i "$ants_wm_init_matrix" \
-              -n "$ANTS_THREADS" \
-              -p f \
-              -j "$ANTS_THREADS" \
-              -x "$REG_METRIC_CROSS_MODALITY"
-            local ants_status=$?
+            if ! validate_nifti "$modality_file" "Moving image ($modality_name)" >/dev/null 2>&1; then
+                log_formatted "ERROR" "Moving image validation failed: $modality_file"
+                can_execute=false
+            fi
             
-            # Calculate elapsed time
-            local end_time=$(date +%s)
-            local elapsed=$((end_time - start_time))
-            log_message "Registration completed in ${elapsed}s with status: $ants_status"
+            # Verify ANTs binary exists
+            if [ ! -f "${ants_bin}/antsRegistrationSyN.sh" ]; then
+                log_formatted "ERROR" "ANTs registration script not found: ${ants_bin}/antsRegistrationSyN.sh"
+                can_execute=false
+            fi
             
-            if [ $ants_status -ne 0 ]; then
-                log_formatted "WARNING" "WM-guided ANTs registration failed with status $ants_status"
-                log_message "Registration output sample: $(echo "$ants_output" | head -n 10)"
-                log_formatted "INFO" "===== DIRECT REGISTRATION FALLBACK ====="
-                log_message "Attempting direct registration without initialization"
-                log_message "Command: ${ants_bin}/antsRegistrationSyN.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"$out_prefix\" -t r -n \"$ANTS_THREADS\" -p f -j \"$ANTS_THREADS\" -x \"$REG_METRIC_CROSS_MODALITY\""
+            # Create output directory if it doesn't exist
+            local output_dir=$(dirname "$out_prefix")
+            mkdir -p "$output_dir"
+            
+            if [ "$can_execute" = "true" ]; then
+                # Capture start time
+                local start_time=$(date +%s)
                 
-                # Capture start time for fallback
-                local fb_start_time=$(date +%s)
+                # Build ANTs command with proper parameter handling
+                local ants_cmd=(
+                    "${ants_bin}/antsRegistrationSyN.sh"
+                    "-d" "3"
+                    "-f" "$t1_file"
+                    "-m" "$modality_file"
+                    "-o" "$out_prefix"
+                    "-t" "r"
+                    "-i" "$ants_wm_init_matrix"
+                    "-n" "$ANTS_THREADS"
+                    "-p" "f"
+                    "-j" "$ANTS_THREADS"
+                    "-x" "$REG_METRIC_CROSS_MODALITY"
+                )
                 
-                # Final fallback: do direct registration without initialization
-                log_message "Running fallback ANTs registration with diagnostic output filtering"
+                log_message "Command: ${ants_cmd[*]}"
                 
-                # Use the new direct execution method for fallback
-                log_message "Running fallback registration with direct command execution"
+                # Execute ANTs command with enhanced error handling
+                log_message "Starting WM-guided registration..."
+                execute_ants_command "ants_wm_registration" "White matter guided registration (${transform_format} initialization)" "${ants_cmd[@]}"
+                local ants_status=$?
                 
-                # Execute ANTs fallback command directly
-                execute_ants_command "ants_fallback_registration" "Fallback direct registration without WM guidance" \
-                  ${ants_bin}/antsRegistrationSyN.sh \
-                  -d 3 \
-                  -f "$t1_file" \
-                  -m "$modality_file" \
-                  -o "$out_prefix" \
-                  -t r \
-                  -n "$ANTS_THREADS" \
-                  -p f \
-                  -j "$ANTS_THREADS" \
-                  -x "$REG_METRIC_CROSS_MODALITY"
-                local fb_status=$?
+                # Calculate elapsed time
+                local end_time=$(date +%s)
+                local elapsed=$((end_time - start_time))
+                log_message "WM-guided registration completed in ${elapsed}s with status: $ants_status"
                 
-                # Calculate elapsed time for fallback
-                local fb_end_time=$(date +%s)
-                local fb_elapsed=$((fb_end_time - fb_start_time))
-                log_message "Fallback registration completed in ${fb_elapsed}s with status: $fb_status"
+                # Check for expected outputs immediately after execution
+                local registration_success=false
+                if [ $ants_status -eq 0 ]; then
+                    # Verify output files were created
+                    if [ -f "${out_prefix}Warped.nii.gz" ] && [ -s "${out_prefix}Warped.nii.gz" ]; then
+                        log_formatted "SUCCESS" "WM-guided registration completed successfully"
+                        log_message "Output file created: ${out_prefix}Warped.nii.gz ($(stat -f %z "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "unknown") bytes)"
+                        registration_success=true
+                    else
+                        log_formatted "WARNING" "Registration reported success but output file missing or empty"
+                        ants_status=1  # Override status to trigger fallback
+                    fi
+                fi
                 
-                if [ $fb_status -eq 0 ]; then
-                    log_formatted "SUCCESS" "Direct registration fallback succeeded"
-                else
-                    log_formatted "WARNING" "Direct registration fallback also failed with status $fb_status"
-                    log_message "Fallback output sample: $(echo "$fb_output" | head -n 10)"
+                # If WM-guided registration failed, try direct registration
+                if [ $registration_success = "false" ]; then
+                    log_formatted "INFO" "===== DIRECT REGISTRATION FALLBACK ====="
+                    log_message "WM-guided registration failed, attempting standard registration"
+                    
+                    local fb_start_time=$(date +%s)
+                    
+                    # Build fallback command without initialization
+                    local fallback_cmd=(
+                        "${ants_bin}/antsRegistrationSyN.sh"
+                        "-d" "3"
+                        "-f" "$t1_file"
+                        "-m" "$modality_file"
+                        "-o" "$out_prefix"
+                        "-t" "r"
+                        "-n" "$ANTS_THREADS"
+                        "-p" "f"
+                        "-j" "$ANTS_THREADS"
+                        "-x" "$REG_METRIC_CROSS_MODALITY"
+                    )
+                    
+                    log_message "Fallback command: ${fallback_cmd[*]}"
+                    
+                    # Execute fallback registration
+                    execute_ants_command "ants_fallback_registration" "Standard registration without initialization" "${fallback_cmd[@]}"
+                    local fb_status=$?
+                    
+                    local fb_end_time=$(date +%s)
+                    local fb_elapsed=$((fb_end_time - fb_start_time))
+                    log_message "Fallback registration completed in ${fb_elapsed}s with status: $fb_status"
+                    
+                    # Check fallback results
+                    if [ $fb_status -eq 0 ] && [ -f "${out_prefix}Warped.nii.gz" ] && [ -s "${out_prefix}Warped.nii.gz" ]; then
+                        log_formatted "SUCCESS" "Standard registration fallback succeeded"
+                        registration_success=true
+                    else
+                        log_formatted "ERROR" "Both WM-guided and standard registration failed"
+                    fi
                 fi
             else
-                log_formatted "SUCCESS" "WM-guided registration completed successfully"
+                log_formatted "ERROR" "Pre-execution validation failed, cannot proceed with registration"
             fi
         fi
     elif [ -f "$outer_ribbon_mask" ] && [ -s "$outer_ribbon_mask" ]; then
@@ -440,143 +567,170 @@ register_modality_to_t1() {
             # Check if the registration even started by looking for log files
             log_formatted "ERROR" "Registration failed to produce output files. Check logs for errors."
             
-            # Create a completely separate directory for emergency registration
-            log_formatted "INFO" "===== MULTI-TIER EMERGENCY REGISTRATION ATTEMPT ====="
+            # Enhanced emergency registration with better diagnostics
+            log_formatted "INFO" "===== ENHANCED EMERGENCY REGISTRATION SYSTEM ====="
             local emergency_dir="$(dirname "$out_prefix")/emergency"
             mkdir -p "$emergency_dir"
             log_message "Using isolated emergency directory: $emergency_dir"
             
+            # Perform thorough pre-emergency diagnostics
+            log_message "Pre-emergency diagnostics:"
+            log_message "  T1 file: $t1_file ($(stat -f %z "$t1_file" 2>/dev/null || echo "?") bytes)"
+            log_message "  Modality file: $modality_file ($(stat -f %z "$modality_file" 2>/dev/null || echo "?") bytes)"
+            log_message "  ANTs binary: ${ants_bin}/antsRegistrationSyNQuick.sh"
+            log_message "  Available threads: $ANTS_THREADS"
+            
+            # Verify ANTs binary availability for emergency methods
+            if [ ! -f "${ants_bin}/antsRegistrationSyNQuick.sh" ]; then
+                log_formatted "ERROR" "ANTs SyNQuick not available for emergency registration"
+                log_message "Available ANTs commands:"
+                ls -la "${ants_bin}"/ants* 2>/dev/null | head -5 || echo "No ANTs commands found"
+                found_warped=false
+                return 1
+            fi
+            
             # Track overall success across multiple methods
             local registered_successfully=false
             local attempted_methods=0
+            local total_start_time=$(date +%s)
             
-            # Method 1: SyNQuick with "s" (more aggressive) transform
-            attempted_methods=$((attempted_methods + 1))
-            log_message "Method 1: SyNQuick with aggressive transform"
-            log_message "Command: ${ants_bin}/antsRegistrationSyNQuick.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"${emergency_dir}/method1\" -n \"$ANTS_THREADS\" -p f -t s"
-            
-            local emerg_start_time=$(date +%s)
-            # Execute using direct command execution instead of string with quotes
-            execute_ants_command "ants_emergency_method1" "Emergency registration with aggressive SyN transform" \
-              ${ants_bin}/antsRegistrationSyNQuick.sh \
-              -d 3 \
-              -f "$t1_file" \
-              -m "$modality_file" \
-              -o "${emergency_dir}/method1" \
-              -n "$ANTS_THREADS" \
-              -p f \
-              -t s
-            local method1_status=$?
-            
-            if [ -f "${emergency_dir}/method1Warped.nii.gz" ] && [ -s "${emergency_dir}/method1Warped.nii.gz" ]; then
-                log_formatted "SUCCESS" "Method 1 registration successful"
-                cp "${emergency_dir}/method1Warped.nii.gz" "${out_prefix}Warped.nii.gz"
-                found_warped=true
-                registered_successfully=true
-                log_message "Output copied to: ${out_prefix}Warped.nii.gz"
-            else
-                log_formatted "WARNING" "Method 1 registration failed with status $method1_status"
-                
-                # Method 2: Standard SyNQuick with default transform
+            # Method 1: Quick SyN with reduced iterations for speed
+            if [ "$registered_successfully" = "false" ]; then
                 attempted_methods=$((attempted_methods + 1))
-                log_message "Method 2: Standard SyNQuick with default transform"
-                log_message "Command: ${ants_bin}/antsRegistrationSyNQuick.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"${emergency_dir}/method2\" -n \"$ANTS_THREADS\" -p f"
+                log_formatted "INFO" "Emergency Method 1: Quick SyN (reduced iterations)"
                 
-                # Execute method 2 using direct command approach
-                execute_ants_command "ants_emergency_method2" "Emergency registration with standard SyNQuick" \
-                  ${ants_bin}/antsRegistrationSyNQuick.sh \
-                  -d 3 \
-                  -f "$t1_file" \
-                  -m "$modality_file" \
-                  -o "${emergency_dir}/method2" \
-                  -n "$ANTS_THREADS" \
-                  -p f
-                local method2_status=$?
+                local method1_cmd=(
+                    "${ants_bin}/antsRegistrationSyNQuick.sh"
+                    "-d" "3"
+                    "-f" "$t1_file"
+                    "-m" "$modality_file"
+                    "-o" "${emergency_dir}/method1_"
+                    "-n" "$ANTS_THREADS"
+                    "-p" "f"
+                    "-t" "s"
+                )
                 
-                if [ -f "${emergency_dir}/method2Warped.nii.gz" ] && [ -s "${emergency_dir}/method2Warped.nii.gz" ]; then
-                    log_formatted "SUCCESS" "Method 2 registration successful"
-                    cp "${emergency_dir}/method2Warped.nii.gz" "${out_prefix}Warped.nii.gz"
-                    found_warped=true
+                log_message "Method 1 command: ${method1_cmd[*]}"
+                execute_ants_command "emergency_method1" "Quick SyN registration (reduced complexity)" "${method1_cmd[@]}"
+                local method1_status=$?
+                
+                if [ -f "${emergency_dir}/method1_Warped.nii.gz" ] && [ -s "${emergency_dir}/method1_Warped.nii.gz" ]; then
+                    log_formatted "SUCCESS" "Emergency Method 1 succeeded"
+                    cp "${emergency_dir}/method1_Warped.nii.gz" "${out_prefix}Warped.nii.gz"
                     registered_successfully=true
-                    log_message "Output copied to: ${out_prefix}Warped.nii.gz"
                 else
-                    log_formatted "ERROR" "Method 2 registration failed with status $method2_status"
-                    return 1
-                    # Method 3: Simple affine registration only
-                    attempted_methods=$((attempted_methods + 1))
-                    log_message "Method 3: Affine registration only (no deformation)"
-                    log_message "Command: ${ants_bin}/antsRegistrationSyNQuick.sh -d 3 -f \"$t1_file\" -m \"$modality_file\" -o \"${emergency_dir}/method3\" -n \"$ANTS_THREADS\" -p f -t a"
-                    
-                    # Execute method 3 using direct command approach
-                    execute_ants_command "ants_emergency_method3" "Emergency registration with affine-only transform" \
-                      ${ants_bin}/antsRegistrationSyNQuick.sh \
-                      -d 3 \
-                      -f "$t1_file" \
-                      -m "$modality_file" \
-                      -o "${emergency_dir}/method3" \
-                      -n "$ANTS_THREADS" \
-                      -p f \
-                      -t a
-                    local method3_status=$?
-                    
-                    if [ -f "${emergency_dir}/method3Warped.nii.gz" ] && [ -s "${emergency_dir}/method3Warped.nii.gz" ]; then
-                        log_formatted "SUCCESS" "Method 3 registration successful"
-                        cp "${emergency_dir}/method3Warped.nii.gz" "${out_prefix}Warped.nii.gz"
-                        found_warped=true
-                        registered_successfully=true
-                        log_message "Output copied to: ${out_prefix}Warped.nii.gz"
-                    else
-                        log_formatted "WARNING" "Method 3 registration failed with status $method3_status"
-                        
-                        # Method 4: Try FLIRT as absolute last resort
-                        if command -v flirt &>/dev/null; then
-                            attempted_methods=$((attempted_methods + 1))
-                            log_message "Method 4: Using FLIRT registration as final attempt"
-                            
-                            # Build emergency method 4 command (FLIRT)
-                            local flirt_cmd="flirt -in \"$modality_file\" -ref \"$t1_file\" -out \"${emergency_dir}/method4.nii.gz\" -omat \"${emergency_dir}/method4.mat\" -dof 12 -interp trilinear"
-                            
-                            # Execute with diagnostic output filtering
-                            execute_with_logging "$flirt_cmd" "flirt_emergency_method4"
-                            local flirt_status=$?
-                            
-                            if [ -f "${emergency_dir}/method4.nii.gz" ] && [ -s "${emergency_dir}/method4.nii.gz" ]; then
-                                log_formatted "SUCCESS" "Method 4 (FLIRT) registration successful"
-                                cp "${emergency_dir}/method4.nii.gz" "${out_prefix}Warped.nii.gz"
-                                found_warped=true
-                                registered_successfully=true
-                                log_message "Output copied to: ${out_prefix}Warped.nii.gz"
-                            else
-                                log_formatted "ERROR" "Method 4 (FLIRT) registration failed with status $flirt_status"
-                            fi
-                        else
-                            log_formatted "ERROR" "FLIRT not available for Method 4"
-                        fi
-                    fi
+                    log_formatted "WARNING" "Emergency Method 1 failed (status: $method1_status)"
                 fi
             fi
             
-            # Calculate total elapsed time
-            local emerg_end_time=$(date +%s)
-            local emerg_elapsed=$((emerg_end_time - emerg_start_time))
-            log_message "Emergency registration attempts ($attempted_methods methods) completed in ${emerg_elapsed}s"
+            # Method 2: Affine-only registration (most robust)
+            if [ "$registered_successfully" = "false" ]; then
+                attempted_methods=$((attempted_methods + 1))
+                log_formatted "INFO" "Emergency Method 2: Affine-only registration"
+                
+                local method2_cmd=(
+                    "${ants_bin}/antsRegistrationSyNQuick.sh"
+                    "-d" "3"
+                    "-f" "$t1_file"
+                    "-m" "$modality_file"
+                    "-o" "${emergency_dir}/method2_"
+                    "-n" "$ANTS_THREADS"
+                    "-p" "f"
+                    "-t" "a"
+                )
+                
+                log_message "Method 2 command: ${method2_cmd[*]}"
+                execute_ants_command "emergency_method2" "Affine-only registration (most stable)" "${method2_cmd[@]}"
+                local method2_status=$?
+                
+                if [ -f "${emergency_dir}/method2_Warped.nii.gz" ] && [ -s "${emergency_dir}/method2_Warped.nii.gz" ]; then
+                    log_formatted "SUCCESS" "Emergency Method 2 (affine) succeeded"
+                    cp "${emergency_dir}/method2_Warped.nii.gz" "${out_prefix}Warped.nii.gz"
+                    registered_successfully=true
+                else
+                    log_formatted "WARNING" "Emergency Method 2 failed (status: $method2_status)"
+                fi
+            fi
+            
+            # Method 3: Standard SyNQuick (fallback to default)
+            if [ "$registered_successfully" = "false" ]; then
+                attempted_methods=$((attempted_methods + 1))
+                log_formatted "INFO" "Emergency Method 3: Standard SyNQuick"
+                
+                local method3_cmd=(
+                    "${ants_bin}/antsRegistrationSyNQuick.sh"
+                    "-d" "3"
+                    "-f" "$t1_file"
+                    "-m" "$modality_file"
+                    "-o" "${emergency_dir}/method3_"
+                    "-n" "$ANTS_THREADS"
+                    "-p" "f"
+                )
+                
+                log_message "Method 3 command: ${method3_cmd[*]}"
+                execute_ants_command "emergency_method3" "Standard SyNQuick registration" "${method3_cmd[@]}"
+                local method3_status=$?
+                
+                if [ -f "${emergency_dir}/method3_Warped.nii.gz" ] && [ -s "${emergency_dir}/method3_Warped.nii.gz" ]; then
+                    log_formatted "SUCCESS" "Emergency Method 3 (standard) succeeded"
+                    cp "${emergency_dir}/method3_Warped.nii.gz" "${out_prefix}Warped.nii.gz"
+                    registered_successfully=true
+                else
+                    log_formatted "WARNING" "Emergency Method 3 failed (status: $method3_status)"
+                fi
+            fi
+            
+            # Method 4: FLIRT as absolute last resort
+            if [ "$registered_successfully" = "false" ] && command -v flirt &>/dev/null; then
+                attempted_methods=$((attempted_methods + 1))
+                log_formatted "INFO" "Emergency Method 4: FSL FLIRT (final fallback)"
+                
+                log_message "Using FLIRT for emergency registration..."
+                flirt -in "$modality_file" -ref "$t1_file" \
+                      -out "${emergency_dir}/method4.nii.gz" \
+                      -omat "${emergency_dir}/method4.mat" \
+                      -dof 12 -interp trilinear
+                local flirt_status=$?
+                
+                if [ -f "${emergency_dir}/method4.nii.gz" ] && [ -s "${emergency_dir}/method4.nii.gz" ]; then
+                    log_formatted "SUCCESS" "Emergency Method 4 (FLIRT) succeeded"
+                    cp "${emergency_dir}/method4.nii.gz" "${out_prefix}Warped.nii.gz"
+                    registered_successfully=true
+                else
+                    log_formatted "ERROR" "Emergency Method 4 (FLIRT) failed (status: $flirt_status)"
+                fi
+            fi
+            
+            # Calculate total emergency time and provide final report
+            local total_end_time=$(date +%s)
+            local total_elapsed=$((total_end_time - total_start_time))
             
             if [ "$registered_successfully" = "true" ]; then
-                log_formatted "SUCCESS" "Emergency registration successful!"
-                log_message "Verifying final output file: ${out_prefix}Warped.nii.gz"
-                log_message "File size: $(stat -f %z "${out_prefix}Warped.nii.gz" 2>/dev/null || stat --format="%s" "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "Unknown") bytes"
+                log_formatted "SUCCESS" "Emergency registration succeeded after $attempted_methods attempts (${total_elapsed}s)"
                 
-                # Try to verify file integrity
+                # Verify final output file
+                local final_size=$(stat -f %z "${out_prefix}Warped.nii.gz" 2>/dev/null || stat --format="%s" "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "0")
+                log_message "Final output: ${out_prefix}Warped.nii.gz ($final_size bytes)"
+                
+                # Test file integrity
                 if fslinfo "${out_prefix}Warped.nii.gz" &>/dev/null; then
-                    log_formatted "SUCCESS" "Output file passed integrity check"
+                    log_formatted "SUCCESS" "Emergency output passed NIfTI validation"
+                    found_warped=true
                 else
-                    log_formatted "WARNING" "Output file may be corrupted (failed integrity check)"
+                    log_formatted "WARNING" "Emergency output failed NIfTI validation but proceeding"
+                    found_warped=true  # Allow pipeline to continue
                 fi
             else
-                log_formatted "ERROR" "All emergency registration methods failed"
-                log_message "Files in emergency directory: $(ls -la "$emergency_dir" 2>/dev/null || echo "No files found")"
-                log_message "Creating placeholder file to allow pipeline to continue"
-                touch "${out_prefix}Warped.nii.gz"
+                log_formatted "ERROR" "All $attempted_methods emergency registration methods failed"
+                log_message "Emergency diagnostic summary:"
+                log_message "  Directory contents: $(ls -la "$emergency_dir" 2>/dev/null | wc -l) files"
+                log_message "  Available disk space: $(df -h "$(dirname "$out_prefix")" | tail -1 | awk '{print $4}')"
+                log_message "  System load: $(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')"
+                
+                # Create minimal placeholder to prevent pipeline crash
+                log_message "Creating minimal placeholder file to prevent pipeline failure"
+                echo "Emergency registration failed - placeholder file" > "${out_prefix}Warped.nii.gz.txt"
+                found_warped=false
             fi
         fi
     fi
