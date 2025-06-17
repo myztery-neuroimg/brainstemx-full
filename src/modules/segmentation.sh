@@ -645,72 +645,220 @@ except Exception as e:
         
         log_message "Running subject-specific brain-stem refinement..."
         
-        # Step 1: Run tissue segmentation (Atropos or FAST) to get label-3 region
-        local tissue_seg="${temp_refinement_dir}/tissue_segmentation.nii.gz"
+        # Step 1: Run tissue segmentation with robust fallback strategies
         local tissue_labels="${temp_refinement_dir}/tissue_labels.nii.gz"
+        local segmentation_successful=false
         
-        # Try Atropos first (ANTs), fallback to FAST (FSL)
-        if command -v Atropos &> /dev/null; then
+        # Validate input image first
+        local input_mean=$(fslstats "$input_image" -M 2>/dev/null)
+        local input_std=$(fslstats "$input_image" -S 2>/dev/null)
+        local input_voxels=$(fslstats "$input_image" -V | awk '{print $1}')
+        
+        log_message "Input validation: mean=$input_mean, std=$input_std, voxels=$input_voxels"
+        
+        # Check if input has sufficient contrast for segmentation
+        if [ -z "$input_mean" ] || [ -z "$input_std" ] || [ "$input_voxels" -lt 1000 ]; then
+            log_formatted "WARNING" "Input image insufficient for tissue segmentation, using original mask"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
+        fi
+        
+        # Validate contrast (std should be reasonable fraction of mean)
+        local contrast_ratio=$(echo "scale=3; $input_std / $input_mean" | bc -l 2>/dev/null || echo "0")
+        if (( $(echo "$contrast_ratio < 0.1" | bc -l 2>/dev/null || echo 1) )); then
+            log_formatted "WARNING" "Insufficient tissue contrast (ratio=$contrast_ratio), using original mask"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
+        fi
+        
+        # Try Atropos with progressive fallbacks
+        if command -v Atropos &> /dev/null && [ "$segmentation_successful" = "false" ]; then
             log_message "Using Atropos for tissue segmentation..."
             
             # Brain extraction for Atropos input
             local brain_extracted="${temp_refinement_dir}/brain_extracted.nii.gz"
             local brain_mask="${temp_refinement_dir}/brain_mask.nii.gz"
             
-            # Simple brain extraction using bet
-            bet "$input_image" "$brain_extracted" -m -n -f 0.3
-            
-            if [ -f "$brain_extracted" ] && [ -f "$brain_mask" ]; then
-                # Run Atropos 3-class segmentation
-                Atropos -d 3 \
-                    -a "$brain_extracted" \
-                    -x "$brain_mask" \
-                    -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
-                    -c "[3,0.0001]" \
-                    -m "[0.3,1x1x1]" \
-                    -i "KMeans[3]" \
-                    -k Gaussian
+            # Simple brain extraction using bet with conservative parameters
+            if bet "$input_image" "$brain_extracted" -m -n -f 0.3 2>/dev/null; then
                 
-                if [ -f "$tissue_labels" ]; then
-                    log_message "✓ Atropos segmentation successful"
+                # Validate brain extraction was successful
+                local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}' 2>/dev/null || echo "0")
+                if [ "$brain_voxels" -gt 100 ]; then
+                    
+                    # Try 3-class segmentation first
+                    log_message "Trying Atropos 3-class segmentation..."
+                    if Atropos -d 3 \
+                        -a "$brain_extracted" \
+                        -x "$brain_mask" \
+                        -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                        -c "[3,0.0001]" \
+                        -m "[0.3,1x1x1]" \
+                        -i "KMeans[3]" \
+                        -k Gaussian 2>/dev/null; then
+                        
+                        if [ -f "$tissue_labels" ]; then
+                            log_message "✓ Atropos 3-class segmentation successful"
+                            segmentation_successful=true
+                        fi
+                    fi
+                    
+                    # Fallback to 2-class if 3-class failed
+                    if [ "$segmentation_successful" = "false" ]; then
+                        log_message "Trying Atropos 2-class segmentation..."
+                        if Atropos -d 3 \
+                            -a "$brain_extracted" \
+                            -x "$brain_mask" \
+                            -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                            -c "[3,0.0001]" \
+                            -m "[0.3,1x1x1]" \
+                            -i "KMeans[2]" \
+                            -k Gaussian 2>/dev/null; then
+                            
+                            if [ -f "$tissue_labels" ]; then
+                                log_message "✓ Atropos 2-class segmentation successful"
+                                segmentation_successful=true
+                            fi
+                        fi
+                    fi
+                    
+                    # Fallback to Otsu initialization if KMeans failed
+                    if [ "$segmentation_successful" = "false" ]; then
+                        log_message "Trying Atropos with Otsu initialization..."
+                        if Atropos -d 3 \
+                            -a "$brain_extracted" \
+                            -x "$brain_mask" \
+                            -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                            -c "[3,0.0001]" \
+                            -m "[0.3,1x1x1]" \
+                            -i "Otsu[2]" \
+                            -k Gaussian 2>/dev/null; then
+                            
+                            if [ -f "$tissue_labels" ]; then
+                                log_message "✓ Atropos Otsu segmentation successful"
+                                segmentation_successful=true
+                            fi
+                        fi
+                    fi
                 else
-                    log_formatted "WARNING" "Atropos failed, trying FAST fallback"
+                    log_formatted "WARNING" "Brain extraction failed (only $brain_voxels voxels), skipping Atropos"
+                fi
+            else
+                log_formatted "WARNING" "Brain extraction command failed, skipping Atropos"
+            fi
+        fi
+        
+        # FAST fallback with progressive strategies
+        if command -v fast &> /dev/null && [ "$segmentation_successful" = "false" ]; then
+            log_message "Using FAST for tissue segmentation..."
+            
+            # Try 3-class FAST first
+            log_message "Trying FAST 3-class segmentation..."
+            if fast -t 1 -n 3 -o "${temp_refinement_dir}/fast_" "$input_image" 2>/dev/null; then
+                if [ -f "${temp_refinement_dir}/fast_seg.nii.gz" ]; then
+                    cp "${temp_refinement_dir}/fast_seg.nii.gz" "$tissue_labels"
+                    log_message "✓ FAST 3-class segmentation successful"
+                    segmentation_successful=true
+                fi
+            fi
+            
+            # Fallback to 2-class FAST
+            if [ "$segmentation_successful" = "false" ]; then
+                log_message "Trying FAST 2-class segmentation..."
+                if fast -t 1 -n 2 -o "${temp_refinement_dir}/fast2_" "$input_image" 2>/dev/null; then
+                    if [ -f "${temp_refinement_dir}/fast2_seg.nii.gz" ]; then
+                        cp "${temp_refinement_dir}/fast2_seg.nii.gz" "$tissue_labels"
+                        log_message "✓ FAST 2-class segmentation successful"
+                        segmentation_successful=true
+                    fi
                 fi
             fi
         fi
         
-        # FAST fallback if Atropos not available or failed
-        if [ ! -f "$tissue_labels" ] && command -v fast &> /dev/null; then
-            log_message "Using FAST for tissue segmentation..."
+        # Final fallback: simple intensity-based segmentation
+        if [ "$segmentation_successful" = "false" ]; then
+            log_message "Using simple intensity-based segmentation as final fallback..."
             
-            # Run FAST segmentation
-            fast -t 1 -n 3 -o "${temp_refinement_dir}/fast_" "$input_image"
+            # Calculate intensity percentiles for simple thresholding
+            local p33=$(fslstats "$input_image" -P 33 2>/dev/null || echo "0")
+            local p66=$(fslstats "$input_image" -P 66 2>/dev/null || echo "0")
             
-            # FAST outputs are named differently
-            if [ -f "${temp_refinement_dir}/fast_seg.nii.gz" ]; then
-                cp "${temp_refinement_dir}/fast_seg.nii.gz" "$tissue_labels"
-                log_message "✓ FAST segmentation successful"
-            else
-                log_formatted "ERROR" "Both Atropos and FAST segmentation failed"
-                return 1
+            if [ "$p33" != "0" ] && [ "$p66" != "0" ]; then
+                # Create 3-class segmentation based on intensity percentiles
+                # Class 1: 0 to 33rd percentile
+                # Class 2: 33rd to 66th percentile
+                # Class 3: 66th percentile and above
+                
+                local temp_class1="${temp_refinement_dir}/temp_class1.nii.gz"
+                local temp_class2="${temp_refinement_dir}/temp_class2.nii.gz"
+                local temp_class3="${temp_refinement_dir}/temp_class3.nii.gz"
+                
+                # Create binary masks for each intensity range
+                fslmaths "$input_image" -thr 0 -uthr "$p33" -bin "$temp_class1" 2>/dev/null
+                fslmaths "$input_image" -thr "$p33" -uthr "$p66" -bin "$temp_class2" 2>/dev/null
+                fslmaths "$input_image" -thr "$p66" -bin "$temp_class3" 2>/dev/null
+                
+                # Combine into single label image
+                fslmaths "$temp_class1" -mul 1 "$tissue_labels" 2>/dev/null
+                fslmaths "$temp_class2" -mul 2 -add "$tissue_labels" "$tissue_labels" 2>/dev/null
+                fslmaths "$temp_class3" -mul 3 -add "$tissue_labels" "$tissue_labels" 2>/dev/null
+                
+                # Clean up temporary files
+                rm -f "$temp_class1" "$temp_class2" "$temp_class3"
+                
+                if [ -f "$tissue_labels" ]; then
+                    log_message "✓ Simple intensity-based segmentation successful"
+                    segmentation_successful=true
+                fi
             fi
+        fi
+        
+        # If all segmentation attempts failed, use original mask
+        if [ "$segmentation_successful" = "false" ]; then
+            log_formatted "ERROR" "All tissue segmentation methods failed"
+            log_formatted "WARNING" "Using original atlas-based mask without refinement"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
         fi
         
         if [ ! -f "$tissue_labels" ]; then
             log_formatted "ERROR" "No tissue segmentation available for brain-stem refinement"
-            return 1
-        fi
-        
-        # Step 2: Extract label-3 region (typically white matter)
-        local label3_region="${temp_refinement_dir}/label3_region.nii.gz"
-        fslmaths "$tissue_labels" -thr 3 -uthr 3 -bin "$label3_region"
-        
-        local label3_voxels=$(fslstats "$label3_region" -V | awk '{print $1}')
-        if [ "$label3_voxels" -lt 1000 ]; then
-            log_formatted "WARNING" "Label-3 region very small ($label3_voxels voxels), using original mask"
             cp "$initial_mask" "$output_refined_mask"
             return 0
         fi
+        
+        # Step 2: Extract appropriate tissue class for brainstem refinement
+        local tissue_region="${temp_refinement_dir}/tissue_region.nii.gz"
+        local tissue_voxels=0
+        
+        # Determine maximum label value to understand segmentation classes
+        local max_label=$(fslstats "$tissue_labels" -R | awk '{print $2}' | cut -d. -f1)
+        log_message "Tissue segmentation has $max_label classes"
+        
+        # Select appropriate tissue class based on available classes
+        if [ "$max_label" -ge 3 ]; then
+            # 3-class segmentation: use class 3 (typically white matter)
+            log_message "Using class 3 (white matter) from 3-class segmentation"
+            fslmaths "$tissue_labels" -thr 3 -uthr 3 -bin "$tissue_region"
+        elif [ "$max_label" -eq 2 ]; then
+            # 2-class segmentation: use class 2 (typically brain tissue vs background)
+            log_message "Using class 2 (brain tissue) from 2-class segmentation"
+            fslmaths "$tissue_labels" -thr 2 -uthr 2 -bin "$tissue_region"
+        else
+            # Single class or invalid segmentation - use original mask
+            log_formatted "WARNING" "Invalid tissue segmentation ($max_label classes), using original mask"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
+        fi
+        
+        tissue_voxels=$(fslstats "$tissue_region" -V | awk '{print $1}')
+        if [ "$tissue_voxels" -lt 100 ]; then
+            log_formatted "WARNING" "Selected tissue region very small ($tissue_voxels voxels), using original mask"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
+        fi
+        
+        log_message "Selected tissue region: $tissue_voxels voxels"
         
         # Step 3: Find inferior colliculi z-coordinate for seeding
         # Get center of mass of initial brainstem mask
@@ -726,13 +874,13 @@ except Exception as e:
         local lower_z_threshold=$(echo "$seed_z - 10" | bc -l)  # 10 voxels below COM
         
         # Create seed mask in lower brainstem region
-        fslmaths "$label3_region" -roi 0 -1 0 -1 0 "$lower_z_threshold" 0 -1 "$seed_region"
+        fslmaths "$tissue_region" -roi 0 -1 0 -1 0 "$lower_z_threshold" 0 -1 "$seed_region"
         
         local seed_voxels=$(fslstats "$seed_region" -V | awk '{print $1}')
         if [ "$seed_voxels" -lt 10 ]; then
             log_formatted "WARNING" "Insufficient seed region, using broader seeding"
-            # Fallback: use entire label-3 region as seed
-            cp "$label3_region" "$seed_region"
+            # Fallback: use entire tissue region as seed
+            cp "$tissue_region" "$seed_region"
         fi
         
         # Step 5: Morphological geodesic active contour (5 iterations)
@@ -749,8 +897,8 @@ except Exception as e:
             # Dilate current mask
             fslmaths "$current_mask" -dilM "$iteration_mask"
             
-            # Constrain to label-3 region (geodesic constraint)
-            fslmaths "$iteration_mask" -mas "$label3_region" "$iteration_mask"
+            # Constrain to tissue region (geodesic constraint)
+            fslmaths "$iteration_mask" -mas "$tissue_region" "$iteration_mask"
             
             # Constrain to initial anatomical bounds (safety constraint)
             local expanded_initial="${temp_refinement_dir}/expanded_initial.nii.gz"

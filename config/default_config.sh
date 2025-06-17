@@ -39,7 +39,7 @@ export PARALLEL_JOBS=0
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
 
-export QUALITY_PRESET="LOW"
+export QUALITY_PRESET="HIGH"
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" = "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"

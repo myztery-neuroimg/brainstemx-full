@@ -237,9 +237,15 @@ extract_brainstem_talairach_with_transform() {
             fi
         }
         
-        # Apply reverse correction to all output files
+        # Apply reverse correction to all output files - only process original binary masks, not derivatives
         for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
             if [ -f "$region_file" ]; then
+                # Skip files that are already intensity derivatives to prevent recursive processing
+                local region_basename=$(basename "$region_file" .nii.gz)
+                if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_flair_"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
+                    continue
+                fi
+                
                 apply_reverse_orientation "$region_file"
             fi
         done
