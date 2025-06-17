@@ -1273,20 +1273,22 @@ run_comprehensive_analysis() {
     log_message "Step 2: Finding actual segmentation masks..."
     local masks=()
     
-    # Look for actual segmentation masks with specific patterns
+    # Look for actual segmentation masks (binary masks only, not intensity files)
     local mask_patterns=(
-        "*brainstem*.nii.gz"
-        "*pons*.nii.gz"
-        "*seg*.nii.gz"
-        "*mask*.nii.gz"
-        "*atlas*.nii.gz"
-        "*label*.nii.gz"
+        "*brainstem*_mask.nii.gz"
+        "*pons*_mask.nii.gz"
+        "*_seg.nii.gz"
+        "*_mask.nii.gz"
+        "*atlas*_mask.nii.gz"
+        "*label*_mask.nii.gz"
+        "*brainstem.nii.gz"
+        "*pons.nii.gz"
     )
     
     for pattern in "${mask_patterns[@]}"; do
         while IFS= read -r -d '' file; do
-            # Skip temporary files and duplicates
-            if [[ ! "$file" =~ (temp|tmp|_temp|_tmp) ]] && [[ ! " ${masks[@]} " =~ " ${file} " ]]; then
+            # Skip temporary files, intensity files, and duplicates
+            if [[ ! "$file" =~ (temp|tmp|_temp|_tmp|_intensity|_flair_intensity|_t1_intensity) ]] && [[ ! " ${masks[@]} " =~ " ${file} " ]]; then
                 masks+=("$file")
             fi
         done < <(find "$segmentation_dir" -name "$pattern" -type f -print0 2>/dev/null)
@@ -1336,8 +1338,8 @@ run_comprehensive_analysis() {
     # 4. Verify dimensions consistency for key files
     log_message "Step 4: Verifying dimensions consistency..."
     
-    # Find a representative segmentation in original space
-    local orig_seg=$(find "$orig_space_dir" -name "*_orig.nii.gz" | head -1)
+    # Find a representative segmentation in original space (exclude intensity-related output files)
+    local orig_seg=$(find "$orig_space_dir" -name "*_orig.nii.gz" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
     
     if [ -n "$orig_seg" ]; then
         verify_dimensions_consistency "$t1_file" "$t1_std" "$orig_seg" "${output_dir}/dimensions_report.txt"

@@ -400,7 +400,7 @@ extract_brainstem_talairach_with_transform() {
     if [ -d "${RESULTS_DIR}/standardized" ]; then
         while IFS= read -r -d '' orig_flair; do
             original_flair_files+=("$orig_flair")
-        done < <(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" -print0 2>/dev/null)
+        done < <(find "${RESULTS_DIR}/standardized" \( -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" \) ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" -print0 2>/dev/null)
     fi
     
     log_message "Found ${#original_flair_files[@]} FLAIR files for hyperintensity analysis"

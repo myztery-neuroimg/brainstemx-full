@@ -1149,7 +1149,7 @@ except Exception as e:
     if [ -d "${RESULTS_DIR}/standardized" ]; then
         while IFS= read -r -d '' orig_flair; do
             original_flair_files+=("$orig_flair")
-        done < <(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" -print0 2>/dev/null)
+        done < <(find "${RESULTS_DIR}/standardized" \( -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" \) ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" -print0 2>/dev/null)
     fi
     
     # Apply segmentation to each registered FLAIR file found (T1 space)
@@ -1770,8 +1770,8 @@ extract_brainstem_final() {
         if [ -f "$flair_registered" ]; then
             flair_file="$flair_registered"
         else
-            # Try to find original FLAIR
-            flair_file=$(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+            # Try to find original FLAIR (exclude intensity derivatives to prevent recursive processing)
+            flair_file=$(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
         fi
         
         if [ -n "$flair_file" ] && [ -f "$flair_file" ]; then

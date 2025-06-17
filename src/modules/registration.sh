@@ -1087,8 +1087,8 @@ validate_registration() {
 apply_transformation() {
     local input="$1"
     local reference="$2"
-    local transform="$3"
-    local output="$4"
+    local output="$3"
+    local transform="$4"
     local interpolation="${5:-Linear}"
     
     log_message "Applying transformation to $input"
@@ -1155,8 +1155,7 @@ apply_transformation() {
             -r "$reference" \
             -o "$output" \
             "${transform_args[@]}" \
-            -n "$interpolation" \
-            -j "$ANTS_THREADS"
+            -n "$interpolation"
             
     elif [[ "$transform" == *".mat" ]]; then
         # Fallback: Single affine transform (original behavior)
@@ -1172,8 +1171,7 @@ apply_transformation() {
                 -r "$reference" \
                 -o "$output" \
                 -t "[$transform,1]" \
-                -n "$interpolation" \
-                -j "$ANTS_THREADS"
+                -n "$interpolation"
         else
             # FSL .mat transform
             apply_transform "$input" "$reference" "$transform" "$output" "$interpolation"
@@ -1189,8 +1187,7 @@ apply_transformation() {
             -r "$reference" \
             -o "$output" \
             -t "$transform" \
-            -n "$interpolation" \
-            -j "$ANTS_THREADS"
+            -n "$interpolation"
             
     else
         # ANTs .h5 or .txt transforms — typically don't need inversion unless explicitly known
@@ -1202,8 +1199,7 @@ apply_transformation() {
             -r "$reference" \
             -o "$output" \
             -t "$transform" \
-            -n "$interpolation" \
-            -j "$ANTS_THREADS"
+            -n "$interpolation"
     fi
 
     log_message "Transformation applied. Output: $output"
