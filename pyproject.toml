@@ -54,7 +54,7 @@ dependencies = [
     "referencing==0.36.2",
     "requests==2.32.4",
     "rpds-py==0.24.0",
-    "scikit-learn==1.6.1",
+    "scikit-learn==1.7.0",
     "scipy==1.15.2",
     "six==1.17.0",
     "smmap==5.0.2",
