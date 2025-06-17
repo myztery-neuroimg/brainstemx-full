@@ -494,7 +494,7 @@ detect_optimal_resolution() {
     log_formatted "SUCCESS" "Optimal resolution detected from $(basename "$best_file")"
     log_message "Target grid: ${opt_pixdim1}x${opt_pixdim2}x${opt_pixdim3}mm"
     
-    # Return the optimal dimensions
+    # Return the optimal dimensions (T1 always used as reference for segmentation)
     echo "${opt_pixdim1}x${opt_pixdim2}x${opt_pixdim3}"
   else
     log_formatted "WARNING" "No valid files for resolution detection, using default 1x1x1"
