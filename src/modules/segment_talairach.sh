@@ -483,32 +483,75 @@ extract_brainstem_talairach_with_transform() {
             local combined_brainstem_mask="${flair_analysis_dir}/${output_basename}_combined_brainstem_flair_space.nii.gz"
             local brainstem_intensity="${flair_analysis_dir}/brainstem_location_check_intensity.nii.gz"
             
+            # CRITICAL FIX: Add validation and error checking
+            log_message "Validating FLAIR file before creating brainstem intensity mask..."
+            if [ ! -f "$orig_flair" ]; then
+                log_formatted "ERROR" "Original FLAIR file not found: $orig_flair"
+                log_formatted "WARNING" "Cannot create brainstem_location_check_intensity.nii.gz without FLAIR"
+                continue
+            fi
+            
             # Combine all Talairach brainstem regions into one mask
             local first_region=""
+            local regions_found=0
+            
             for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz; do
                 if [ -f "$region_file" ]; then
+                    # Skip files that are already intensity derivatives to prevent recursive processing
                     local region_basename=$(basename "$region_file" .nii.gz)
+                    if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_flair_"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
+                        continue
+                    fi
+                    
                     local flair_space_mask="${flair_analysis_dir}/${region_basename}_flair_space.nii.gz"
                     
                     if [ -f "$flair_space_mask" ]; then
+                        regions_found=$((regions_found + 1))
                         if [ -z "$first_region" ]; then
                             # First region - initialize the combined mask
+                            log_message "Initializing combined mask with: $(basename "$flair_space_mask")"
                             cp "$flair_space_mask" "$combined_brainstem_mask"
                             first_region="true"
                         else
                             # Add subsequent regions
-                            fslmaths "$combined_brainstem_mask" -add "$flair_space_mask" -bin "$combined_brainstem_mask"
+                            log_message "Adding region to combined mask: $(basename "$flair_space_mask")"
+                            if ! fslmaths "$combined_brainstem_mask" -add "$flair_space_mask" -bin "$combined_brainstem_mask" 2>/dev/null; then
+                                log_formatted "WARNING" "Failed to add region $(basename "$flair_space_mask") to combined mask"
+                            fi
                         fi
+                    else
+                        log_formatted "WARNING" "FLAIR space mask not found: $flair_space_mask"
                     fi
                 fi
             done
             
-            # Create intensity version of combined brainstem
-            if [ -f "$combined_brainstem_mask" ]; then
-                if fslmaths "$orig_flair" -mas "$combined_brainstem_mask" "$brainstem_intensity"; then
-                    log_message "✓ Created brainstem_location_check_intensity.nii.gz for analysis compatibility"
+            log_message "Combined $regions_found regions into brainstem mask"
+            
+            # Create intensity version of combined brainstem with validation
+            if [ -f "$combined_brainstem_mask" ] && [ "$regions_found" -gt 0 ]; then
+                log_message "Creating brainstem intensity mask from combined brainstem..."
+                if fslmaths "$orig_flair" -mas "$combined_brainstem_mask" "$brainstem_intensity" 2>/dev/null; then
+                    # Validate the created file
+                    if [ -f "$brainstem_intensity" ]; then
+                        local intensity_voxels=$(fslstats "$brainstem_intensity" -V | awk '{print $1}' 2>/dev/null || echo "0")
+                        if [ "$intensity_voxels" -gt 0 ]; then
+                            log_formatted "SUCCESS" "✓ Created brainstem_location_check_intensity.nii.gz with $intensity_voxels voxels"
+                        else
+                            log_formatted "WARNING" "Created brainstem_location_check_intensity.nii.gz but it contains no voxels"
+                        fi
+                    else
+                        log_formatted "ERROR" "brainstem_location_check_intensity.nii.gz file was not created"
+                    fi
                 else
-                    log_formatted "WARNING" "Failed to create brainstem_location_check_intensity.nii.gz"
+                    log_formatted "ERROR" "Failed to create brainstem_location_check_intensity.nii.gz using fslmaths"
+                fi
+            else
+                log_formatted "WARNING" "No combined brainstem mask created (found $regions_found regions), creating empty placeholder"
+                # Create empty placeholder to prevent analysis from crashing
+                if [ -f "$orig_flair" ]; then
+                    fslmaths "$orig_flair" -mul 0 "$brainstem_intensity" 2>/dev/null || {
+                        log_formatted "ERROR" "Failed to create empty brainstem_location_check_intensity.nii.gz placeholder"
+                    }
                 fi
             fi
             
