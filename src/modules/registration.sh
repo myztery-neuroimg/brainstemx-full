@@ -1083,7 +1083,7 @@ validate_registration() {
     return 0
 }
 
-# Function to apply transformation
+# Function to apply transformation with FULL SyN warp support
 apply_transformation() {
     local input="$1"
     local reference="$2"
@@ -1092,14 +1092,79 @@ apply_transformation() {
     local interpolation="${5:-Linear}"
     
     log_message "Applying transformation to $input"
+    log_message "Transform: $transform"
+    log_message "Interpolation: $interpolation"
     
-    if [[ "$transform" == *".mat" ]]; then
+    # Determine ANTs bin path
+    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+    
+    # CRITICAL FIX: Detect and apply FULL SyN transform chain instead of just affine
+    local transform_dir=$(dirname "$transform")
+    local transform_prefix=$(basename "$transform" | sed 's/0GenericAffine\.mat$//' | sed 's/1Warp\.nii\.gz$//' | sed 's/1InverseWarp\.nii\.gz$//')
+    
+    # Look for complete SyN transform set in the same directory
+    local affine_transform="${transform_dir}/${transform_prefix}0GenericAffine.mat"
+    local forward_warp="${transform_dir}/${transform_prefix}1Warp.nii.gz"
+    local inverse_warp="${transform_dir}/${transform_prefix}1InverseWarp.nii.gz"
+    
+    log_message "Checking for SyN transform components:"
+    log_message "  Affine: $affine_transform"
+    log_message "  Forward warp: $forward_warp"
+    log_message "  Inverse warp: $inverse_warp"
+    
+    # Check if we have a complete SyN registration output
+    local has_full_syn=false
+    if [ -f "$affine_transform" ] && [ -f "$inverse_warp" ]; then
+        has_full_syn=true
+        log_formatted "SUCCESS" "Found complete SyN transform set - using FULL nonlinear registration"
+        log_message "This preserves all deformation information from SyN registration"
+    elif [ -f "$affine_transform" ] && [ -f "$forward_warp" ]; then
+        # We have forward warp but need inverse direction
+        has_full_syn=true
+        log_formatted "SUCCESS" "Found SyN transforms with forward warp - will invert for proper direction"
+    fi
+    
+    if [ "$has_full_syn" = "true" ]; then
+        # Apply FULL SyN transform chain (nonlinear + affine)
+        # For MNI -> subject space, we need: inverse_warp + inverted_affine
+        log_message "Applying complete SyN transform chain (preserves all deformation)"
+        
+        local transform_args=()
+        
+        # Add inverse warp if available (for MNI -> subject)
+        if [ -f "$inverse_warp" ]; then
+            transform_args+=("-t" "$inverse_warp")
+            log_message "Added inverse warp: $inverse_warp"
+        elif [ -f "$forward_warp" ]; then
+            # If only forward warp available, we'll need to invert it
+            log_formatted "WARNING" "Only forward warp available - may need to create inverse"
+            transform_args+=("-t" "$forward_warp")
+        fi
+        
+        # Add inverted affine transform (for MNI -> subject)
+        if [ -f "$affine_transform" ]; then
+            transform_args+=("-t" "[$affine_transform,1]")
+            log_message "Added inverted affine: [$affine_transform,1]"
+        fi
+        
+        # Execute complete SyN transform
+        execute_ants_command "apply_full_syn_transform" "Applying complete SyN transform chain (nonlinear + affine)" \
+            ${ants_bin}/antsApplyTransforms \
+            -d 3 \
+            -i "$input" \
+            -r "$reference" \
+            -o "$output" \
+            "${transform_args[@]}" \
+            -n "$interpolation" \
+            -j "$ANTS_THREADS"
+            
+    elif [[ "$transform" == *".mat" ]]; then
+        # Fallback: Single affine transform (original behavior)
+        log_formatted "WARNING" "Only affine transform available - nonlinear deformation will be lost"
+        log_message "Consider using full SyN registration for better accuracy"
+        
         if [[ "$transform" == *"ants"* || "$transform" == *"Affine"* ]]; then
             # ANTs .mat transform — likely affine, must be inverted to go MNI -> subject
-            # Determine ANTs bin path
-            local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
-            
-            # Execute transform using enhanced ANTs command execution
             execute_ants_command "apply_inverted_affine" "Applying inverted affine transform (MNI to subject)" \
                 ${ants_bin}/antsApplyTransforms \
                 -d 3 \
@@ -1113,13 +1178,24 @@ apply_transformation() {
             # FSL .mat transform
             apply_transform "$input" "$reference" "$transform" "$output" "$interpolation"
         fi
+        
+    elif [[ "$transform" == *"Warp.nii.gz" ]]; then
+        # Single warp file (nonlinear only)
+        log_message "Applying single warp file (nonlinear only)"
+        execute_ants_command "apply_warp_only" "Applying warp-only transform" \
+            ${ants_bin}/antsApplyTransforms \
+            -d 3 \
+            -i "$input" \
+            -r "$reference" \
+            -o "$output" \
+            -t "$transform" \
+            -n "$interpolation" \
+            -j "$ANTS_THREADS"
+            
     else
         # ANTs .h5 or .txt transforms — typically don't need inversion unless explicitly known
-        # Determine ANTs bin path
-        local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
-        
-        # Execute transform using enhanced ANTs command execution
-        execute_ants_command "apply_standard_transform" "Applying standard transform (MNI to subject)" \
+        log_message "Applying other transform format: $transform"
+        execute_ants_command "apply_standard_transform" "Applying standard transform" \
             ${ants_bin}/antsApplyTransforms \
             -d 3 \
             -i "$input" \

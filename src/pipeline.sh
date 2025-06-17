@@ -955,7 +955,7 @@ run_pipeline() {
     if [ -f "$hyperintensity_mask" ]; then
       # Use the basename from the pons mask
       local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
-      local legacy_mask="${hyperintensities_dir}/${pons_basename}_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
+      local legacy_mask="${hyperintensities_dir}/${pons_basename}_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
       ln -sf "$hyperintensity_mask" "$legacy_mask"
       log_message "Created link to comprehensive analysis result: $legacy_mask"
     else
@@ -967,7 +967,7 @@ run_pipeline() {
       local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
       local hyperintensities_prefix="${hyperintensities_dir}/${pons_basename}_pons"
       detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"
-      hyperintensity_mask="${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-2.0}_bin.nii.gz"
+      hyperintensity_mask="${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
       analyze_hyperintensity_clusters "$hyperintensity_mask" "$pons_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
     fi
     
@@ -1182,7 +1182,7 @@ run_pipeline_batch() {
       fi
       
       # Get hyperintensity volume (using main pons instead of dorsal subdivision)
-      local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+      local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
       local hyperintensity_file=$(get_output_path "hyperintensities" "${subject_id}" "_pons_thresh${threshold_multiplier}")
       if [ -f "$hyperintensity_file" ]; then
         hyperintensity_vol=$(fslstats "$hyperintensity_file" -V | awk '{print $1}')

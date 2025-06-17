@@ -712,6 +712,7 @@ standardize_dimensions() {
   # Execute resampling using enhanced ANTs command execution
   if [ "$use_reference_grid" = true ]; then
     # Resample to reference grid for identical matrix dimensions using antsApplyTransforms
+    # NOTE: This is simple resampling, not transform application, so we use antsApplyTransforms directly
     execute_ants_command "resample_to_reference" "Resampling to reference grid for identical dimensions" \
       ${ants_bin}/antsApplyTransforms \
       -d 3 \

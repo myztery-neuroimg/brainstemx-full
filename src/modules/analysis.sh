@@ -41,30 +41,47 @@ detect_hyperintensities() {
         log_message "No T1 file provided, will fallback to intensity-based segmentation"
     fi
 
-    # 1) Brain extraction for the FLAIR
-    local flair_basename
-    flair_basename=$(basename "$flair_file" .nii.gz)
-    local brainextr_dir
-    brainextr_dir="$(dirname "$out_prefix")/${flair_basename}_brainextract"
-
-    mkdir -p "$brainextr_dir"
-
-    # Determine ANTs bin path
-    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+    # 1) Check if FLAIR is already brain extracted, otherwise extract
+    local flair_brain
+    local flair_mask
     
-    # Execute brain extraction using enhanced ANTs command execution
-    execute_ants_command "brain_extraction_flair" "Brain extraction for FLAIR hyperintensity analysis" \
-      ${ants_bin}/antsBrainExtraction.sh \
-      -d 3 \
-      -a "$flair_file" \
-      -o "${brainextr_dir}/" \
-      -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
-      -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
-      -f "$TEMPLATE_DIR/$REGISTRATION_MASK" \
-      -k 1
+    # Check if the input file is already brain extracted (contains "_brain" or is from brain_extraction directory)
+    if [[ "$flair_file" == *"_brain"* ]] || [[ "$flair_file" == *"brain_extraction"* ]]; then
+        log_message "Input FLAIR appears to already be brain extracted: $flair_file"
+        flair_brain="$flair_file"
+        
+        # Create a simple brain mask from the brain-extracted image
+        local temp_mask_dir="$(dirname "$out_prefix")/temp_mask"
+        mkdir -p "$temp_mask_dir"
+        flair_mask="${temp_mask_dir}/flair_brain_mask.nii.gz"
+        fslmaths "$flair_brain" -bin "$flair_mask"
+        log_message "Created brain mask from extracted image: $flair_mask"
+    else
+        log_message "Performing brain extraction on FLAIR image..."
+        local flair_basename
+        flair_basename=$(basename "$flair_file" .nii.gz)
+        
+        # Use standardized module directory pattern like in preprocess.sh
+        local brainextr_dir=$(create_module_dir "brain_extraction")
+        local brain_prefix="${brainextr_dir}/${flair_basename}_"
 
-    local flair_brain="${brainextr_dir}/BrainExtractionBrain.nii.gz"
-    local flair_mask="${brainextr_dir}/BrainExtractionMask.nii.gz"
+        # Determine ANTs bin path
+        local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+        
+        # Execute brain extraction using enhanced ANTs command execution
+        execute_ants_command "brain_extraction_flair" "Brain extraction for FLAIR hyperintensity analysis" \
+          ${ants_bin}/antsBrainExtraction.sh \
+          -d 3 \
+          -a "$flair_file" \
+          -o "$brain_prefix" \
+          -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+          -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+          -f "$TEMPLATE_DIR/$REGISTRATION_MASK" \
+          -k 1
+
+        flair_brain="${brain_prefix}BrainExtractionBrain.nii.gz"
+        flair_mask="${brain_prefix}BrainExtractionMask.nii.gz"
+    fi
 
     # 2) Improved Tissue Segmentation using FSL FAST
     # We'll use FAST for posterior probability maps for more accurate tissue segmentation
@@ -97,13 +114,35 @@ detect_hyperintensities() {
         # Run FSL FAST for high-quality tissue segmentation with posterior probability maps
         log_message "Running FSL FAST for tissue segmentation with posterior probability maps"
         
-        # Extract T1 brain if not already extracted
-        if [ ! -f "${out_prefix}_T1_brain.nii.gz" ]; then
-            bet "$t1_registered" "${out_prefix}_T1_brain.nii.gz" -f 0.5 -R
+        # Check if T1 is already brain extracted, otherwise extract
+        local t1_brain_file
+        if [[ "$t1_registered" == *"_brain"* ]] || [[ "$t1_registered" == *"brain_extraction"* ]]; then
+            log_message "T1 appears to already be brain extracted"
+            t1_brain_file="$t1_registered"
+        else
+            log_message "Extracting T1 brain for tissue segmentation"
+            local t1_basename=$(basename "$t1_registered" .nii.gz)
+            local t1_brain_dir=$(create_module_dir "brain_extraction")
+            local t1_brain_prefix="${t1_brain_dir}/${t1_basename}_"
+            t1_brain_file="${t1_brain_prefix}BrainExtractionBrain.nii.gz"
+            
+            if [ ! -f "$t1_brain_file" ]; then
+                # Use ANTs brain extraction for consistency
+                local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+                execute_ants_command "brain_extraction_t1" "Brain extraction for T1 tissue segmentation" \
+                  ${ants_bin}/antsBrainExtraction.sh \
+                  -d 3 \
+                  -a "$t1_registered" \
+                  -o "$t1_brain_prefix" \
+                  -e "$TEMPLATE_DIR/$EXTRACTION_TEMPLATE" \
+                  -m "$TEMPLATE_DIR/$PROBABILITY_MASK" \
+                  -f "$TEMPLATE_DIR/$REGISTRATION_MASK" \
+                  -k 1
+            fi
         fi
         
         # Run FAST on T1 brain
-        fast -t 1 -n 3 -o "${temp_dir}/fast" "${out_prefix}_T1_brain.nii.gz"
+        fast -t 1 -n 3 -o "${temp_dir}/fast" "$t1_brain_file"
         
         # Copy segmentation to final location
         cp "${temp_dir}/fast_seg.nii.gz" "$segmentation_out"
@@ -159,7 +198,7 @@ detect_hyperintensities() {
     log_message "WM mean: $mean_wm   WM std: $sd_wm"
 
     # Use the global THRESHOLD_WM_SD_MULTIPLIER or default to 2.0 if not set
-    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.5}"
+    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
     log_message "Using threshold multiplier from config: $threshold_multiplier"
     
     # Create default thresholds along with the configured one
@@ -230,6 +269,12 @@ detect_hyperintensities() {
         
         # Create binary version for analysis
         fslmaths "$final_mask" -bin "${out_prefix}_thresh${mult}_bin.nii.gz"
+        
+        # Create intensity-preserved version for heat colormap visualization in freeview
+        # This preserves original FLAIR intensities in hyperintense regions
+        local intensity_version="${out_prefix}_thresh${mult}_intensity.nii.gz"
+        fslmaths "$flair_brain" -mas "${out_prefix}_thresh${mult}_bin.nii.gz" "$intensity_version"
+        log_message "Intensity-preserved hyperintensity mask created: $intensity_version"
     done
     
     # Clean up temporary files
@@ -255,6 +300,70 @@ EOC
     
     # Quantify volumes
     quantify_volumes "$out_prefix"
+    
+    # Create 3D rendering if we have suitable files
+    local hyper_mask="${out_prefix}_thresh${threshold_multiplier}_bin.nii.gz"
+    if [ -f "$hyper_mask" ]; then
+        # Look for pons segmentation file in various possible locations
+        local pons_candidates=(
+            "${RESULTS_DIR}/comprehensive_analysis/original_space/"*"pons"*".nii.gz"
+            "${RESULTS_DIR}/segmentation/detailed_brainstem/"*"pons"*".nii.gz"
+            "${RESULTS_DIR}/segmentation/"*"pons"*".nii.gz"
+            "$(dirname "$out_prefix")/../"*"pons"*".nii.gz"
+        )
+        
+        local pons_file=""
+        for candidate in "${pons_candidates[@]}"; do
+            if [ -f "$candidate" ]; then
+                pons_file="$candidate"
+                log_message "Found pons file for 3D rendering: $pons_file"
+                break
+            fi
+        done
+        
+        if [ -n "$pons_file" ] && [ -f "$pons_file" ]; then
+            log_message "Creating 3D rendering with FreeSurfer..."
+            create_3d_rendering "$hyper_mask" "$pons_file" "$(dirname "$out_prefix")"
+        else
+            log_message "No pons segmentation found - skipping FreeSurfer 3D rendering"
+            log_message "Creating simple 3D visualization script..."
+            
+            # Create a basic view_3d.sh script even without pons segmentation
+            local view_script="$(dirname "$out_prefix")/view_3d.sh"
+            cat > "$view_script" << EOF
+#!/usr/bin/env bash
+#
+# 3D Visualization Script (Basic)
+# Generated: $(date)
+#
+echo "Starting 3D visualization..."
+
+if command -v freeview &> /dev/null; then
+    echo "Using FreeSurfer freeview..."
+    freeview -v "$flair_brain" \\
+             -v "$hyper_mask":colormap=heat:opacity=0.7
+elif command -v fsleyes &> /dev/null; then
+    echo "Using FSLeyes..."
+    fsleyes "$flair_brain" "$hyper_mask" -cm hot -a 70
+else
+    echo "ERROR: No visualization tools found (freeview or fsleyes)"
+    exit 1
+fi
+EOF
+            chmod +x "$view_script"
+            log_message "Basic 3D visualization script created: $view_script"
+        fi
+    else
+        log_formatted "WARNING" "No hyperintensity mask found for 3D rendering"
+    fi
+    
+    # Create multi-threshold comparison visualization
+    log_message "Creating multi-threshold comparison visualization..."
+    create_multi_threshold_comparison "$flair_brain" "$out_prefix" "$(dirname "$out_prefix")"
+    
+    # Create intensity profiles for analysis
+    log_message "Creating intensity profiles for hyperintensity analysis..."
+    create_intensity_profiles "$flair_brain" "$(dirname "$out_prefix")/intensity_profiles"
     
     return 0
 }
@@ -627,15 +736,17 @@ transform_segmentation_to_original() {
     # Determine ANTs bin path
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
     
-    # Execute transform using enhanced ANTs command execution
-    execute_ants_command "transform_segmentation" "Transforming segmentation from standard to original space" \
-        ${ants_bin}/antsApplyTransforms \
-        -d 3 \
-        -i "$segmentation_file" \
-        -r "$reference_file" \
-        -o "$output_file" \
-        -t "$transform_file" \
-        -n NearestNeighbor
+    # Use centralized apply_transformation function for consistent SyN transform handling
+    log_message "Using centralized apply_transformation function..."
+    
+    # Extract transform prefix from transform file path
+    local transform_prefix="${transform_file%0GenericAffine.mat}"
+    if apply_transformation "$segmentation_file" "$reference_file" "$output_file" "$transform_prefix" "NearestNeighbor"; then
+        log_message "✓ Successfully applied transform using centralized function"
+    else
+        log_formatted "ERROR" "Failed to apply transform using centralized function"
+        return 1
+    fi
     
     local status=$?
     if [[ $status -eq 0 ]]; then
@@ -686,7 +797,7 @@ analyze_region_modality() {
     log_message "$region ${modality} statistics - Mean: $region_mean, StdDev: $region_std"
     
     # Apply modality-specific thresholding
-    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
     local threshold_val
     local abnormality_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities.nii.gz"
     
@@ -980,7 +1091,7 @@ analyze_talairach_hyperintensities() {
         
         echo ""
         echo "Analysis Parameters:"
-        echo "  Threshold multiplier: ${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+        echo "  Threshold multiplier: ${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
         echo "  Minimum cluster size: ${MIN_HYPERINTENSITY_SIZE:-4} voxels"
         echo "  FLAIR thresholding: mean + multiplier × std (above threshold)"
         echo "  T1 thresholding: mean - multiplier × std (below threshold)"
@@ -1114,12 +1225,729 @@ run_comprehensive_analysis() {
             echo "Detailed reports in individual region subdirectories."
         } > "$summary_file"
         
+        # Create comprehensive FLAIR visualizations for all segmentations
+        log_message "Creating comprehensive FLAIR segmentation visualizations..."
+        create_comprehensive_flair_visualizations "$analysis_flair" "$analysis_dir" "${comprehensive_dir}/visualizations" "comprehensive_flair"
+        
         log_message "Summary report created: $summary_file"
         return 0
     else
         log_formatted "ERROR" "Talairach hyperintensity analysis failed"
         return 1
     fi
+}
+
+# Function to create comprehensive 3D visualization script using both fsleyes and freeview
+create_3d_visualization_script() {
+    local reference_image="$1"    # Background image (T1 or FLAIR)
+    local output_dir="$2"         # Directory to save the script
+    local script_name="${3:-view_3d_comprehensive.sh}"  # Name of the script to create
+    local title="${4:-3D Visualization}"  # Title for the visualization
+    
+    log_message "Creating 3D visualization script: $script_name"
+    
+    # Validate inputs
+    if [ ! -f "$reference_image" ]; then
+        log_formatted "ERROR" "Reference image not found: $reference_image"
+        return 1
+    fi
+    
+    if [ ! -d "$output_dir" ]; then
+        log_formatted "ERROR" "Output directory not found: $output_dir"
+        return 1
+    fi
+    
+    local script_path="${output_dir}/${script_name}"
+    
+    # First, try to create the FreeSurfer-based view_3d.sh script if FreeSurfer is available
+    log_message "Checking for FreeSurfer availability..."
+    if command -v mris_convert &> /dev/null && command -v freeview &> /dev/null; then
+        log_message "FreeSurfer detected - creating FreeSurfer-based view_3d.sh"
+        
+        # Look for hyperintensity and region masks to create surface meshes
+        local freesurfer_script="${output_dir}/view_3d.sh"
+        local created_surfaces=false
+        
+        # Look for hyperintensity masks
+        local hyper_files=($(find "$output_dir" -name "*hyperintensities*.nii.gz" -o -name "*hypointensities*.nii.gz" | head -2))
+        local region_files=($(find "$output_dir" -name "*pons*.nii.gz" -o -name "*medulla*.nii.gz" -o -name "*midbrain*.nii.gz" | head -3))
+        
+        if [ ${#hyper_files[@]} -gt 0 ] || [ ${#region_files[@]} -gt 0 ]; then
+            cat > "$freesurfer_script" << 'EOF'
+#!/usr/bin/env bash
+#
+# FreeSurfer 3D Visualization Script
+# Generated automatically for surface mesh rendering
+#
+
+echo "Starting FreeSurfer 3D visualization..."
+echo "Creating surface meshes and launching freeview..."
+
+# Check if FreeSurfer is available
+if ! command -v freeview &> /dev/null; then
+    echo "ERROR: freeview (FreeSurfer) not found."
+    echo "Falling back to FSLeyes if available..."
+    if [ -f "./view_3d_comprehensive.sh" ]; then
+        ./view_3d_comprehensive.sh
+    else
+        echo "No alternative visualization available."
+    fi
+    exit 1
+fi
+
+FREEVIEW_CMD="freeview"
+EOF
+
+            # Add the reference image
+            echo "FREEVIEW_CMD=\"\$FREEVIEW_CMD -v '$reference_image'\"" >> "$freesurfer_script"
+            
+            # Process hyperintensity/hypointensity files
+            for hyper_file in "${hyper_files[@]}"; do
+                if [ -f "$hyper_file" ]; then
+                    local mesh_file="${hyper_file%.nii.gz}.stl"
+                    local bin_file="${hyper_file%.nii.gz}_bin.nii.gz"
+                    
+                    # Create binary mask and surface mesh
+                    cat >> "$freesurfer_script" << EOF
+
+# Create surface mesh for $(basename "$hyper_file")
+echo "Creating surface mesh for $(basename "$hyper_file")..."
+fslmaths "$hyper_file" -bin "$bin_file"
+if mri_tessellate "$bin_file" 1 "$mesh_file" 2>/dev/null; then
+    FREEVIEW_CMD="\$FREEVIEW_CMD -f $mesh_file:edgecolor=red:color=red:opacity=0.8"
+    echo "Added hyperintensity surface mesh"
+fi
+EOF
+                    created_surfaces=true
+                fi
+            done
+            
+            # Process region files
+            for region_file in "${region_files[@]}"; do
+                if [ -f "$region_file" ]; then
+                    local mesh_file="${region_file%.nii.gz}.stl"
+                    local bin_file="${region_file%.nii.gz}_bin.nii.gz"
+                    local color="blue"
+                    
+                    # Choose color based on region
+                    if [[ "$region_file" == *"medulla"* ]]; then
+                        color="red"
+                    elif [[ "$region_file" == *"pons"* ]]; then
+                        color="blue"
+                    elif [[ "$region_file" == *"midbrain"* ]]; then
+                        color="green"
+                    fi
+                    
+                    cat >> "$freesurfer_script" << EOF
+
+# Create surface mesh for $(basename "$region_file")
+echo "Creating surface mesh for $(basename "$region_file")..."
+fslmaths "$region_file" -bin "$bin_file"
+if mri_tessellate "$bin_file" 1 "$mesh_file" 2>/dev/null; then
+    FREEVIEW_CMD="\$FREEVIEW_CMD -f $mesh_file:edgecolor=$color:color=$color:opacity=0.4"
+    echo "Added region surface mesh: $(basename "$region_file")"
+fi
+EOF
+                    created_surfaces=true
+                fi
+            done
+            
+            # Complete the FreeSurfer script
+            cat >> "$freesurfer_script" << 'EOF'
+
+# Launch freeview
+echo ""
+echo "Launching freeview with surface meshes..."
+echo "Command: $FREEVIEW_CMD"
+echo ""
+echo "FreeSurfer Controls:"
+echo "  - Mouse: Rotate, pan, zoom"
+echo "  - Right-click: Context menu"
+echo "  - View menu: Change rendering options"
+echo "  - Surface menu: Adjust surface properties"
+echo ""
+
+eval "$FREEVIEW_CMD"
+EOF
+            
+            chmod +x "$freesurfer_script"
+            log_message "✓ Created FreeSurfer view_3d.sh script"
+        else
+            log_message "No suitable files found for FreeSurfer surface rendering"
+        fi
+    else
+        log_message "FreeSurfer not available - skipping FreeSurfer-based view_3d.sh"
+    fi
+    
+    # Now create the comprehensive FSLeyes-based script
+    log_message "Creating FSLeyes-based comprehensive visualization script..."
+    
+    # Start building the fsleyes command
+    local fsleyes_cmd="#!/usr/bin/env bash
+#
+# Comprehensive 3D Visualization Script (FSLeyes)
+# Generated: $(date)
+# Title: $title
+#
+# This script opens fsleyes with comprehensive overlay visualization
+# of all available segmentation results and analysis outputs
+#
+
+echo \"Starting comprehensive 3D visualization: $title\"
+echo \"Reference image: $(basename "$reference_image")\"
+echo \"\"
+
+# Check if fsleyes is available
+if ! command -v fsleyes &> /dev/null; then
+    echo \"ERROR: fsleyes not found. Please install FSL.\"
+    # Try FreeSurfer fallback
+    if [ -f \"./view_3d.sh\" ]; then
+        echo \"Trying FreeSurfer-based visualization...\"
+        ./view_3d.sh
+    else
+        echo \"No visualization tools available.\"
+        exit 1
+    fi
+    exit 1
+fi
+
+# Build fsleyes command
+FSLEYES_CMD=\"fsleyes\"
+
+# Add background image
+FSLEYES_CMD=\"\$FSLEYES_CMD '$reference_image'\"
+echo \"Background: $(basename "$reference_image")\"
+"
+
+    # Look for various types of overlays in the output directory and subdirectories
+    local overlay_count=0
+    
+    # Function to add overlay to command
+    add_overlay() {
+        local file="$1"
+        local colormap="$2"
+        local alpha="$3"
+        local name="$4"
+        
+        if [ -f "$file" ]; then
+            fsleyes_cmd="$fsleyes_cmd
+# Add $name overlay
+if [ -f \"$file\" ]; then
+    FSLEYES_CMD=\"\$FSLEYES_CMD '$file' -cm $colormap -a $alpha\"
+    echo \"Adding overlay: $name\"
+fi
+"
+            ((overlay_count++))
+            return 0
+        fi
+        return 1
+    }
+    
+    # Look for brainstem segmentation masks
+    log_message "Searching for segmentation overlays in $output_dir"
+    
+    # Brainstem region masks (Talairach atlas)
+    local regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain" "pons")
+    for region in "${regions[@]}"; do
+        # Look for region masks in various formats
+        local region_files=(
+            "${output_dir}/"*"${region}"*".nii.gz"
+            "${output_dir}/"*"${region}"*"_flair_space.nii.gz"
+            "${output_dir}/../"*"${region}"*".nii.gz"
+        )
+        
+        for pattern in "${region_files[@]}"; do
+            for file in $pattern; do
+                if [ -f "$file" ]; then
+                    local colormap="random"
+                    case "$region" in
+                        *medulla*) colormap="red" ;;
+                        *pons*) colormap="blue" ;;
+                        *midbrain*) colormap="green" ;;
+                    esac
+                    add_overlay "$file" "$colormap" "50" "$(basename "$file" .nii.gz)"
+                    break 2  # Found one, move to next region
+                fi
+            done
+        done
+    done
+    
+    # Look for hyperintensity/hypointensity analysis results
+    local hyper_dirs=(
+        "${output_dir}/hyperintensities"
+        "${output_dir}/../hyperintensities"
+        "${output_dir}/../../comprehensive_analysis/hyperintensities"
+    )
+    
+    for hyper_dir in "${hyper_dirs[@]}"; do
+        if [ -d "$hyper_dir" ]; then
+            log_message "Found hyperintensities directory: $hyper_dir"
+            
+            # Look for FLAIR hyperintensity masks
+            for flair_file in "${hyper_dir}/"*"_FLAIR/"*"_hyperintensities_filtered.nii.gz"; do
+                if [ -f "$flair_file" ]; then
+                    add_overlay "$flair_file" "hot" "70" "FLAIR hyperintensities ($(basename "$(dirname "$flair_file")"))"
+                fi
+            done
+            
+            # Look for T1 hypointensity masks
+            for t1_file in "${hyper_dir}/"*"_T1/"*"_hypointensities_filtered.nii.gz"; do
+                if [ -f "$t1_file" ]; then
+                    add_overlay "$t1_file" "cool" "70" "T1 hypointensities ($(basename "$(dirname "$t1_file")"))"
+                fi
+            done
+            
+            # Look for RGB overlays
+            for rgb_file in "${hyper_dir}/"*/overlay.nii.gz; do
+                if [ -f "$rgb_file" ]; then
+                    add_overlay "$rgb_file" "rgb" "60" "RGB overlay ($(basename "$(dirname "$rgb_file")"))"
+                fi
+            done
+            break
+        fi
+    done
+    
+    # Look for tissue segmentation masks
+    local seg_patterns=(
+        "${output_dir}/"*"_seg.nii.gz"
+        "${output_dir}/"*"_fast_seg.nii.gz"
+        "${output_dir}/../"*"_seg.nii.gz"
+    )
+    
+    for pattern in "${seg_patterns[@]}"; do
+        for seg_file in $pattern; do
+            if [ -f "$seg_file" ]; then
+                add_overlay "$seg_file" "subcortical" "40" "Tissue segmentation"
+                break 2
+            fi
+        done
+    done
+    
+    # Look for cluster analysis results
+    local cluster_patterns=(
+        "${output_dir}/"*"_clusters.nii.gz"
+        "${output_dir}/../"*"_clusters.nii.gz"
+    )
+    
+    for pattern in "${cluster_patterns[@]}"; do
+        for cluster_file in $pattern; do
+            if [ -f "$cluster_file" ]; then
+                add_overlay "$cluster_file" "random" "60" "Cluster analysis"
+                break 2
+            fi
+        done
+    done
+    
+    # Complete the script
+    fsleyes_cmd="$fsleyes_cmd
+# Launch fsleyes
+echo \"\"
+echo \"Launching fsleyes with \$overlay_count overlays...\"
+echo \"Command: \$FSLEYES_CMD\"
+echo \"\"
+echo \"Controls:\"
+echo \"  - Use mouse to navigate\"
+echo \"  - Right-click overlays to adjust properties\"
+echo \"  - Toggle overlays with checkboxes\"
+echo \"  - Use 3D view for volume rendering\"
+echo \"\"
+
+# Execute the command
+eval \"\$FSLEYES_CMD\"
+"
+
+    # Write the script
+    echo "$fsleyes_cmd" > "$script_path"
+    chmod +x "$script_path"
+    
+    # Create a simple launcher script as well
+    local launcher="${output_dir}/launch_visualization.sh"
+    cat > "$launcher" << EOF
+#!/usr/bin/env bash
+#
+# Simple launcher for 3D visualization
+#
+cd "\$(dirname "\$0")"
+if [ -f "$script_name" ]; then
+    ./$script_name
+else
+    echo "ERROR: $script_name not found"
+    exit 1
+fi
+EOF
+    chmod +x "$launcher"
+    
+    # Create an HTML viewer script for web-based viewing
+    local html_viewer="${output_dir}/view_in_browser.html"
+    cat > "$html_viewer" << EOF
+<!DOCTYPE html>
+<html>
+<head>
+    <title>$title - 3D Visualization</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background: #f0f0f0; padding: 10px; border-radius: 5px; }
+        .overlay-list { margin: 20px 0; }
+        .overlay-item { margin: 5px 0; padding: 5px; background: #f9f9f9; border-radius: 3px; }
+        .instructions { background: #e8f4fd; padding: 10px; border-radius: 5px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>$title</h1>
+        <p>Generated: $(date)</p>
+        <p>Reference: $(basename "$reference_image")</p>
+    </div>
+    
+    <div class="instructions">
+        <h3>Viewing Instructions:</h3>
+        <p>To view the 3D visualization, run the following script:</p>
+        <code>./$script_name</code>
+        <p>Or use the launcher: <code>./launch_visualization.sh</code></p>
+    </div>
+    
+    <div class="overlay-list">
+        <h3>Available Overlays ($overlay_count found):</h3>
+EOF
+
+    # Add overlay information to HTML
+    if [ $overlay_count -gt 0 ]; then
+        echo "        <p>The visualization includes overlays for segmentation masks, hyperintensity analysis, and other analysis results.</p>" >> "$html_viewer"
+    else
+        echo "        <p>No overlay files found. The visualization will show only the background image.</p>" >> "$html_viewer"
+    fi
+
+    cat >> "$html_viewer" << EOF
+    </div>
+    
+    <div class="instructions">
+        <h3>FSLeyes Controls:</h3>
+        <ul>
+            <li>Mouse: Navigate through slices</li>
+            <li>Right-click overlays: Adjust properties (colormap, opacity, etc.)</li>
+            <li>Checkbox: Toggle overlay visibility</li>
+            <li>3D button: Switch to volume rendering mode</li>
+            <li>Settings: Access advanced visualization options</li>
+        </ul>
+    </div>
+</body>
+</html>
+EOF
+    
+    log_formatted "SUCCESS" "3D visualization script created successfully"
+    log_message "Main script: $script_path"
+    log_message "Launcher: $launcher"
+    log_message "HTML info: $html_viewer"
+    log_message "Found $overlay_count overlay files"
+    
+    if [ $overlay_count -eq 0 ]; then
+        log_formatted "WARNING" "No overlay files found - visualization will show only background image"
+    fi
+    
+    return 0
+}
+
+# Function to create comprehensive FLAIR segmentation visualizations
+create_comprehensive_flair_visualizations() {
+    local flair_file="$1"
+    local segmentation_dir="$2"
+    local output_dir="${3:-${segmentation_dir}/visualizations}"
+    local analysis_name="${4:-flair_comprehensive}"
+    
+    log_formatted "INFO" "===== COMPREHENSIVE FLAIR SEGMENTATION VISUALIZATION ====="
+    log_message "FLAIR input: $flair_file"
+    log_message "Segmentation directory: $segmentation_dir"
+    log_message "Output directory: $output_dir"
+    
+    # Validate inputs
+    if [ ! -f "$flair_file" ]; then
+        log_formatted "ERROR" "FLAIR file not found: $flair_file"
+        return 1
+    fi
+    
+    if [ ! -d "$segmentation_dir" ]; then
+        log_formatted "ERROR" "Segmentation directory not found: $segmentation_dir"
+        return 1
+    fi
+    
+    # Create output directory
+    mkdir -p "$output_dir"
+    
+    # Find all FLAIR-related segmentation files
+    log_message "Searching for FLAIR segmentation files..."
+    local flair_masks=()
+    local flair_intensities=()
+    
+    # Look for various types of FLAIR segmentation files
+    local search_patterns=(
+        "*flair*space*.nii.gz"
+        "*FLAIR*.nii.gz"
+        "*hyperintensit*.nii.gz"
+        "*_flair_*.nii.gz"
+        "*talairach*flair*.nii.gz"
+        "*medulla*.nii.gz"
+        "*pons*.nii.gz"
+        "*midbrain*.nii.gz"
+        "*left_medulla*.nii.gz"
+        "*right_medulla*.nii.gz"
+        "*left_pons*.nii.gz"
+        "*right_pons*.nii.gz"
+        "*left_midbrain*.nii.gz"
+        "*right_midbrain*.nii.gz"
+        "*brainstem*.nii.gz"
+        "*talairach*.nii.gz"
+    )
+    
+    for pattern in "${search_patterns[@]}"; do
+        while IFS= read -r -d '' file; do
+            if [[ "$file" == *"_intensity"* ]] || [[ "$file" == *"_clustered"* ]]; then
+                flair_intensities+=("$file")
+            else
+                flair_masks+=("$file")
+            fi
+        done < <(find "$segmentation_dir" -name "$pattern" -type f -print0 2>/dev/null)
+    done
+    
+    # Also search in comprehensive analysis and Talairach-specific directories
+    local additional_dirs=(
+        "${segmentation_dir}/../comprehensive_analysis"
+        "${segmentation_dir}/../segmentation/detailed_brainstem"
+        "${segmentation_dir}/detailed_brainstem"
+        "${segmentation_dir}/../talairach"
+        "${segmentation_dir}/talairach"
+        "${RESULTS_DIR}/comprehensive_analysis/original_space"
+        "${RESULTS_DIR}/segmentation/detailed_brainstem"
+        "${RESULTS_DIR}/talairach"
+    )
+    
+    for comp_dir in "${additional_dirs[@]}"; do
+        if [ -d "$comp_dir" ]; then
+            log_message "Searching Talairach directory: $comp_dir"
+            for pattern in "${search_patterns[@]}"; do
+                while IFS= read -r -d '' file; do
+                    if [[ "$file" == *"_intensity"* ]] || [[ "$file" == *"_clustered"* ]]; then
+                        flair_intensities+=("$file")
+                    else
+                        flair_masks+=("$file")
+                    fi
+                done < <(find "$comp_dir" -name "$pattern" -type f -print0 2>/dev/null)
+            done
+        fi
+    done
+    
+    # Remove duplicates and sort
+    if [ ${#flair_masks[@]} -gt 0 ]; then
+        readarray -t flair_masks < <(printf '%s\n' "${flair_masks[@]}" | sort -u)
+    fi
+    if [ ${#flair_intensities[@]} -gt 0 ]; then
+        readarray -t flair_intensities < <(printf '%s\n' "${flair_intensities[@]}" | sort -u)
+    fi
+    
+    log_message "Found ${#flair_masks[@]} FLAIR mask files"
+    log_message "Found ${#flair_intensities[@]} FLAIR intensity files"
+    
+    if [ ${#flair_masks[@]} -eq 0 ] && [ ${#flair_intensities[@]} -eq 0 ]; then
+        log_formatted "WARNING" "No FLAIR segmentation files found"
+        return 1
+    fi
+    
+    # Create comprehensive visualization script
+    local viz_script="${output_dir}/${analysis_name}_all_segmentations.sh"
+    cat > "$viz_script" << 'EOF'
+#!/usr/bin/env bash
+#
+# Comprehensive FLAIR Segmentation Visualization
+# Generated automatically for all FLAIR-related segmentations
+#
+
+echo "Starting comprehensive FLAIR segmentation visualization..."
+echo "This will show all FLAIR segmentations and analysis results"
+echo ""
+
+# Check available visualization tools
+FSLEYES_AVAILABLE=false
+FREEVIEW_AVAILABLE=false
+
+if command -v fsleyes &> /dev/null; then
+    FSLEYES_AVAILABLE=true
+fi
+
+if command -v freeview &> /dev/null; then
+    FREEVIEW_AVAILABLE=true
+fi
+
+if [ "$FSLEYES_AVAILABLE" = false ] && [ "$FREEVIEW_AVAILABLE" = false ]; then
+    echo "ERROR: No visualization tools found (fsleyes or freeview)"
+    exit 1
+fi
+
+echo "Available tools:"
+[ "$FSLEYES_AVAILABLE" = true ] && echo "  - FSLeyes (FSL)"
+[ "$FREEVIEW_AVAILABLE" = true ] && echo "  - FreeView (FreeSurfer)"
+echo ""
+
+# Choose visualization tool
+if [ "$FSLEYES_AVAILABLE" = true ]; then
+    echo "Using FSLeyes for comprehensive overlay visualization..."
+    VISUALIZATION_CMD="fsleyes"
+elif [ "$FREEVIEW_AVAILABLE" = true ]; then
+    echo "Using FreeView for visualization..."
+    VISUALIZATION_CMD="freeview -v"
+fi
+
+EOF
+
+    # Add FLAIR background
+    echo "# Add FLAIR background image" >> "$viz_script"
+    echo "VISUALIZATION_CMD=\"\$VISUALIZATION_CMD '$flair_file'\"" >> "$viz_script"
+    echo "echo \"Background: $(basename "$flair_file")\"" >> "$viz_script"
+    echo "" >> "$viz_script"
+    
+    # Add each mask file with appropriate colormap
+    local overlay_count=0
+    for mask in "${flair_masks[@]}"; do
+        if [ -f "$mask" ]; then
+            local basename_mask=$(basename "$mask" .nii.gz)
+            local colormap="random"
+            local alpha="50"
+            
+            # Choose appropriate colormap based on file type (enhanced for Talairach)
+            if [[ "$basename_mask" == *"hyperintens"* ]]; then
+                colormap="hot"
+                alpha="70"
+            elif [[ "$basename_mask" == *"hypointens"* ]]; then
+                colormap="cool"
+                alpha="70"
+            elif [[ "$basename_mask" == *"left_medulla"* ]]; then
+                colormap="red"
+                alpha="65"
+            elif [[ "$basename_mask" == *"right_medulla"* ]]; then
+                colormap="red-yellow"
+                alpha="65"
+            elif [[ "$basename_mask" == *"medulla"* ]]; then
+                colormap="red"
+                alpha="60"
+            elif [[ "$basename_mask" == *"left_pons"* ]]; then
+                colormap="blue"
+                alpha="65"
+            elif [[ "$basename_mask" == *"right_pons"* ]]; then
+                colormap="blue-lightblue"
+                alpha="65"
+            elif [[ "$basename_mask" == *"pons"* ]]; then
+                colormap="blue"
+                alpha="60"
+            elif [[ "$basename_mask" == *"left_midbrain"* ]]; then
+                colormap="green"
+                alpha="65"
+            elif [[ "$basename_mask" == *"right_midbrain"* ]]; then
+                colormap="green-blue"
+                alpha="65"
+            elif [[ "$basename_mask" == *"midbrain"* ]]; then
+                colormap="green"
+                alpha="60"
+            elif [[ "$basename_mask" == *"brainstem"* ]]; then
+                colormap="subcortical"
+                alpha="55"
+            elif [[ "$basename_mask" == *"talairach"* ]]; then
+                colormap="random"
+                alpha="50"
+            fi
+            
+            cat >> "$viz_script" << EOF
+# Add $(basename "$mask")
+if [ -f "$mask" ]; then
+    if [ "\$FSLEYES_AVAILABLE" = true ]; then
+        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$mask' -cm $colormap -a $alpha"
+    else
+        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$mask':colormap=$colormap:opacity=0.$alpha"
+    fi
+    echo "Added overlay: $(basename "$mask") (${colormap})"
+fi
+
+EOF
+            ((overlay_count++))
+        fi
+    done
+    
+    # Add intensity files
+    for intensity in "${flair_intensities[@]}"; do
+        if [ -f "$intensity" ]; then
+            cat >> "$viz_script" << EOF
+# Add $(basename "$intensity")
+if [ -f "$intensity" ]; then
+    if [ "\$FSLEYES_AVAILABLE" = true ]; then
+        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$intensity' -cm hot -a 80"
+    else
+        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$intensity':colormap=heat:opacity=0.8"
+    fi
+    echo "Added intensity overlay: $(basename "$intensity")"
+fi
+
+EOF
+            ((overlay_count++))
+        fi
+    done
+    
+    # Complete the script
+    cat >> "$viz_script" << 'EOF'
+# Launch visualization
+echo ""
+echo "Launching visualization with $overlay_count overlays..."
+echo "Command: $VISUALIZATION_CMD"
+echo ""
+echo "Visualization Controls:"
+if [ "$FSLEYES_AVAILABLE" = true ]; then
+    echo "  FSLeyes:"
+    echo "    - Mouse: Navigate through slices"
+    echo "    - Right-click overlays: Adjust properties"
+    echo "    - Checkboxes: Toggle overlay visibility"
+    echo "    - 3D button: Switch to volume rendering"
+else
+    echo "  FreeView:"
+    echo "    - Mouse: Rotate, pan, zoom"
+    echo "    - View menu: Change display options"
+    echo "    - Right-click: Context menu"
+fi
+echo ""
+
+# Execute visualization
+eval "$VISUALIZATION_CMD"
+EOF
+
+    chmod +x "$viz_script"
+    
+    # Create summary report
+    local summary="${output_dir}/${analysis_name}_visualization_summary.txt"
+    {
+        echo "Comprehensive FLAIR Segmentation Visualization Summary"
+        echo "====================================================="
+        echo "Generated: $(date)"
+        echo "FLAIR input: $(basename "$flair_file")"
+        echo "Segmentation directory: $segmentation_dir"
+        echo ""
+        echo "Files included in visualization:"
+        echo "--------------------------------"
+        echo "Total overlays: $overlay_count"
+        echo ""
+        echo "Mask files (${#flair_masks[@]}):"
+        for mask in "${flair_masks[@]}"; do
+            echo "  - $(basename "$mask")"
+        done
+        echo ""
+        echo "Intensity files (${#flair_intensities[@]}):"
+        for intensity in "${flair_intensities[@]}"; do
+            echo "  - $(basename "$intensity")"
+        done
+        echo ""
+        echo "To view: ./${analysis_name}_all_segmentations.sh"
+    } > "$summary"
+    
+    log_formatted "SUCCESS" "Comprehensive FLAIR visualization created"
+    log_message "Visualization script: $viz_script"
+    log_message "Summary report: $summary"
+    log_message "Total overlays: $overlay_count"
+    
+    return 0
 }
 
 # Export functions
@@ -1132,5 +1960,7 @@ export -f create_intensity_profiles
 export -f transform_segmentation_to_original
 export -f analyze_talairach_hyperintensities
 export -f run_comprehensive_analysis
+export -f create_3d_visualization_script
+export -f create_comprehensive_flair_visualizations
 
 log_message "Analysis module loaded"

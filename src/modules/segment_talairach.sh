@@ -138,13 +138,15 @@ extract_brainstem_talairach_with_transform() {
     
     log_message "Using composite transforms: $ants_transform_matrix + $warp_component"
     
-    antsApplyTransforms -d 3 \
-        -i "$talairach_atlas" \
-        -r "$orientation_corrected_input" \
-        -o "$atlas_in_subject" \
-        -t "[$ants_transform_matrix,1]" \
-        -t "$warp_component" \
-        -n GenericLabel
+    # Use centralized apply_transformation function for consistent SyN transform handling
+    local transform_prefix="${ants_prefix}"
+    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$transform_prefix" "GenericLabel"; then
+        log_message "✓ Successfully applied transform using centralized function"
+    else
+        log_formatted "ERROR" "Failed to apply transform using centralized function"
+        rm -rf "$temp_dir"
+        return 1
+    fi
     
     # Check if atlas transformation was successful
     if [ ! -f "$atlas_in_subject" ]; then
@@ -749,17 +751,17 @@ extract_brainstem_talairach() {
     
     local atlas_in_subject="${temp_dir}/talairach_atlas_in_subject.nii.gz"
     
-    # CRITICAL FIX: Use composite transforms in correct order
-    # Composite transforms: replace -t "$transform" with -t "${out}_1Warp.nii.gz" -t "${out}_0GenericAffine.mat"
+    # CRITICAL FIX: Use centralized apply_transformation function for consistent SyN handling
     log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
     
-    antsApplyTransforms -d 3 \
-        -i "$talairach_atlas" \
-        -r "$orientation_corrected_input" \
-        -o "$atlas_in_subject" \
-        -t "[${ants_prefix}0GenericAffine.mat,1]" \
-        -t "${ants_prefix}1Warp.nii.gz" \
-        -n GenericLabel
+    # Use centralized apply_transformation function for consistent SyN transform handling
+    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "GenericLabel"; then
+        log_message "✓ Successfully applied transform using centralized function"
+    else
+        log_formatted "ERROR" "Failed to apply transform using centralized function"
+        rm -rf "$temp_dir"
+        return 1
+    fi
     
     # Check if atlas transformation was successful
     if [ ! -f "$atlas_in_subject" ]; then

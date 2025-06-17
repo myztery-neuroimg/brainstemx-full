@@ -634,7 +634,7 @@ ORIENTATION_ACCEPTABLE_THRESHOLD=0.3
 SHEARING_DETECTION_THRESHOLD=0.05
 
 # Hyperintensity detection
-THRESHOLD_WM_SD_MULTIPLIER=2.3
+# THRESHOLD_WM_SD_MULTIPLIER - defined in config files, don't override here
 MIN_HYPERINTENSITY_SIZE=4
 
 # Tissue segmentation parameters
