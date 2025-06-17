@@ -312,15 +312,14 @@ extract_brainstem_harvard_oxford() {
         
         mkdir -p "$validation_dir"
         
-        # Apply transforms to create registered moving image
+        # Apply transforms to create registered moving image using centralized function
         local registered_moving="${validation_dir}/registered_moving_temp.nii.gz"
-        antsApplyTransforms -d 3 \
-            -i "$moving_image" \
-            -r "$fixed_image" \
-            -o "$registered_moving" \
-            -t "${transform_prefix}1Warp.nii.gz" \
-            -t "${transform_prefix}0GenericAffine.mat" \
-            -n Linear
+        if apply_transformation "$moving_image" "$fixed_image" "$registered_moving" "$transform_prefix" "Linear"; then
+            log_message "✓ Successfully applied transform for validation using centralized function"
+        else
+            log_formatted "WARNING" "Transform application failed for validation"
+            return 1
+        fi
         
         if [ ! -f "$registered_moving" ]; then
             log_formatted "WARNING" "Could not create registered image for MI validation"
@@ -582,31 +581,16 @@ except Exception as e:
     # This preserves subject resolution and is more efficient
     local atlas_in_subject="${temp_dir}/harvard_oxford_in_subject.nii.gz"
     
-    # CRITICAL FIX: Use composite transforms in correct order
-    # Composite transforms: replace -t "$transform" with -t "${out}_1Warp.nii.gz" -t "${out}_0GenericAffine.mat"
-    # and cascade inverses when mapping atlas→subject
+    # CRITICAL FIX: Use centralized apply_transformation function for consistent SyN handling
     log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
     
-    if command -v execute_ants_command &> /dev/null; then
-        execute_ants_command "transform_atlas_to_subject" "Transforming Harvard-Oxford atlas to subject space with composite transforms" \
-            antsApplyTransforms \
-            -d 3 \
-            -i "$harvard_subcortical" \
-            -r "$orientation_corrected_input" \
-            -o "$atlas_in_subject" \
-            -t "[${ants_prefix}0GenericAffine.mat,1]" \
-            -t "${ants_prefix}1Warp.nii.gz" \
-            -n GenericLabel
+    # Use centralized apply_transformation function for consistent SyN transform handling
+    if apply_transformation "$harvard_subcortical" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "GenericLabel"; then
+        log_message "✓ Successfully applied transform using centralized function"
     else
-        # Fallback to direct ANTs call with composite transforms
-        log_message "Applying inverse composite transforms to atlas with antsApplyTransforms..."
-        antsApplyTransforms -d 3 \
-            -i "$harvard_subcortical" \
-            -r "$orientation_corrected_input" \
-            -o "$atlas_in_subject" \
-            -t "[${ants_prefix}0GenericAffine.mat,1]" \
-            -t "${ants_prefix}1Warp.nii.gz" \
-            -n GenericLabel
+        log_formatted "ERROR" "Failed to apply transform using centralized function"
+        rm -rf "$temp_dir"
+        return 1
     fi
     
     # Check if atlas transformation was successful

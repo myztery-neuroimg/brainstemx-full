@@ -927,8 +927,16 @@ transform_segmentation_to_original() {
         # Determine if it's an ANTs or FSL transform
         if [[ "$transform" == *"GenericAffine"* || "$transform" == *"Warp"* ]]; then
             # ANTs transform
-            log_message "Using ANTs to apply transform..."
-            antsApplyTransforms -d 3 -i "$segmentation" -r "$reference" -o "$output" -t "$transform" -n NearestNeighbor
+            log_message "Using centralized apply_transformation function..."
+            
+            # Extract transform prefix from transform file path
+            local transform_prefix="${transform%0GenericAffine.mat}"
+            if apply_transformation "$segmentation" "$reference" "$output" "$transform_prefix" "NearestNeighbor"; then
+                log_message "✓ Successfully applied transform using centralized function"
+            else
+                log_formatted "ERROR" "Failed to apply transform using centralized function"
+                return 1
+            fi
         else
             # FSL transform
             log_message "Using flirt to apply transform..."

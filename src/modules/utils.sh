@@ -74,9 +74,17 @@ apply_transform() {
         if [[ "${interp}" == "nearestneighbour" ]]; then
             ants_interp="NearestNeighbor"
         fi
-        execute_ants_command "apply_transform" "Applying transform with ANTs" \
-            antsApplyTransforms -d 3 -i "${input_file}" -r "${ref_file}" -o "${output_file}" \
-            -n "${ants_interp}" -t "${transform_file}"
+        # Use centralized apply_transformation function for consistent SyN transform handling
+        log_message "Using centralized apply_transformation function..."
+        
+        # Extract transform prefix from transform file path
+        local transform_prefix="${transform_file%0GenericAffine.mat}"
+        if apply_transformation "${input_file}" "${ref_file}" "${output_file}" "$transform_prefix" "${ants_interp}"; then
+            log_message "✓ Successfully applied transform using centralized function"
+        else
+            log_formatted "ERROR" "Failed to apply transform using centralized function"
+            return 1
+        fi
     else
         log_message "Applying transform with FLIRT: ${input_file} -> ${output_file}"
         flirt -in "${input_file}" -ref "${ref_file}" -applyxfm -init "${transform_file}" \

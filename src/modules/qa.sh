@@ -323,8 +323,17 @@ validate_transformation() {
         # FSL linear transform
         apply_transform "$moving" "$fixed" "$transform" "$transformed_img"
     else
-        # ANTs transform
-        antsApplyTransforms -d 3 -i "$moving" -r "$fixed" -o "$transformed_img" -t "$transform" -n Linear
+        # Use centralized apply_transformation function for consistent SyN transform handling
+        log_message "Using centralized apply_transformation function for ANTs transform..."
+        
+        # Extract transform prefix from transform file path
+        local transform_prefix="${transform%0GenericAffine.mat}"
+        if apply_transformation "$moving" "$fixed" "$transformed_img" "$transform_prefix" "Linear"; then
+            log_message "✓ Successfully applied transform using centralized function"
+        else
+            log_formatted "ERROR" "Failed to apply transform using centralized function"
+            return 1
+        fi
     fi
     
     # Apply transformation to moving mask if provided
@@ -334,7 +343,17 @@ validate_transformation() {
         if [[ "$transform" == *".mat" ]]; then
             apply_transform "$moving_mask" "$fixed" "$transform" "$transformed_mask" "nearestneighbour"
         else
-            antsApplyTransforms -d 3 -i "$moving_mask" -r "$fixed" -o "$transformed_mask" -t "$transform" -n NearestNeighbor
+            # Use centralized apply_transformation function for consistent SyN transform handling
+            log_message "Using centralized apply_transformation function for mask transform..."
+            
+            # Extract transform prefix from transform file path
+            local transform_prefix="${transform%0GenericAffine.mat}"
+            if apply_transformation "$moving_mask" "$fixed" "$transformed_mask" "$transform_prefix" "NearestNeighbor"; then
+                log_message "✓ Successfully applied mask transform using centralized function"
+            else
+                log_formatted "ERROR" "Failed to apply mask transform using centralized function"
+                return 1
+            fi
         fi
         
         # Ensure binary
@@ -1008,6 +1027,8 @@ calculate_extended_registration_metrics() {
             local temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/warp_calc_XXXXXX")
             
             log_message "Non-linear transform detected - generating composite warp field..."
+            # For composite warp generation, we can use antsApplyTransforms directly as this is a special operation
+            # that doesn't follow the normal transform application pattern
             if antsApplyTransforms -d 3 -t "$transform" -r "$fixed" --print-out-composite-warp "${temp_dir}/warp_field.nii.gz" >/dev/null 2>&1; then
                 log_message "Warp field generation completed"
                 
@@ -1184,6 +1205,7 @@ EOF
         local warp_field="${temp_dir}/warp_field.nii.gz"
         log_message "Converting non-linear transform to deformation field for Jacobian calculation"
         
+        # For composite warp generation, we use antsApplyTransforms directly as this is a special operation
         if antsApplyTransforms -d 3 -t "$transform" -r "$fixed" --print-out-composite-warp "$warp_field" >/dev/null 2>&1; then
             log_message "Deformation field created successfully"
             

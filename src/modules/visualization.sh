@@ -71,9 +71,36 @@ generate_qc_visualizations() {
     done
     
     # Create hyperintensity overlays at different thresholds - using pons region
-    for mult in 1.5 2.0 2.5 3.0; do
+    # Include the configured threshold alongside defaults
+    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
+    local thresholds=(1.5 2.0 2.5 3.0)
+    
+    # Add configured threshold if not already present
+    local configured_included=false
+    for thresh in "${thresholds[@]}"; do
+        if [ "$thresh" = "$threshold_multiplier" ]; then
+            configured_included=true
+            break
+        fi
+    done
+    
+    if [ "$configured_included" = false ]; then
+        thresholds+=("$threshold_multiplier")
+        # Sort the thresholds
+        IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
+        unset IFS
+    fi
+    
+    for mult in "${thresholds[@]}"; do
+        # Use intensity version for proper heat colormap visualization in freeview
+        local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}_intensity.nii.gz"
         local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
         local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
+        
+        # Prefer intensity version if it exists, otherwise use regular version
+        if [ -f "$hyper_intensity" ]; then
+            hyper="$hyper_intensity"
+        fi
         
         if [ -f "$hyper" ] && [ -f "$t2flair" ]; then
             echo "Creating hyperintensity overlay for threshold ${mult}..."
@@ -181,8 +208,28 @@ generate_qc_visualizations() {
         echo "Creating multi-threshold comparison for hyperintensities..."
         
         local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
+        
+        # Include the configured threshold alongside defaults
+        local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
         local thresholds=(1.5 2.0 2.5 3.0)
         local colors=("red" "orange" "yellow" "green")
+        
+        # Add configured threshold if not already present
+        local configured_included=false
+        for thresh in "${thresholds[@]}"; do
+            if [ "$thresh" = "$threshold_multiplier" ]; then
+                configured_included=true
+                break
+            fi
+        done
+        
+        if [ "$configured_included" = false ]; then
+            thresholds+=("$threshold_multiplier")
+            colors+=("cyan")  # Add color for the configured threshold
+            # Sort the thresholds (keeping colors aligned)
+            IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
+            unset IFS
+        fi
         
         # Create command for viewing all thresholds together
         local fsleyes_cmd="fsleyes $t2flair"
@@ -190,7 +237,14 @@ generate_qc_visualizations() {
         for i in "${!thresholds[@]}"; do
             local mult="${thresholds[$i]}"
             local color="${colors[$i]}"
+            # Use intensity version for proper heat colormap visualization
+            local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}_intensity.nii.gz"
             local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
+            
+            # Prefer intensity version if it exists
+            if [ -f "$hyper_intensity" ]; then
+                hyper="$hyper_intensity"
+            fi
             
             if [ -f "$hyper" ]; then
                 fsleyes_cmd="$fsleyes_cmd $hyper -cm $color -a 50"
@@ -251,9 +305,27 @@ create_multi_threshold_overlays() {
         return 1
     fi
     
-    # Define thresholds and colors
+    # Define thresholds and colors - include configured threshold
+    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
     local thresholds=(1.5 2.0 2.5 3.0)
     local colors=("red" "orange" "yellow" "green")
+    
+    # Add configured threshold if not already present
+    local configured_included=false
+    for thresh in "${thresholds[@]}"; do
+        if [ "$thresh" = "$threshold_multiplier" ]; then
+            configured_included=true
+            break
+        fi
+    done
+    
+    if [ "$configured_included" = false ]; then
+        thresholds+=("$threshold_multiplier")
+        colors+=("cyan")  # Add color for the configured threshold
+        # Sort the thresholds (keeping colors aligned)
+        IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
+        unset IFS
+    fi
     
     # Create command for viewing all thresholds together
     local fsleyes_cmd="fsleyes $t2flair"
@@ -261,7 +333,14 @@ create_multi_threshold_overlays() {
     for i in "${!thresholds[@]}"; do
         local mult="${thresholds[$i]}"
         local color="${colors[$i]}"
+        # Use intensity version for proper heat colormap visualization
+        local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}_intensity.nii.gz"
         local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
+        
+        # Prefer intensity version if it exists
+        if [ -f "$hyper_intensity" ]; then
+            hyper="$hyper_intensity"
+        fi
         
         if [ -f "$hyper" ]; then
             fsleyes_cmd="$fsleyes_cmd $hyper -cm $color -a 50"
@@ -451,11 +530,37 @@ generate_html_report() {
         echo "      <h3>Threshold Comparison</h3>"
         echo "      <div class='image-container'>"
         
-        for mult in 1.5 2.0 2.5 3.0; do
+        # Include the configured threshold alongside defaults
+        local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
+        local thresholds=(1.5 2.0 2.5 3.0)
+        
+        # Add configured threshold if not already present
+        local configured_included=false
+        for thresh in "${thresholds[@]}"; do
+            if [ "$thresh" = "$threshold_multiplier" ]; then
+                configured_included=true
+                break
+            fi
+        done
+        
+        if [ "$configured_included" = false ]; then
+            thresholds+=("$threshold_multiplier")
+            # Sort the thresholds
+            IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
+            unset IFS
+        fi
+        
+        for mult in "${thresholds[@]}"; do
             if [ -f "${subject_dir}/qc_visualizations/hyperintensity_${mult}.png" ]; then
+                # Highlight the configured threshold
+                local threshold_label="Threshold: ${mult} × SD"
+                if [ "$mult" = "$threshold_multiplier" ]; then
+                    threshold_label="Threshold: ${mult} × SD (CONFIGURED)"
+                fi
+                
                 echo "        <div class='image-box'>"
                 echo "          <img src='../qc_visualizations/hyperintensity_${mult}.png' alt='Hyperintensity Threshold ${mult}'>"
-                echo "          <p>Threshold: ${mult} × SD</p>"
+                echo "          <p>${threshold_label}</p>"
                 echo "        </div>"
             fi
         done

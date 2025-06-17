@@ -28,9 +28,9 @@ export OUTPUT_DATATYPE="int"        # final int16
 # Quality settings (LOW, MEDIUM, HIGH)
 export MAX_CPU_INTENSIVE_JOBS=1
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
-export N4_PRESET_LOW="25x25x25,0.00001,150,4"
+export N4_PRESET_LOW="35x35x35,0.000001,150,4"
 export N4_PRESET_MEDIUM="50x50x50,0.000001,250,2"
-export N4_PRESET_HIGH="200x200x200,0.000001,1000,2"
+export N4_PRESET_HIGH="200x200x200x2,0.000001,1000,2"
 export N4_PRESET_ULTRA="500x500x500x10,0.0000001,2000,2"
 export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"  # override if needed
 
