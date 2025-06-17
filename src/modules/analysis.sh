@@ -159,7 +159,7 @@ detect_hyperintensities() {
     log_message "WM mean: $mean_wm   WM std: $sd_wm"
 
     # Use the global THRESHOLD_WM_SD_MULTIPLIER or default to 2.0 if not set
-    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-2.0}"
+    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.5}"
     log_message "Using threshold multiplier from config: $threshold_multiplier"
     
     # Create default thresholds along with the configured one
@@ -239,7 +239,7 @@ detect_hyperintensities() {
     local flair_norm_mgz="${out_prefix}_flair.mgz"
     local hyper_clean_mgz="${out_prefix}_hyper.mgz"
     mri_convert "$flair_brain" "$flair_norm_mgz"
-    mri_convert "${out_prefix}_thresh2.0.nii.gz" "$hyper_clean_mgz"
+    mri_convert "${out_prefix}_thresh1.5.nii.gz" "$hyper_clean_mgz"
 
     cat > "${out_prefix}_view_in_freeview.sh" << EOC
 #!/usr/bin/env bash
