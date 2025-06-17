@@ -573,122 +573,61 @@ analyze_hyperintensities_in_all_masks() {
     local mask_files=()
     local mask_names=()
     
-    # Harvard-Oxford brainstem
-    local brainstem_mask
-    if [[ "$segmentation_dir" == *"original_space"* ]]; then
-        brainstem_mask=$(find "$segmentation_dir" -name "*brainstem*.nii.gz" | head -1)
-    else
-        brainstem_mask=$(find "$segmentation_dir" -name "*brainstem*.nii.gz" | grep -v "orig" | head -1)
-    fi
+    # Harvard-Oxford brainstem - STANDARDIZED NAMING ONLY
+    local brainstem_mask=$(find "$segmentation_dir" -name "*brainstem_mask_orig.nii.gz" | head -1)
     if [ -f "$brainstem_mask" ]; then
         log_message "Found Harvard-Oxford brainstem mask: $brainstem_mask"
         mask_files+=("$brainstem_mask")
         mask_names+=("harvard_brainstem")
+    else
+        log_formatted "WARNING" "No Harvard-Oxford brainstem mask found with standardized naming (*brainstem_mask_orig.nii.gz) in $segmentation_dir"
     fi
     
-    # Pons mask
-    local pons_mask
-    if [[ "$segmentation_dir" == *"original_space"* ]]; then
-        pons_mask=$(find "$segmentation_dir" -name "*pons*.nii.gz" | grep -v "dorsal" | grep -v "ventral" | head -1)
-    else
-        pons_mask=$(find "$segmentation_dir" -name "*pons.nii.gz" | grep -v "dorsal" | grep -v "ventral" | grep -v "orig" | head -1)
-    fi
+    # Pons mask - STANDARDIZED NAMING ONLY
+    local pons_mask=$(find "$segmentation_dir" -name "*pons_mask_orig.nii.gz" | head -1)
     if [ -f "$pons_mask" ]; then
         log_message "Found pons mask: $pons_mask"
         mask_files+=("$pons_mask")
         mask_names+=("pons")
+    else
+        log_formatted "WARNING" "No pons mask found with standardized naming (*pons_mask_orig.nii.gz) in $segmentation_dir"
     fi
     
-    # Talairach detailed brainstem subdivisions - IMPROVED MASK DETECTION
+    # Talairach detailed brainstem subdivisions - STANDARDIZED NAMING ONLY
     local detailed_regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain")
     
     for region in "${detailed_regions[@]}"; do
-        local region_mask=""
-        
-        if [[ "$segmentation_dir" == *"original_space"* ]]; then
-            # Look for mask files with specific patterns, excluding intensity files
-            local mask_patterns=(
-                "*${region}_flair_space.nii.gz"
-                "*${region}.nii.gz"
-                "*${region}_mask.nii.gz"
-            )
-            
-            for pattern in "${mask_patterns[@]}"; do
-                local found_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
-                if [ -f "$found_mask" ]; then
-                    region_mask="$found_mask"
-                    break
-                fi
-            done
-        else
-            # Look in detailed_brainstem directory first
-            local mask_patterns=(
-                "*${region}.nii.gz"
-                "*${region}_mask.nii.gz"
-            )
-            
-            for pattern in "${mask_patterns[@]}"; do
-                local found_mask=$(find "${segmentation_dir}/../detailed_brainstem" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" 2>/dev/null | head -1)
-                if [ -f "$found_mask" ]; then
-                    region_mask="$found_mask"
-                    break
-                fi
-            done
-            
-            # Fallback to current directory if not found in detailed_brainstem
-            if [ -z "$region_mask" ]; then
-                for pattern in "${mask_patterns[@]}"; do
-                    local found_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" ! -name "*_orig*" | head -1)
-                    if [ -f "$found_mask" ]; then
-                        region_mask="$found_mask"
-                        break
-                    fi
-                done
-            fi
-        fi
+        # Use ONLY standardized naming pattern
+        local region_mask=$(find "$segmentation_dir" -name "*${region}_orig.nii.gz" | head -1)
         
         if [ -f "$region_mask" ]; then
             log_message "Found $region mask: $region_mask"
             mask_files+=("$region_mask")
             mask_names+=("$region")
         else
-            log_message "No $region mask found in $segmentation_dir"
+            log_formatted "WARNING" "No $region mask found with standardized naming (*${region}_orig.nii.gz) in $segmentation_dir"
         fi
     done
     
-    # Talairach atlas (if available) - IMPROVED DETECTION
-    local talairach_patterns=(
-        "*talairach*.nii.gz"
-        "*talairack*.nii.gz"
-        "*tailrack*.nii.gz"
-    )
+    # Talairach atlas - STANDARDIZED NAMING ONLY
+    local talairach_mask=$(find "$segmentation_dir" -name "*talairach_mask_orig.nii.gz" | head -1)
+    if [ -f "$talairach_mask" ]; then
+        log_message "Found Talairach atlas mask: $talairach_mask"
+        mask_files+=("$talairach_mask")
+        mask_names+=("talairach")
+    else
+        log_formatted "WARNING" "No Talairach atlas mask found with standardized naming (*talairach_mask_orig.nii.gz) in $segmentation_dir"
+    fi
     
-    for pattern in "${talairach_patterns[@]}"; do
-        local talairach_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
-        if [ -f "$talairach_mask" ]; then
-            log_message "Found Talairach atlas mask: $talairach_mask"
-            mask_files+=("$talairach_mask")
-            mask_names+=("talairach")
-            break
-        fi
-    done
-    
-    # Gold standard (if available) - IMPROVED DETECTION
-    local gold_patterns=(
-        "*gold*.nii.gz"
-        "*manual*.nii.gz"
-        "*expert*.nii.gz"
-    )
-    
-    for pattern in "${gold_patterns[@]}"; do
-        local gold_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
-        if [ -f "$gold_mask" ]; then
-            log_message "Found gold standard mask: $gold_mask"
-            mask_files+=("$gold_mask")
-            mask_names+=("gold_standard")
-            break
-        fi
-    done
+    # Gold standard - STANDARDIZED NAMING ONLY
+    local gold_mask=$(find "$segmentation_dir" -name "*gold_mask_orig.nii.gz" | head -1)
+    if [ -f "$gold_mask" ]; then
+        log_message "Found gold standard mask: $gold_mask"
+        mask_files+=("$gold_mask")
+        mask_names+=("gold_standard")
+    else
+        log_formatted "WARNING" "No gold standard mask found with standardized naming (*gold_mask_orig.nii.gz) in $segmentation_dir"
+    fi
     
     # Check if any masks were found
     if [ ${#mask_files[@]} -eq 0 ]; then
