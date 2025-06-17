@@ -229,14 +229,54 @@ extract_brainstem_talairach_with_transform() {
     if [ -n "$harvard_brainstem_mask" ] && [ -f "$harvard_brainstem_mask" ]; then
         log_message "Validating Talairach subdivisions against Harvard-Oxford boundaries..."
         
+        # CRITICAL FIX: Apply the same orientation correction to Harvard-Oxford mask if needed
+        local validation_harvard_mask="$harvard_brainstem_mask"
+        if [ "$orientation_corrected" = "true" ]; then
+            log_message "Applying same orientation correction to Harvard-Oxford mask for consistent validation..."
+            local temp_harvard="${temp_dir}/harvard_orientation_corrected.nii.gz"
+            
+            # Determine input and corrected orientations
+            local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
+            local corrected_orient=$(fslorient -getorient "$orientation_corrected_input" 2>/dev/null || echo "UNKNOWN")
+            
+            if [ "$input_orient" = "NEUROLOGICAL" ] && [ "$corrected_orient" = "RADIOLOGICAL" ]; then
+                # Apply same correction as was applied to input
+                fslswapdim "$harvard_brainstem_mask" -x y z "$temp_harvard"
+                fslorient -forceradiological "$temp_harvard"
+                validation_harvard_mask="$temp_harvard"
+                log_message "✓ Applied NEUROLOGICAL→RADIOLOGICAL correction to Harvard-Oxford mask"
+            elif [ "$input_orient" = "RADIOLOGICAL" ] && [ "$corrected_orient" = "NEUROLOGICAL" ]; then
+                # Apply same correction as was applied to input
+                fslswapdim "$harvard_brainstem_mask" -x y z "$temp_harvard"
+                fslorient -forceneurological "$temp_harvard"
+                validation_harvard_mask="$temp_harvard"
+                log_message "✓ Applied RADIOLOGICAL→NEUROLOGICAL correction to Harvard-Oxford mask"
+            else
+                log_message "No additional orientation correction needed for Harvard-Oxford mask"
+            fi
+        else
+            log_message "No orientation correction applied, using original Harvard-Oxford mask"
+        fi
+        
         validate_talairach_region() {
             local region_file="$1"
             local region_name="$2"
             
             if [ -f "$region_file" ]; then
-                # Create intersection with Harvard-Oxford brainstem
+                # Create intersection with orientation-consistent Harvard-Oxford brainstem
                 local validated_file="${region_file%.nii.gz}_validated.nii.gz"
-                fslmaths "$region_file" -mas "$harvard_brainstem_mask" "$validated_file"
+                
+                # Check dimensions match before masking
+                local region_dims=$(fslinfo "$region_file" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+                local harvard_dims=$(fslinfo "$validation_harvard_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+                
+                if [ "$region_dims" != "$harvard_dims" ]; then
+                    log_formatted "WARNING" "$region_name: Dimension mismatch with Harvard-Oxford mask ($region_dims vs $harvard_dims)"
+                    log_message "Skipping validation for $region_name due to dimension mismatch"
+                    return
+                fi
+                
+                fslmaths "$region_file" -mas "$validation_harvard_mask" "$validated_file"
                 
                 # Count voxels before and after validation
                 local orig_voxels=$(fslstats "$region_file" -V | awk '{print $1}')
@@ -276,15 +316,42 @@ extract_brainstem_talairach_with_transform() {
     
     # Create intensity versions for QA compatibility
     log_message "Creating intensity versions for QA module compatibility..."
+    log_message "Files being created for each Talairach segmentation:"
     
     for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
         if [ -f "$region_file" ]; then
+            local region_name=$(basename "$region_file" .nii.gz)
+            local base_region_name=$(echo "$region_name" | sed "s/${output_basename}_//")
+            
+            log_message "=== $base_region_name FILES ==="
+            
+            # Log the mask file creation (already exists)
+            log_message "✓ Binary mask: $(basename "$region_file")"
+            
+            # Create intensity version
             local intensity_file="${region_file%.nii.gz}_intensity.nii.gz"
-            fslmaths "$input_file" -mas "$region_file" "$intensity_file"
+            if fslmaths "$input_file" -mas "$region_file" "$intensity_file"; then
+                log_message "✓ Intensity file: $(basename "$intensity_file")"
+            else
+                log_formatted "WARNING" "Failed to create intensity file for $base_region_name"
+            fi
             
             # Also create T1 intensity version
             local t1_intensity_file="${region_file%.nii.gz}_t1_intensity.nii.gz"
-            fslmaths "$input_file" -mas "$region_file" "$t1_intensity_file"
+            if fslmaths "$input_file" -mas "$region_file" "$t1_intensity_file"; then
+                log_message "✓ T1 intensity file: $(basename "$t1_intensity_file")"
+            else
+                log_formatted "WARNING" "Failed to create T1 intensity file for $base_region_name"
+            fi
+            
+            # Check for clustering if MIN_HYPERINTENSITY_SIZE is set
+            if [ -n "${MIN_HYPERINTENSITY_SIZE:-}" ] && [ "${MIN_HYPERINTENSITY_SIZE}" -gt 0 ]; then
+                local clustered_file="${region_file%.nii.gz}_clustered.nii.gz"
+                log_message "✓ Clustering: Will apply MIN_HYPERINTENSITY_SIZE=${MIN_HYPERINTENSITY_SIZE} voxels in analysis"
+                log_message "   Output file: $(basename "$clustered_file")"
+            fi
+            
+            log_message ""
         fi
     done
     
@@ -366,6 +433,40 @@ extract_brainstem_talairach_with_transform() {
                     fi
                 fi
             done
+            
+            # Create the missing brainstem_location_check_intensity.nii.gz file that analysis expects
+            log_message "Creating missing brainstem_location_check_intensity.nii.gz for analysis compatibility..."
+            local combined_brainstem_mask="${flair_analysis_dir}/${output_basename}_combined_brainstem_flair_space.nii.gz"
+            local brainstem_intensity="${flair_analysis_dir}/brainstem_location_check_intensity.nii.gz"
+            
+            # Combine all Talairach brainstem regions into one mask
+            local first_region=""
+            for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz; do
+                if [ -f "$region_file" ]; then
+                    local region_basename=$(basename "$region_file" .nii.gz)
+                    local flair_space_mask="${flair_analysis_dir}/${region_basename}_flair_space.nii.gz"
+                    
+                    if [ -f "$flair_space_mask" ]; then
+                        if [ -z "$first_region" ]; then
+                            # First region - initialize the combined mask
+                            cp "$flair_space_mask" "$combined_brainstem_mask"
+                            first_region="true"
+                        else
+                            # Add subsequent regions
+                            fslmaths "$combined_brainstem_mask" -add "$flair_space_mask" -bin "$combined_brainstem_mask"
+                        fi
+                    fi
+                fi
+            done
+            
+            # Create intensity version of combined brainstem
+            if [ -f "$combined_brainstem_mask" ]; then
+                if fslmaths "$orig_flair" -mas "$combined_brainstem_mask" "$brainstem_intensity"; then
+                    log_message "✓ Created brainstem_location_check_intensity.nii.gz for analysis compatibility"
+                else
+                    log_formatted "WARNING" "Failed to create brainstem_location_check_intensity.nii.gz"
+                fi
+            fi
             
             # Only process the first FLAIR file
             break
@@ -646,14 +747,54 @@ extract_brainstem_talairach() {
     if [ -n "$harvard_brainstem_mask" ] && [ -f "$harvard_brainstem_mask" ]; then
         log_message "Validating Talairach subdivisions against Harvard-Oxford boundaries..."
         
+        # CRITICAL FIX: Apply the same orientation correction to Harvard-Oxford mask if needed
+        local validation_harvard_mask="$harvard_brainstem_mask"
+        if [ "$orientation_corrected" = "true" ]; then
+            log_message "Applying same orientation correction to Harvard-Oxford mask for consistent validation..."
+            local temp_harvard="${temp_dir}/harvard_orientation_corrected_standalone.nii.gz"
+            
+            # Determine input and corrected orientations
+            local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
+            local corrected_orient=$(fslorient -getorient "$orientation_corrected_input" 2>/dev/null || echo "UNKNOWN")
+            
+            if [ "$input_orient" = "NEUROLOGICAL" ] && [ "$corrected_orient" = "RADIOLOGICAL" ]; then
+                # Apply same correction as was applied to input
+                fslswapdim "$harvard_brainstem_mask" -x y z "$temp_harvard"
+                fslorient -forceradiological "$temp_harvard"
+                validation_harvard_mask="$temp_harvard"
+                log_message "✓ Applied NEUROLOGICAL→RADIOLOGICAL correction to Harvard-Oxford mask"
+            elif [ "$input_orient" = "RADIOLOGICAL" ] && [ "$corrected_orient" = "NEUROLOGICAL" ]; then
+                # Apply same correction as was applied to input
+                fslswapdim "$harvard_brainstem_mask" -x y z "$temp_harvard"
+                fslorient -forceneurological "$temp_harvard"
+                validation_harvard_mask="$temp_harvard"
+                log_message "✓ Applied RADIOLOGICAL→NEUROLOGICAL correction to Harvard-Oxford mask"
+            else
+                log_message "No additional orientation correction needed for Harvard-Oxford mask"
+            fi
+        else
+            log_message "No orientation correction applied, using original Harvard-Oxford mask"
+        fi
+        
         validate_talairach_region() {
             local region_file="$1"
             local region_name="$2"
             
             if [ -f "$region_file" ]; then
-                # Create intersection with Harvard-Oxford brainstem
+                # Create intersection with orientation-consistent Harvard-Oxford brainstem
                 local validated_file="${region_file%.nii.gz}_validated.nii.gz"
-                fslmaths "$region_file" -mas "$harvard_brainstem_mask" "$validated_file"
+                
+                # Check dimensions match before masking
+                local region_dims=$(fslinfo "$region_file" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+                local harvard_dims=$(fslinfo "$validation_harvard_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+                
+                if [ "$region_dims" != "$harvard_dims" ]; then
+                    log_formatted "WARNING" "$region_name: Dimension mismatch with Harvard-Oxford mask ($region_dims vs $harvard_dims)"
+                    log_message "Skipping validation for $region_name due to dimension mismatch"
+                    return
+                fi
+                
+                fslmaths "$region_file" -mas "$validation_harvard_mask" "$validated_file"
                 
                 # Count voxels before and after validation
                 local orig_voxels=$(fslstats "$region_file" -V | awk '{print $1}')
@@ -693,15 +834,42 @@ extract_brainstem_talairach() {
     
     # Create intensity versions for QA compatibility
     log_message "Creating intensity versions for QA module compatibility..."
+    log_message "Files being created for each Talairach segmentation:"
     
     for region_file in "${detailed_dir}"/${output_basename}_*.nii.gz "${pons_dir}"/${output_basename}_*.nii.gz; do
         if [ -f "$region_file" ]; then
+            local region_name=$(basename "$region_file" .nii.gz)
+            local base_region_name=$(echo "$region_name" | sed "s/${output_basename}_//")
+            
+            log_message "=== $base_region_name FILES ==="
+            
+            # Log the mask file creation (already exists)
+            log_message "✓ Binary mask: $(basename "$region_file")"
+            
+            # Create intensity version
             local intensity_file="${region_file%.nii.gz}_intensity.nii.gz"
-            fslmaths "$input_file" -mas "$region_file" "$intensity_file"
+            if fslmaths "$input_file" -mas "$region_file" "$intensity_file"; then
+                log_message "✓ Intensity file: $(basename "$intensity_file")"
+            else
+                log_formatted "WARNING" "Failed to create intensity file for $base_region_name"
+            fi
             
             # Also create T1 intensity version
             local t1_intensity_file="${region_file%.nii.gz}_t1_intensity.nii.gz"
-            fslmaths "$input_file" -mas "$region_file" "$t1_intensity_file"
+            if fslmaths "$input_file" -mas "$region_file" "$t1_intensity_file"; then
+                log_message "✓ T1 intensity file: $(basename "$t1_intensity_file")"
+            else
+                log_formatted "WARNING" "Failed to create T1 intensity file for $base_region_name"
+            fi
+            
+            # Check for clustering if MIN_HYPERINTENSITY_SIZE is set
+            if [ -n "${MIN_HYPERINTENSITY_SIZE:-}" ] && [ "${MIN_HYPERINTENSITY_SIZE}" -gt 0 ]; then
+                local clustered_file="${region_file%.nii.gz}_clustered.nii.gz"
+                log_message "✓ Clustering: Will apply MIN_HYPERINTENSITY_SIZE=${MIN_HYPERINTENSITY_SIZE} voxels in analysis"
+                log_message "   Output file: $(basename "$clustered_file")"
+            fi
+            
+            log_message ""
         fi
     done
     
