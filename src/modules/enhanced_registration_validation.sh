@@ -13,6 +13,36 @@
 MNI_TEMPLATE="${FSLDIR}/data/standard/MNI152_T1_1mm.nii.gz"
 MNI_BRAIN="${FSLDIR}/data/standard/MNI152_T1_1mm_brain.nii.gz"
 
+# Function to ensure safe_fslmaths is available
+ensure_safe_fslmaths() {
+    if ! declare -f safe_fslmaths >/dev/null 2>&1; then
+        log_formatted "WARNING" "safe_fslmaths function not available, attempting to source environment.sh"
+        
+        # Try to find and source environment.sh
+        local env_paths=(
+            "$(dirname "${BASH_SOURCE[0]}")/environment.sh"
+            "${SCRIPT_DIR}/modules/environment.sh"
+            "./src/modules/environment.sh"
+            "../src/modules/environment.sh"
+        )
+        
+        for env_path in "${env_paths[@]}"; do
+            if [ -f "$env_path" ]; then
+                log_message "Found environment.sh at: $env_path"
+                source "$env_path"
+                if declare -f safe_fslmaths >/dev/null 2>&1; then
+                    log_formatted "SUCCESS" "safe_fslmaths function loaded successfully"
+                    return 0
+                fi
+            fi
+        done
+        
+        log_formatted "WARNING" "Could not load safe_fslmaths, will use fallback validation"
+        return 1
+    fi
+    return 0
+}
+
 # Emergency path validation function
 emergency_validate_paths() {
     local operation="$1"
@@ -526,10 +556,10 @@ calculate_cross_correlation() {
 # Function to analyze hyperintensities across all segmentation masks
 analyze_hyperintensities_in_all_masks() {
     local flair_file="$1"        # FLAIR image in standard space
-    local t1_file="$2"           # T1 image in standard space 
+    local t1_file="$2"           # T1 image in standard space
     local segmentation_dir="$3"  # Directory containing segmentation masks
     local output_dir="$4"        # Output directory
-    local threshold="${5:-2.0}"  # Default threshold is 2.0 SD above mean
+    local threshold="${5:-${THRESHOLD_WM_SD_MULTIPLIER:-1.25}}"  # Use config threshold or default to 1.25 SD above mean
     
     log_formatted "INFO" "===== ANALYZING HYPERINTENSITIES IN ALL SEGMENTATION MASKS ====="
     log_message "FLAIR: $flair_file"
@@ -569,18 +599,51 @@ analyze_hyperintensities_in_all_masks() {
         mask_names+=("pons")
     fi
     
-    # Talairach detailed brainstem subdivisions
+    # Talairach detailed brainstem subdivisions - IMPROVED MASK DETECTION
     local detailed_regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain")
     
     for region in "${detailed_regions[@]}"; do
-        local region_mask
+        local region_mask=""
+        
         if [[ "$segmentation_dir" == *"original_space"* ]]; then
-            region_mask=$(find "$segmentation_dir" -name "*${region}*.nii.gz" | head -1)
+            # Look for mask files with specific patterns, excluding intensity files
+            local mask_patterns=(
+                "*${region}_flair_space.nii.gz"
+                "*${region}.nii.gz"
+                "*${region}_mask.nii.gz"
+            )
+            
+            for pattern in "${mask_patterns[@]}"; do
+                local found_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
+                if [ -f "$found_mask" ]; then
+                    region_mask="$found_mask"
+                    break
+                fi
+            done
         else
-            # Look in detailed_brainstem directory
-            region_mask=$(find "${segmentation_dir}/../detailed_brainstem" -name "*${region}.nii.gz" 2>/dev/null | head -1)
+            # Look in detailed_brainstem directory first
+            local mask_patterns=(
+                "*${region}.nii.gz"
+                "*${region}_mask.nii.gz"
+            )
+            
+            for pattern in "${mask_patterns[@]}"; do
+                local found_mask=$(find "${segmentation_dir}/../detailed_brainstem" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" 2>/dev/null | head -1)
+                if [ -f "$found_mask" ]; then
+                    region_mask="$found_mask"
+                    break
+                fi
+            done
+            
+            # Fallback to current directory if not found in detailed_brainstem
             if [ -z "$region_mask" ]; then
-                region_mask=$(find "$segmentation_dir" -name "*${region}.nii.gz" | grep -v "orig" | head -1)
+                for pattern in "${mask_patterns[@]}"; do
+                    local found_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" ! -name "*_orig*" | head -1)
+                    if [ -f "$found_mask" ]; then
+                        region_mask="$found_mask"
+                        break
+                    fi
+                done
             fi
         fi
         
@@ -588,24 +651,44 @@ analyze_hyperintensities_in_all_masks() {
             log_message "Found $region mask: $region_mask"
             mask_files+=("$region_mask")
             mask_names+=("$region")
+        else
+            log_message "No $region mask found in $segmentation_dir"
         fi
     done
     
-    # Talairack atlas (if available)
-    local talairack_mask=$(find "$segmentation_dir" -name "*talairack*.nii.gz" -o -name "*tailrack*.nii.gz" | head -1)
-    if [ -f "$talairack_mask" ]; then
-        log_message "Found Talairack atlas mask: $talairack_mask"
-        mask_files+=("$talairack_mask")
-        mask_names+=("talairack")
-    fi
+    # Talairach atlas (if available) - IMPROVED DETECTION
+    local talairach_patterns=(
+        "*talairach*.nii.gz"
+        "*talairack*.nii.gz"
+        "*tailrack*.nii.gz"
+    )
     
-    # Gold standard (if available)
-    local gold_mask=$(find "$segmentation_dir" -name "*gold*.nii.gz" -o -name "*manual*.nii.gz" -o -name "*expert*.nii.gz" | head -1)
-    if [ -f "$gold_mask" ]; then
-        log_message "Found gold standard mask: $gold_mask"
-        mask_files+=("$gold_mask")
-        mask_names+=("gold_standard")
-    fi
+    for pattern in "${talairach_patterns[@]}"; do
+        local talairach_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
+        if [ -f "$talairach_mask" ]; then
+            log_message "Found Talairach atlas mask: $talairach_mask"
+            mask_files+=("$talairach_mask")
+            mask_names+=("talairach")
+            break
+        fi
+    done
+    
+    # Gold standard (if available) - IMPROVED DETECTION
+    local gold_patterns=(
+        "*gold*.nii.gz"
+        "*manual*.nii.gz"
+        "*expert*.nii.gz"
+    )
+    
+    for pattern in "${gold_patterns[@]}"; do
+        local gold_mask=$(find "$segmentation_dir" -name "$pattern" ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" | head -1)
+        if [ -f "$gold_mask" ]; then
+            log_message "Found gold standard mask: $gold_mask"
+            mask_files+=("$gold_mask")
+            mask_names+=("gold_standard")
+            break
+        fi
+    done
     
     # Check if any masks were found
     if [ ${#mask_files[@]} -eq 0 ]; then
@@ -627,7 +710,31 @@ analyze_hyperintensities_in_all_masks() {
         # Create brain mask from FLAIR for reference tissue
         local brain_mask="${mask_output_dir}/brain_mask.nii.gz"
         log_message "Creating brain mask from FLAIR..."
-        fslmaths "$flair_file" -bin "$brain_mask"
+        
+        # CRITICAL FIX: Validate FLAIR file before brain mask creation
+        if [ ! -f "$flair_file" ]; then
+            log_formatted "ERROR" "FLAIR file not found: $flair_file"
+            continue
+        fi
+        
+        if ! fslinfo "$flair_file" >/dev/null 2>&1; then
+            log_formatted "ERROR" "Invalid FLAIR file: $flair_file"
+            continue
+        fi
+        
+        # Use safe_fslmaths if available, otherwise validate manually
+        if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+            if ! safe_fslmaths "Create brain mask from FLAIR" "$flair_file" -bin "$brain_mask"; then
+                log_formatted "ERROR" "Failed to create brain mask for $mask_name"
+                continue
+            fi
+        else
+            log_message "Using direct fslmaths for brain mask creation"
+            if ! fslmaths "$flair_file" -bin "$brain_mask"; then
+                log_formatted "ERROR" "Failed to create brain mask for $mask_name"
+                continue
+            fi
+        fi
         
         # CRITICAL: Validate orientation and dimensions before image operations
         log_message "Validating image compatibility before NAWM mask creation..."
@@ -737,15 +844,33 @@ analyze_hyperintensities_in_all_masks() {
         if [ "$final_brain_dims" != "$final_mask_dims" ]; then
             log_formatted "ERROR" "CRITICAL: Dimensions still don't match after resampling"
             log_message "Brain: $final_brain_dims, Mask: $final_mask_dims"
-            log_message "Creating whole-brain NAWM as fallback..."
+            log_formatted "ERROR" "Creating whole-brain NAWM as fallback..."
             
             # Use whole brain as NAWM reference
             cp "$brain_mask" "$nawm_mask"
         else
             log_message "✓ Dimensions match, proceeding with NAWM creation"
-            if ! fslmaths "$brain_mask" -sub "$mask" -thr 0 -bin "$nawm_mask"; then
-                log_formatted "ERROR" "fslmaths subtraction failed, using whole brain as NAWM"
-                cp "$brain_mask" "$nawm_mask"
+            
+            # CRITICAL FIX: Validate files before NAWM creation
+            if [ ! -f "$brain_mask" ] || [ ! -f "$mask" ]; then
+                log_formatted "ERROR" "Missing files for NAWM creation - brain_mask: $brain_mask, mask: $mask"
+                cp "$brain_mask" "$nawm_mask" 2>/dev/null || {
+                    log_formatted "ERROR" "Failed to create fallback NAWM mask"
+                    continue
+                }
+            else
+                # Use safe_fslmaths if available
+                if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+                    if ! safe_fslmaths "Create NAWM mask by subtracting ROI from brain" "$brain_mask" -sub "$mask" -thr 0 -bin "$nawm_mask"; then
+                        log_formatted "ERROR" "safe_fslmaths subtraction failed, using whole brain as NAWM"
+                        cp "$brain_mask" "$nawm_mask"
+                    fi
+                else
+                    if ! fslmaths "$brain_mask" -sub "$mask" -thr 0 -bin "$nawm_mask"; then
+                        log_formatted "ERROR" "fslmaths subtraction failed, using whole brain as NAWM"
+                        cp "$brain_mask" "$nawm_mask"
+                    fi
+                fi
             fi
         fi
         
@@ -762,8 +887,35 @@ analyze_hyperintensities_in_all_masks() {
         local hyperintensity_bin="${mask_output_dir}/hyperintensities_bin.nii.gz"
         
         log_message "Thresholding FLAIR at $intensity_threshold within $mask_name..."
-        fslmaths "$flair_file" -thr "$intensity_threshold" -mas "$mask" "$hyperintensity_mask"
-        fslmaths "$hyperintensity_mask" -bin "$hyperintensity_bin"
+        
+        # CRITICAL FIX: Validate files before hyperintensity detection
+        if [ ! -f "$flair_file" ] || [ ! -f "$mask" ]; then
+            log_formatted "ERROR" "Missing files for hyperintensity detection - FLAIR: $flair_file, mask: $mask"
+            continue
+        fi
+        
+        # Use safe_fslmaths if available
+        if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+            if ! safe_fslmaths "Create hyperintensity mask" "$flair_file" -thr "$intensity_threshold" -mas "$mask" "$hyperintensity_mask"; then
+                log_formatted "ERROR" "Failed to create hyperintensity mask for $mask_name"
+                continue
+            fi
+            
+            if ! safe_fslmaths "Binarize hyperintensity mask" "$hyperintensity_mask" -bin "$hyperintensity_bin"; then
+                log_formatted "ERROR" "Failed to binarize hyperintensity mask for $mask_name"
+                continue
+            fi
+        else
+            if ! fslmaths "$flair_file" -thr "$intensity_threshold" -mas "$mask" "$hyperintensity_mask"; then
+                log_formatted "ERROR" "Failed to create hyperintensity mask for $mask_name"
+                continue
+            fi
+            
+            if ! fslmaths "$hyperintensity_mask" -bin "$hyperintensity_bin"; then
+                log_formatted "ERROR" "Failed to binarize hyperintensity mask for $mask_name"
+                continue
+            fi
+        fi
         
         # Calculate hyperintensity volume
         local volume_voxels=$(fslstats "$hyperintensity_bin" -V | awk '{print $1}')
@@ -776,16 +928,85 @@ analyze_hyperintensities_in_all_masks() {
         # Create cluster analysis with minimum size enforcement
         local clusters="${mask_output_dir}/clusters.nii.gz"
         local min_cluster_size="${MIN_HYPERINTENSITY_SIZE:-4}"  # Use environment setting or default to 4
-        log_message "Performing cluster analysis (minimum cluster size: $min_cluster_size voxels)..."
-        cluster -i "$hyperintensity_bin" -t 0.5 --minextent="$min_cluster_size" -o "$clusters" > "${mask_output_dir}/cluster_report.txt"
+        log_message "Performing cluster analysis (minimum cluster size: $min_cluster_size voxels) to ${clusters}..."
+        
+        # CRITICAL FIX: Validate hyperintensity binary file before cluster analysis
+        if [ ! -f "$hyperintensity_bin" ]; then
+            log_formatted "ERROR" "Hyperintensity binary file not found for cluster analysis: $hyperintensity_bin"
+            continue
+        fi
+        
+        if ! fslinfo "$hyperintensity_bin" >/dev/null 2>&1; then
+            log_formatted "ERROR" "Invalid hyperintensity binary file for cluster analysis: $hyperintensity_bin"
+            continue
+        fi
+        
+        # Check if hyperintensity file has any non-zero voxels
+        local max_intensity=$(fslstats "$hyperintensity_bin" -R | awk '{print $2}')
+        if (( $(echo "$max_intensity <= 0" | bc -l) )); then
+            log_formatted "WARNING" "No hyperintensities detected in $mask_name, skipping cluster analysis"
+            # Create empty cluster file
+            touch "${mask_output_dir}/cluster_report.txt"
+            echo "No hyperintensities detected for cluster analysis" > "${mask_output_dir}/cluster_report.txt"
+        else
+            if ! cluster -i "$hyperintensity_bin" -t 0.5 --minextent="$min_cluster_size" -o "$clusters" > "${mask_output_dir}/cluster_report.txt" 2>&1; then
+                log_formatted "WARNING" "Cluster analysis failed for $mask_name, continuing without clustering"
+                echo "Cluster analysis failed" > "${mask_output_dir}/cluster_report.txt"
+            fi
+        fi
         
         # Create RGB overlay for visualization
         local overlay="${mask_output_dir}/overlay.nii.gz"
-        log_message "Creating RGB overlay..."
-        overlay 1 0 "$flair_file" 1000 2000 "$hyperintensity_bin" 1 1 0 "$overlay"
+        log_message "Creating RGB overlay to ${mask_output_dir}/overlay.nii.gz..."
+        
+        # CRITICAL FIX: Validate files before overlay creation
+        if [ ! -f "$flair_file" ] || [ ! -f "$hyperintensity_bin" ]; then
+            log_formatted "WARNING" "Missing files for overlay creation - FLAIR: $flair_file, hyperintensity: $hyperintensity_bin"
+            log_message "Skipping overlay creation for $mask_name"
+        else
+            if ! overlay 1 0 "$flair_file" 1000 2000 "$hyperintensity_bin" 1 1 0 "$overlay" 2>/dev/null; then
+                log_formatted "WARNING" "FSL overlay creation failed for $mask_name, trying fallback method"
+                
+                # Fallback: create simple overlay using fslmaths
+                if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+                    if ! safe_fslmaths "Create fallback overlay for $mask_name" "$flair_file" -add "$hyperintensity_bin" "$overlay"; then
+                        log_formatted "WARNING" "Both overlay methods failed for $mask_name"
+                    else
+                        log_message "✓ Fallback overlay created for $mask_name"
+                    fi
+                else
+                    if ! fslmaths "$flair_file" -add "$hyperintensity_bin" "$overlay" 2>/dev/null; then
+                        log_formatted "WARNING" "Both overlay methods failed for $mask_name"
+                    else
+                        log_message "✓ Fallback overlay created for $mask_name"
+                    fi
+                fi
+            else
+                log_message "✓ FSL overlay created successfully for $mask_name"
+            fi
+        fi
         
         # Create visual slices
-        slicer "$overlay" -a "${mask_output_dir}/hyperintensities_${mask_name}.png" || true
+        if [ -f "$overlay" ]; then
+            log_message "Creating visual slices for $mask_name..."
+            if ! slicer "$overlay" -a "${mask_output_dir}/hyperintensities_${mask_name}.png" 2>/dev/null; then
+                log_formatted "WARNING" "Failed to create visual slices for $mask_name overlay"
+                
+                # Try slicer on the hyperintensity mask directly as fallback
+                if [ -f "$hyperintensity_bin" ]; then
+                    log_message "Trying fallback slices using hyperintensity mask..."
+                    if slicer "$hyperintensity_bin" -a "${mask_output_dir}/hyperintensities_${mask_name}_mask.png" 2>/dev/null; then
+                        log_message "✓ Fallback slices created for $mask_name"
+                    else
+                        log_formatted "WARNING" "Both slicer methods failed for $mask_name"
+                    fi
+                fi
+            else
+                log_message "✓ Visual slices created successfully for $mask_name"
+            fi
+        else
+            log_formatted "WARNING" "No overlay file available for slicing: $overlay"
+        fi
         
         # Create report
         {
@@ -843,24 +1064,134 @@ analyze_hyperintensities_in_all_masks() {
     local all_masks="${output_dir}/all_masks_combined.nii.gz"
     log_message "Creating combined visualization of all masks..."
     
-    # Start with an empty volume
-    fslmaths "$mask_files[0]" -mul 0 "$all_masks"
+    # CRITICAL FIX: Check if we have any masks before proceeding
+    if [ ${#mask_files[@]} -eq 0 ]; then
+        log_formatted "WARNING" "No mask files available for combined visualization"
+        return 0
+    fi
+    
+    # Validate the first mask file exists before using it
+    if [ ! -f "${mask_files[0]}" ]; then
+        log_formatted "ERROR" "First mask file does not exist: ${mask_files[0]}"
+        return 1
+    fi
+    
+    # Start with an empty volume using the first available mask as template
+    log_message "Using template mask: ${mask_files[0]}"
+    
+    # CRITICAL FIX: Validate template mask before creating combined visualization
+    if ! fslinfo "${mask_files[0]}" >/dev/null 2>&1; then
+        log_formatted "ERROR" "Invalid template mask file: ${mask_files[0]}"
+        return 1
+    fi
+    
+    # Use safe_fslmaths if available
+    if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+        if ! safe_fslmaths "Create empty template for combined masks" "${mask_files[0]}" -mul 0 "$all_masks"; then
+            log_formatted "ERROR" "Failed to create empty template for combined visualization"
+            return 1
+        fi
+    else
+        if ! fslmaths "${mask_files[0]}" -mul 0 "$all_masks"; then
+            log_formatted "ERROR" "Failed to create empty template for combined visualization"
+            return 1
+        fi
+    fi
     
     # Add each hyperintensity map with a different value
     for i in "${!mask_names[@]}"; do
         local hyper_bin="${output_dir}/${mask_names[$i]}/hyperintensities_bin.nii.gz"
         if [ -f "$hyper_bin" ]; then
+            # CRITICAL FIX: Validate hyperintensity binary file before adding
+            if ! fslinfo "$hyper_bin" >/dev/null 2>&1; then
+                log_formatted "WARNING" "Invalid hyperintensity file, skipping: $hyper_bin"
+                continue
+            fi
+            
             # Add with different intensity for each mask
             local intensity=$((i+1))
-            fslmaths "$hyper_bin" -mul $intensity -add "$all_masks" "$all_masks"
+            log_message "Adding ${mask_names[$i]} hyperintensities with intensity $intensity"
+            
+            # Use safe_fslmaths if available
+            if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+                if ! safe_fslmaths "Add hyperintensities for ${mask_names[$i]}" "$hyper_bin" -mul $intensity -add "$all_masks" "$all_masks"; then
+                    log_formatted "WARNING" "Failed to add hyperintensities for ${mask_names[$i]}"
+                    continue
+                fi
+            else
+                if ! fslmaths "$hyper_bin" -mul $intensity -add "$all_masks" "$all_masks"; then
+                    log_formatted "WARNING" "Failed to add hyperintensities for ${mask_names[$i]}"
+                    continue
+                fi
+            fi
+        else
+            log_message "No hyperintensity file found for ${mask_names[$i]}: $hyper_bin"
         fi
     done
     
-    # Create multi-color overlay
-    overlay 1 0 "$flair_file" 1000 2000 "$all_masks" 1 5 "$all_masks" > "${output_dir}/all_masks_overlay.nii.gz"
+    # Create multi-color overlay with error checking
+    if [ -f "$all_masks" ]; then
+        log_message "Creating multi-color overlay..."
+        
+        # CRITICAL FIX: Validate FLAIR and combined masks before overlay
+        if [ ! -f "$flair_file" ]; then
+            log_formatted "ERROR" "FLAIR file not found for combined overlay: $flair_file"
+        elif ! fslinfo "$flair_file" >/dev/null 2>&1; then
+            log_formatted "ERROR" "Invalid FLAIR file for combined overlay: $flair_file"
+        elif ! fslinfo "$all_masks" >/dev/null 2>&1; then
+            log_formatted "ERROR" "Invalid combined masks file: $all_masks"
+        else
+            if overlay 1 0 "$flair_file" 1000 2000 "$all_masks" 1 5 "${output_dir}/all_masks_overlay.nii.gz" 2>/dev/null; then
+                log_message "✓ Multi-color overlay created successfully"
+            else
+                log_formatted "WARNING" "Failed to create multi-color overlay, creating simple overlay"
+                # Fallback: create simple overlay with fslmaths
+                if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+                    if safe_fslmaths "Create simple combined overlay" "$flair_file" -add "$all_masks" "${output_dir}/all_masks_overlay.nii.gz"; then
+                        log_message "✓ Simple overlay created as fallback"
+                    else
+                        log_formatted "WARNING" "Both overlay methods failed"
+                    fi
+                else
+                    if fslmaths "$flair_file" -add "$all_masks" "${output_dir}/all_masks_overlay.nii.gz" 2>/dev/null; then
+                        log_message "✓ Simple overlay created as fallback"
+                    else
+                        log_formatted "WARNING" "Both overlay methods failed"
+                    fi
+                fi
+            fi
+        fi
+    else
+        log_formatted "WARNING" "Combined masks file not created, skipping overlay"
+    fi
     
-    # Create visual slices
-    slicer "${output_dir}/all_masks_overlay.nii.gz" -a "${output_dir}/all_masks_overlay.png" || true
+    # Create visual slices with error checking
+    if [ -f "${output_dir}/all_masks_overlay.nii.gz" ]; then
+        log_message "Creating visual slices for combined overlay..."
+        
+        # CRITICAL FIX: Validate overlay file before slicing
+        if ! fslinfo "${output_dir}/all_masks_overlay.nii.gz" >/dev/null 2>&1; then
+            log_formatted "WARNING" "Invalid overlay file for slicing: ${output_dir}/all_masks_overlay.nii.gz"
+        else
+            if slicer "${output_dir}/all_masks_overlay.nii.gz" -a "${output_dir}/all_masks_overlay.png" 2>/dev/null; then
+                log_message "✓ Visual slices created successfully"
+            else
+                log_formatted "WARNING" "Failed to create visual slices for combined overlay"
+                
+                # Try slicing the combined masks directly as fallback
+                if [ -f "$all_masks" ] && fslinfo "$all_masks" >/dev/null 2>&1; then
+                    log_message "Trying fallback slices using combined masks..."
+                    if slicer "$all_masks" -a "${output_dir}/all_masks_combined.png" 2>/dev/null; then
+                        log_message "✓ Fallback slices created using combined masks"
+                    else
+                        log_formatted "WARNING" "Both slicing methods failed"
+                    fi
+                fi
+            fi
+        fi
+    else
+        log_formatted "WARNING" "No overlay file available for slicing"
+    fi
     
     log_formatted "SUCCESS" "Hyperintensity analysis completed for all segmentation masks"
     return 0
