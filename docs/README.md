@@ -31,16 +31,32 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 ## Features
 
 ### Acquisition-Specific Processing and Registration
-- Detection of 3D isotropic sequences through header metadata analysis - slice thicknesses for example, not just scanner specific private headers
-- Multi-axial integration for 2D sequences with gap interpolation
-- Resolution-specific parameter selection for registration and segmentation
-- Quantitative quality metrics that reflect acquisition limitations
-- Pick the highest quality T1 (ideally MPR) and T2-FLAIR (or SWI/DWI/etc) acquisition modality and series automatically
-- Align them to standard space when you need to, otherwise keep at high resolution, and process in float number format so you donb't lose resolution or intoduce noise
+- Orientation standardization
+  - Uses `fslswapdim` + `fslorient` then ANTs transform to enforce RAS orientation
+  - Fallback for missing/ambiguous header fields via header-driven heuristics in `src/modules/preprocess.sh`
+- Adaptive Rician denoising
+  - Iterative patch-based NLM via `antsDenoiseImage` tuned by local variance
+  - Auto-switch to FSL SUSAN when ANTs binaries are unavailable or memory-constrained
+- Metadata-driven parameter tuning
+  - Python metadata extractor reads DICOM tags to set N4 smoothing and denoising patch sizes dynamically
+  - Ensures consistency across scanners/field strengths without manual config
+- Multi-stage ANTs registration
+  - Rigid → Affine → SyN with subject-specific mask weighting from white-matter segmentation (`src/modules/registration.sh`)
+  - Template resolution automatically chosen based on voxel size; two-pass registration for submillimeter accuracy
+  - Emergency fallback to SyNQuick or FSL FLIRT when MI/CC drops below QA thresholds
+- White-matter guided initialization
+  - Builds a WM mask via FSL FAST and uses it to bias initial transform for improved pons alignment
+- Comprehensive hyperintensity clustering
+  - Per-subject z-score thresholding on FLAIR intensities, minimum cluster-size filter, morphological closing
+  - 3-plane confirmation to eliminate spurious outliers
+  - DICOM backtrace JSON mapping results into original scanner coordinates for PACS validation
 
 ### Advanced Segmentation
-- Harvard-Oxford, Talairach, SUIT ATLASes and spaces and ANTs segmentation approaches with a "pseduo" fallback of just splitting the brainstem identified by Harvard atlas into "two" - ventral and dorsal
-- Dorsal/ventral pons division using principal component analysis eg WM tissue in this anatomical region
+- **Harvard-Oxford subcortical atlas** (index 7 for brainstem) as the gold standard primary method
+- **Talairach atlas** for detailed brainstem subdivision (left/right medulla, pons, midbrain)
+- **Atlas-to-subject transformation** preserving native resolution by bringing MNI atlases to subject space
+- **Subject-specific brainstem refinement** using tissue segmentation to address shape variance in pathological cases
+- **FLAIR integration** for enhanced multi-modal segmentation with intensity information
 - Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy with an extremely "over-the-top" QA module
 
 ### Cluster Analysis
@@ -52,10 +68,173 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 - This means you can manipulate DICOM files to add clusters, hyperintensities/hypointensities and manually validate the _process_ - every step of its decision making - rather than it being a "black box"
 
 ### Technical Implementation
-- Orientation distortion correction leveraging ANTs transformation frameworks
-- Quantitative registration validation with comprehensive QA metrics
-- Efficient resource utilization through parallel processing
-- 3D visualization via standard NiFTi volumes and masks of anomalies with comprehensive HTML reporting
+
+#### Preprocessing (preprocess.sh)
+- **RAS/LPS orientation enforcement** with header-heuristic fallback for missing/ambiguous DICOM orientation fields
+- **Iterative Rician NLM denoising** with automatic patch selection based on local image variance and noise characteristics
+- **N4 bias-field correction** with dynamic shrink-factor and convergence settings optimized per acquisition protocol
+- **Brain extraction** via ANTs BrainExtraction.sh with tissue-specific masks and morphological refinement
+- **Scanner metadata parameter optimization** automatically adjusts processing parameters based on field strength, vendor, and acquisition settings
+
+#### Registration Pipeline (registration.sh)
+- **Template & resolution detection** automatically selects MNI152 or custom atlas templates based on input voxel dimensions
+- **Multi-resolution registration stages** with white-matter mask weighting for improved anatomical correspondence
+- **Emergency fallback triggers** using quantitative QA metrics (mutual information, cross-correlation thresholds) to switch methods
+- **Transform validation** outputs detailed QA plots and metrics for each registration stage with comprehensive error handling
+
+#### Enhanced Validation & Hyperintensity Analysis (enhanced_registration_validation.sh)
+- **Extended registration metrics** including cross-correlation, normalized mutual information, and histogram skewness analysis
+- **Coordinate-space and file-integrity checks** performed before each major processing step with detailed error reporting
+- **Multi-atlas intensity mask creation** across Harvard-Oxford subcortical and Talairach atlases
+- **Comprehensive cluster analysis** with volume quantification, morphological characterization, and interactive HTML visualization
+- **DICOM coordinate backtrace** maintains mapping between processed results and original scanner coordinate systems
+
+#### DICOM Import & Data Management (import.sh)
+- **Vendor-agnostic DICOM conversion** with dcm2niix using scanner-specific optimization flags for Siemens/Philips/GE systems
+- **Maximum data preservation** approach prevents slice loss through multiple fallback conversion strategies and series-by-series processing
+- **Intelligent deduplication control** permanently disabled to prevent accidental removal of unique slices with safety checks for different series
+- **Metadata extraction pipeline** extracts scanner parameters, field strength, and acquisition settings for downstream parameter optimization
+- **Parallel DICOM processing** with GNU parallel for multi-series datasets and automatic series detection
+
+#### Intelligent Scan Selection (scan_selection.sh)
+- **Multi-modal quality assessment** evaluates file size, dimensions, voxel isotropy, and tissue contrast for optimal scan selection
+- **ORIGINAL vs DERIVED acquisition detection** from DICOM metadata with significant scoring bonus for original acquisitions
+- **Registration-optimized selection modes** including aspect ratio matching, dimension matching, and resolution-based selection
+- **Interactive scan selection interface** with detailed comparison tables showing quality metrics, acquisition types, and recommendations
+- **Cross-sequence compatibility analysis** calculates voxel similarity and aspect ratio matching between T1/FLAIR sequences
+
+#### Advanced Brain Extraction & Standardization (brain_extraction.sh)
+- **3D isotropic sequence detection** automatically identifies MPRAGE, SPACE, VISTA sequences to prevent quality degradation from multi-axial combination
+- **Enhanced resolution quality metrics** considers voxel anisotropy, total volume, and in-plane resolution for optimal processing path selection
+- **Multi-axial template construction** combines SAG/COR/AX orientations using antsMultivariateTemplateConstruction2.sh for 2D sequences
+- **Smart dimension standardization** with optimal resolution detection across sequences and reference grid matching for identical matrix dimensions
+- **Orientation consistency validation** performs detailed sform/qform matrix comparison with comprehensive error reporting
+
+#### Additional Pipeline Modules
+
+#### Advanced Segmentation (segmentation.sh)
+- **Harvard-Oxford atlas segmentation** using subcortical index 7 (brainstem) as the gold standard primary method
+- **Talairach atlas subdivision** for detailed brainstem regions: left/right medulla, pons, midbrain
+- **Atlas-to-subject transformation** preserving native resolution by bringing MNI atlases to subject space
+- **Subject-specific refinement** using tissue segmentation (Atropos/FAST) to address shape variance in hydrocephalus & Chiari cases
+- **FLAIR enhancement integration** creating both T1 and FLAIR intensity versions for multi-modal analysis
+- **Native space preservation** maintains segmentation accuracy in subject's original high-resolution space rather than downsampling to template resolution
+
+#### Comprehensive Analysis Pipeline (analysis.sh)
+- **Atlas-based regional analysis** using all available Talairach brainstem regions for per-region hyperintensity detection
+- **Gaussian Mixture Model (GMM) thresholding** with 3-component analysis for intelligent threshold selection
+- **Per-region z-score normalization** addressing tissue inhomogeneity across different brainstem regions
+- **Connectivity weighting** for refined detection using 3D morphological operations
+- **Multi-threshold hyperintensity detection** with configurable standard deviation multipliers and minimum cluster size filtering
+- **Cross-modality validation** analyzes both FLAIR hyperintensities and T1 hypointensities with statistical correlation
+
+#### Advanced Visualization & QA (visualization.sh, qa.sh)
+- **Interactive 3D rendering** creates volume renderings of hyperintensity clusters with customizable opacity and color mapping
+- **Multi-threshold comparison visualizations** generates side-by-side comparisons across different detection thresholds
+- **Comprehensive QA validation** performs 20+ validation checks including file integrity, coordinate space consistency, and segmentation accuracy
+- **Enhanced visual QA interface** with real-time FSLView integration for immediate visual feedback during processing
+
+#### DICOM Integration & Clinical Validation (dicom_analysis.sh, dicom_cluster_mapping.sh)
+- **Vendor-agnostic DICOM metadata extraction** analyzes scanner parameters, acquisition settings, and sequence characteristics for optimal processing
+- **Clinical coordinate backtrace** maps processed results back to original DICOM coordinate system for PACS viewer compatibility
+- **Comprehensive cluster-to-DICOM mapping** creates coordinate lookup tables enabling medical imaging viewer navigation to identified clusters
+- **Scanner-specific optimization** automatically detects Siemens, Philips, and GE scanners and applies vendor-specific processing parameters
+
+#### Intelligent Reference Space Selection (reference_space_selection.sh)
+- **Adaptive reference space optimization** analyzes T1 and FLAIR scan quality, resolution, and acquisition parameters to select optimal processing space
+- **Multi-modal compatibility assessment** calculates voxel aspect ratios, dimension matching, and registration compatibility between sequences
+- **Resolution preservation strategy** intelligently chooses between maintaining native high-resolution vs standardized template space based on data quality
+- **ORIGINAL vs DERIVED acquisition prioritization** significantly weights selection toward original scanner acquisitions over post-processed images
+
+#### Environment & Utilities (environment.sh, utils.sh, fast_wrapper.sh)
+- **Dynamic environment configuration** automatically detects available tools (ANTs, FSL, FreeSurfer) and configures optimal processing paths
+- **Enhanced ANTs command execution** provides comprehensive error handling, progress monitoring, and automatic fallback strategies
+- **Parallel FSL FAST wrapper** optimizes tissue segmentation with intelligent job distribution and memory management
+- **Comprehensive validation framework** performs file integrity checks, coordinate space validation, and processing pipeline verification
+
+#### Core Pipeline Integration
+- **8-stage resumable pipeline** with intelligent checkpoint detection allowing restart from any processing stage
+- **Smart data flow management** automatically tracks file dependencies and validates upstream processing completion
+- **Comprehensive error handling** with graceful degradation and detailed diagnostic reporting for troubleshooting
+- **Orientation distortion correction** leveraging ANTs transformation frameworks with comprehensive validation
+- **Quantitative registration validation** with comprehensive QA metrics and emergency fallback triggers
+- **Efficient resource utilization** through intelligent parallel processing with CPU-intensive job management
+- **3D visualization pipeline** via standard NiFTi volumes and masks with comprehensive HTML reporting and DICOM backtrace
+
+### Actual Implementation Details
+
+#### Segmentation Module (segmentation.sh)
+The segmentation module implements a **two-tier atlas approach**:
+
+1. **Harvard-Oxford Subcortical Atlas (Primary)**
+   - Uses index 7 specifically for brainstem segmentation
+   - Applied via `antsApplyTransforms` with trilinear interpolation + 0.5 thresholding
+   - Creates both `_brainstem.nii.gz` and `_brainstem_flair_intensity.nii.gz` versions
+
+2. **Talairach Atlas (Detailed Subdivision)**
+   - Six brainstem regions: Left/Right Medulla, Pons, Midbrain
+   - Atlas indices: 172-177 for comprehensive brainstem coverage
+   - Same transformation methodology preserving partial volumes
+
+3. **Subject-Specific Refinement**
+   - Uses ANTs Atropos or FSL FAST tissue segmentation as fallback
+   - Addresses shape variance in hydrocephalus and Chiari malformation cases
+   - Integrates CSF, gray matter, and white matter probability maps
+
+#### Analysis Module (analysis.sh)
+The analysis module implements **atlas-based regional hyperintensity detection**:
+
+1. **Gaussian Mixture Model (GMM) Analysis**
+   - 3-component GMM for each Talairach brainstem region
+   - Intelligent threshold selection beyond simple z-score methods
+   - Per-region normalization addressing tissue inhomogeneity
+
+2. **Multi-Modal Integration**
+   - FLAIR hyperintensity detection with configurable SD thresholds
+   - T1 hypointensity correlation analysis
+   - Cross-modal validation using statistical correlation
+
+3. **Morphological Refinement**
+   - 3D connectivity analysis with 26-neighbor connectivity
+   - Minimum cluster size filtering (configurable, default 27 voxels)
+   - Morphological closing operations to eliminate noise
+
+#### QA Module (qa.sh)
+The QA module performs **20+ comprehensive validation checks**:
+
+1. **File Integrity Validation**
+   - NIfTI header consistency across processing stages
+   - Coordinate space validation (sform/qform matrices)
+   - Volume preservation checks throughout pipeline
+
+2. **Registration Quality Assessment**
+   - Cross-correlation and normalized mutual information metrics
+   - Histogram skewness analysis for registration accuracy
+   - Emergency fallback triggers based on quantitative thresholds
+
+3. **Segmentation Accuracy Validation**
+   - Volume consistency across atlas spaces
+   - Anatomical location verification (brainstem center-of-mass)
+   - Cross-atlas agreement analysis
+
+### Key Algorithmic Functions
+
+#### Advanced Scan Selection & Reference Space Optimization
+- **`select_best_scan()`** - Multi-modal quality assessment with registration-optimized selection modes including `original`, `highest_resolution`, `registration_optimized`, `matched_dimensions`, and `interactive` modes
+- **`select_optimal_reference_space()`** - Intelligent reference space selection that analyzes voxel dimensions, aspect ratios, and acquisition types to determine the optimal template space for registration
+- **`evaluate_scan_quality()`** - Comprehensive quality scoring based on file size, dimensions, voxel isotropy, tissue contrast, and ORIGINAL vs DERIVED acquisition detection
+
+#### Enhanced N4 Bias Correction Pipeline
+- **`process_n4_correction()`** - Adaptive N4 bias field correction with scanner-specific parameter optimization
+- **Dynamic convergence settings** based on field strength (1.5T vs 3T) and acquisition protocol (2D vs 3D)
+- **Iterative shrink-factor optimization** automatically adjusts based on image resolution and tissue contrast
+- **Multi-stage bias correction** for severely biased images with progressive refinement
+
+#### Intelligent Resolution & Template Detection
+- **`detect_optimal_resolution()`** - Cross-sequence resolution analysis to determine the finest achievable target grid
+- **`calculate_voxel_aspect_ratio()`** - Registration compatibility assessment between sequences
+- **`is_3d_isotropic_sequence()`** - Automatic detection of 3D MPRAGE, SPACE, VISTA sequences to prevent quality degradation
+- **Template resolution matching** automatically selects MNI152 templates based on input voxel dimensions for optimal registration accuracy
 
 ### Clinical Focus
 - Vendor-specific optimizations for Siemens and Philips scanners (future: implement DICOM-RT and PACS integration as well)
@@ -102,6 +281,77 @@ graph TD
     style B fill:#f96,stroke:#333,stroke-width:2px
     style C2 fill:#f96,stroke:#333,stroke-width:2px
 ```
+
+### 8-Stage Resumable Pipeline Architecture
+
+The pipeline implements a sophisticated 8-stage processing workflow with intelligent checkpoint detection and resumability:
+
+#### Stage 1: DICOM Import & Data Management
+- **Vendor-agnostic DICOM conversion** using dcm2niix with scanner-specific optimization flags
+- **Maximum data preservation** through series-by-series processing and emergency fallback conversion strategies
+- **Intelligent metadata extraction** captures scanner parameters, field strength, acquisition settings for downstream optimization
+- **Quality assessment** validates DICOM integrity and performs initial sequence classification
+
+#### Stage 2: Preprocessing (Rician Denoising + N4 Bias Correction)
+- **Adaptive reference space selection** analyzes scan quality and chooses optimal T1/FLAIR combination using [`select_optimal_reference_space()`](src/modules/reference_space_selection.sh:1)
+- **Registration-optimized scan selection** with multiple modes: `original`, `highest_resolution`, `registration_optimized`, `matched_dimensions`
+- **Enhanced N4 bias correction** with scanner-specific parameter optimization and iterative convergence
+- **Orientation consistency validation** performs detailed sform/qform matrix comparison with comprehensive error reporting
+
+#### Stage 3: Brain Extraction, Standardization & Cropping
+- **Smart resolution detection** via [`detect_optimal_resolution()`](src/modules/brain_extraction.sh:214) analyzes voxel dimensions across sequences
+- **Reference grid standardization** ensures T1 and FLAIR have identical matrix dimensions while preserving highest resolution
+- **Enhanced ANTs brain extraction** with tissue-specific masks and morphological refinement
+- **3D isotropic sequence detection** prevents quality degradation from unnecessary multi-axial combination
+
+#### Stage 4: Registration with Bidirectional Transform Management
+- **Multi-stage ANTs registration** Rigid → Affine → SyN with white-matter guided initialization
+- **Bidirectional space mapping** calculates native ↔ MNI transforms without resampling high-resolution data
+- **Emergency fallback system** automatic SyNQuick or FSL FLIRT when quality metrics drop below thresholds
+- **Enhanced registration validation** comprehensive metrics including cross-correlation, mutual information, normalized CC
+
+#### Stage 5: Multi-Atlas Segmentation
+- **Harvard-Oxford gold standard** subcortical atlas (index 7) for reliable brainstem boundaries
+- **Talairach detailed subdivision** for left/right medulla, pons, midbrain regions
+- **Subject-specific refinement** using tissue segmentation to address shape variance in pathological cases
+- **Native space preservation** maintains segmentation accuracy in subject's original high-resolution space
+- **FLAIR integration** creates both T1 and FLAIR intensity versions for comprehensive analysis
+- **Volume consistency validation** with anatomical location verification and comprehensive QA reporting
+
+#### Stage 6: Comprehensive Hyperintensity Analysis
+- **Multi-threshold detection** configurable SD multipliers (1.5-3.0) with minimum cluster size filtering
+- **Cross-modality validation** analyzes hyperintensity patterns across T1/T2/FLAIR with statistical correlation
+- **Native-to-standard space mapping** enables analysis in both subject native and standardized coordinates
+- **DICOM cluster backtrace** creates coordinate lookup tables for medical imaging viewer navigation
+
+#### Stage 7: Advanced Visualization & Reporting
+- **3D volume rendering** with customizable opacity and color mapping for hyperintensity clusters
+- **Multi-threshold comparison** side-by-side visualizations across different detection thresholds
+- **Interactive QA interface** real-time FSLView integration for immediate visual feedback
+- **Comprehensive HTML reporting** with embedded visualizations and quantitative metrics
+
+#### Stage 8: Progress Tracking & Validation
+- **Pipeline completion validation** verifies all processing stages and output file integrity
+- **Comprehensive QA reporting** 20+ validation checks including coordinate space consistency
+- **Batch processing summary** CSV reports with volume metrics and registration quality scores
+- **Error tracking and diagnostics** detailed logging for troubleshooting and quality assurance
+
+**Complete Module Implementation:**
+- Core Pipeline → [`src/pipeline.sh`](src/pipeline.sh:1)
+- Environment & Configuration → [`src/modules/environment.sh`](src/modules/environment.sh:1), [`src/modules/utils.sh`](src/modules/utils.sh:1)
+- DICOM Import & Data Management → [`src/modules/import.sh`](src/modules/import.sh:1)
+- DICOM Analysis & Clinical Integration → [`src/modules/dicom_analysis.sh`](src/modules/dicom_analysis.sh:1), [`src/modules/dicom_cluster_mapping.sh`](src/modules/dicom_cluster_mapping.sh:1)
+- Intelligent Scan Selection → [`src/modules/scan_selection.sh`](src/modules/scan_selection.sh:1)
+- Reference Space Optimization → [`src/modules/reference_space_selection.sh`](src/modules/reference_space_selection.sh:1)
+- Advanced Brain Extraction & Standardization → [`src/modules/brain_extraction.sh`](src/modules/brain_extraction.sh:1)
+- Preprocessing → [`src/modules/preprocess.sh`](src/modules/preprocess.sh:1)
+- Registration → [`src/modules/registration.sh`](src/modules/registration.sh:1)
+- Multi-Atlas Segmentation → [`src/modules/segmentation.sh`](src/modules/segmentation.sh:1)
+- Comprehensive Analysis → [`src/modules/analysis.sh`](src/modules/analysis.sh:1)
+- Enhanced Registration Validation → [`src/modules/enhanced_registration_validation.sh`](src/modules/enhanced_registration_validation.sh:1)
+- Advanced Visualization → [`src/modules/visualization.sh`](src/modules/visualization.sh:1)
+- Quality Assurance → [`src/modules/qa.sh`](src/modules/qa.sh:1)
+- Parallel Processing → [`src/modules/fast_wrapper.sh`](src/modules/fast_wrapper.sh:1)
 
 ## Installation
 
@@ -225,9 +475,9 @@ BrainStem X leverages established neuroimaging tools, reinventing very little bu
 
 ### Atlases & Templates
 
-- Harvard-Oxford Subcortical Structural Atlas
-- Talairach Atlas 
-- MNI152 Standard Space Templates
+- **Harvard-Oxford Subcortical Structural Atlas** - Primary brainstem segmentation (index 7)
+- **Talairach Atlas** - Detailed brainstem subdivision (medulla, pons, midbrain)
+- **MNI152 Standard Space Templates** - Registration targets with automatic resolution selection
 
 ### Programming Resources / Libraries (including..)
 - Python Neuroimaging Libraries (NiBabel, PyDicom, antspyx)

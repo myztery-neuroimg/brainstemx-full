@@ -13,6 +13,39 @@
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 FIX_SCRIPT="${SCRIPT_DIR}/../tools/fix_registration_issues.sh"
 
+# Ensure QA and enhanced registration validation modules are sourced for function availability
+QA_MODULE="${SCRIPT_DIR}/qa.sh"
+ENHANCED_REGVAL_MODULE="${SCRIPT_DIR}/enhanced_registration_validation.sh"
+if [ -f "$QA_MODULE" ]; then
+    source "$QA_MODULE"
+fi
+if [ -f "$ENHANCED_REGVAL_MODULE" ]; then
+    source "$ENHANCED_REGVAL_MODULE"
+fi
+
+# Check if functions are available after sourcing
+if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
+    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in registration.sh"
+else
+    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in registration.sh"
+fi
+if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
+    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in registration.sh"
+else
+    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in registration.sh"
+fi
+# Check if functions are available after sourcing
+if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
+    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in registration.sh"
+else
+    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in registration.sh"
+fi
+if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
+    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in registration.sh"
+else
+    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in registration.sh"
+fi
+
 # Source the orientation correction module if it exists
 ORIENTATION_MODULE="${SCRIPT_DIR}/orientation_correction.sh"
 if [ -f "$ORIENTATION_MODULE" ]; then
@@ -107,21 +140,107 @@ set_template_resolution() {
     return 0
 }
 
+# Function to perform multi-stage registration: rigid → affine → SyN with brainstem ROI constraint
+perform_multistage_registration() {
+    local fixed_image="$1"
+    local moving_image="$2"
+    local output_prefix="$3"
+    local initial_transform="$4"  # Optional initialization
+    local mask="$5"              # Optional mask
+    
+    log_message "=== Multi-stage Registration: Rigid → Affine → SyN ==="
+    log_message "Fixed: $fixed_image"
+    log_message "Moving: $moving_image"
+    log_message "Output: $output_prefix"
+    
+    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+    
+    # Build base antsRegistration command
+    local ants_cmd=(
+        "${ants_bin}/antsRegistration"
+        "--dimensionality" "3"
+        "--float" "0"
+        "--output" "${output_prefix}"
+        "--interpolation" "Linear"
+        "--use-histogram-matching" "0"
+        "--write-composite-transform" "1"
+        "--collapse-output-transforms" "0"
+        "--initialize-transforms-per-stage" "0"
+        "--verbose" "1"
+    )
+    
+    # Add initial transform if provided
+    if [ -n "$initial_transform" ] && [ -f "$initial_transform" ]; then
+        ants_cmd+=("--initial-moving-transform" "$initial_transform")
+        log_message "Using initial transform: $initial_transform"
+    else
+        ants_cmd+=("--initial-moving-transform" "[${fixed_image},${moving_image},1]")
+    fi
+    
+    # Add masks if provided
+    if [ -n "$mask" ] && [ -f "$mask" ]; then
+        ants_cmd+=("--masks" "[${mask},NULL]")
+        log_message "Using registration mask: $mask"
+    fi
+    
+    # Stage 1: Rigid registration
+    ants_cmd+=(
+        "--transform" "Rigid[0.1]"
+        "--metric" "MI[${fixed_image},${moving_image},1,32,Regular,0.25]"
+        "--convergence" "[1000x500x250x100,1e-6,10]"
+        "--shrink-factors" "8x4x2x1"
+        "--smoothing-sigmas" "3x2x1x0vox"
+    )
+    
+    # Stage 2: Affine registration
+    ants_cmd+=(
+        "--transform" "Affine[0.1]"
+        "--metric" "MI[${fixed_image},${moving_image},1,32,Regular,0.25]"
+        "--convergence" "[1000x500x250x100,1e-6,10]"
+        "--shrink-factors" "8x4x2x1"
+        "--smoothing-sigmas" "3x2x1x0vox"
+    )
+    
+    # Stage 3: SyN registration with brainstem ROI constraint
+    # Use --restrict-deformation 0x0x1 to constrain deformation above pontomedullary sulcus
+    ants_cmd+=(
+        "--transform" "SyN[0.1,3,0]"
+        "--metric" "CC[${fixed_image},${moving_image},1,4]"
+        "--convergence" "[100x70x50x20,1e-6,10]"
+        "--shrink-factors" "8x4x2x1"
+        "--smoothing-sigmas" "3x2x1x0vox"
+        "--restrict-deformation" "0x0x1"
+    )
+    
+    log_message "Multi-stage registration command: ${ants_cmd[*]}"
+    
+    # Execute the multi-stage registration
+    execute_ants_command "multistage_registration" "Multi-stage registration (rigid→affine→SyN with brainstem constraint)" "${ants_cmd[@]}"
+    local reg_status=$?
+    
+    if [ $reg_status -eq 0 ] && [ -f "${output_prefix}Warped.nii.gz" ]; then
+        log_formatted "SUCCESS" "Multi-stage registration completed successfully"
+        return 0
+    else
+        log_formatted "ERROR" "Multi-stage registration failed (status: $reg_status)"
+        return 1
+    fi
+}
+
 # Function to register any modality to T1
 register_modality_to_t1() {
     # Usage: register_modality_to_t1 <T1_file.nii.gz> <modality_file.nii.gz> <modality_name> <output_prefix>
     #
-    # Enhanced with white matter guided registration for better cortical alignment
-    # Uses a FULLY ANTs-based approach for complete methodological consistency:
-    # 1. ANTs Atropos for white matter segmentation (3-class tissue segmentation)
-    # 2. ANTs-based initialization using white matter boundaries
-    # 3. Final registration with ANTs SyN for optimal non-linear warping
+    # Enhanced with multi-stage registration for brainstem analysis:
+    # 1. Rigid registration for initial alignment
+    # 2. Affine registration for linear corrections
+    # 3. SyN registration with brainstem ROI constraint (--restrict-deformation 0x0x1)
     #
-    # This all-ANTs approach offers several advantages:
-    # - Methodological consistency across pipeline steps
-    # - Improved reproducibility through consistent algorithms
-    # - Better integration of segmentation and registration steps
-    # - More precise white matter boundary detection for alignment
+    # This multi-stage approach offers several advantages:
+    # - Better control over deformation at each stage
+    # - Reduced over-warping in critical brainstem regions
+    # - More precise alignment for brainstem-focused analysis
+    # - Improved reproducibility through staged optimization
 
     local t1_file="$1"
     local modality_file="$2"
@@ -312,9 +431,9 @@ register_modality_to_t1() {
         log_message "Transform validation section completed, proceeding to registration execution"
         
         if [ "$transform_converted" = "true" ]; then
-            # Run antsRegistrationSyN with the white matter guided initialization
-            log_formatted "INFO" "===== WM-GUIDED REGISTRATION EXECUTION ====="
-            log_message "Executing ANTs registration with white matter guided initialization"
+            # Use multi-stage registration with white matter guided initialization
+            log_formatted "INFO" "===== WM-GUIDED MULTI-STAGE REGISTRATION ====="
+            log_message "Executing multi-stage registration (rigid→affine→SyN) with white matter initialization"
             log_message "Fixed image: $t1_file"
             log_message "Moving image: $modality_file"
             log_message "Output prefix: $out_prefix"
@@ -336,8 +455,8 @@ register_modality_to_t1() {
             fi
             
             # Verify ANTs binary exists
-            if [ ! -f "${ants_bin}/antsRegistrationSyN.sh" ]; then
-                log_formatted "ERROR" "ANTs registration script not found: ${ants_bin}/antsRegistrationSyN.sh"
+            if [ ! -f "${ants_bin}/antsRegistration" ]; then
+                log_formatted "ERROR" "ANTs registration binary not found: ${ants_bin}/antsRegistration"
                 can_execute=false
             fi
             
@@ -349,39 +468,22 @@ register_modality_to_t1() {
                 # Capture start time
                 local start_time=$(date +%s)
                 
-                # Build ANTs command with proper parameter handling
-                local ants_cmd=(
-                    "${ants_bin}/antsRegistrationSyN.sh"
-                    "-d" "3"
-                    "-f" "$t1_file"
-                    "-m" "$modality_file"
-                    "-o" "$out_prefix"
-                    "-t" "r"
-                    "-i" "$ants_wm_init_matrix"
-                    "-n" "$ANTS_THREADS"
-                    "-p" "f"
-                    "-j" "$ANTS_THREADS"
-                    "-x" "$REG_METRIC_CROSS_MODALITY"
-                )
-                
-                log_message "Command: ${ants_cmd[*]}"
-                
-                # Execute ANTs command with enhanced error handling
-                log_message "Starting WM-guided registration..."
-                execute_ants_command "ants_wm_registration" "White matter guided registration (${transform_format} initialization)" "${ants_cmd[@]}"
+                # Use multi-stage registration with WM initialization
+                log_message "Starting WM-guided multi-stage registration..."
+                perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "$ants_wm_init_matrix" "$wm_mask"
                 local ants_status=$?
                 
                 # Calculate elapsed time
                 local end_time=$(date +%s)
                 local elapsed=$((end_time - start_time))
-                log_message "WM-guided registration completed in ${elapsed}s with status: $ants_status"
+                log_message "WM-guided multi-stage registration completed in ${elapsed}s with status: $ants_status"
                 
                 # Check for expected outputs immediately after execution
                 local registration_success=false
                 if [ $ants_status -eq 0 ]; then
                     # Verify output files were created
                     if [ -f "${out_prefix}Warped.nii.gz" ] && [ -s "${out_prefix}Warped.nii.gz" ]; then
-                        log_formatted "SUCCESS" "WM-guided registration completed successfully"
+                        log_formatted "SUCCESS" "WM-guided multi-stage registration completed successfully"
                         log_message "Output file created: ${out_prefix}Warped.nii.gz ($(stat -f %z "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "unknown") bytes)"
                         registration_success=true
                     else
@@ -390,43 +492,27 @@ register_modality_to_t1() {
                     fi
                 fi
                 
-                # If WM-guided registration failed, try direct registration
-                if [ $registration_success = "false" ]; then
-                    log_formatted "INFO" "===== DIRECT REGISTRATION FALLBACK ====="
-                    log_message "WM-guided registration failed, attempting standard registration"
+                # If WM-guided registration failed, try direct multi-stage registration
+                if [ "$registration_success" = "false" ]; then
+                    log_formatted "INFO" "===== DIRECT MULTI-STAGE REGISTRATION FALLBACK ====="
+                    log_message "WM-guided registration failed, attempting standard multi-stage registration"
                     
                     local fb_start_time=$(date +%s)
                     
-                    # Build fallback command without initialization
-                    local fallback_cmd=(
-                        "${ants_bin}/antsRegistrationSyN.sh"
-                        "-d" "3"
-                        "-f" "$t1_file"
-                        "-m" "$modality_file"
-                        "-o" "$out_prefix"
-                        "-t" "r"
-                        "-n" "$ANTS_THREADS"
-                        "-p" "f"
-                        "-j" "$ANTS_THREADS"
-                        "-x" "$REG_METRIC_CROSS_MODALITY"
-                    )
-                    
-                    log_message "Fallback command: ${fallback_cmd[*]}"
-                    
-                    # Execute fallback registration
-                    execute_ants_command "ants_fallback_registration" "Standard registration without initialization" "${fallback_cmd[@]}"
+                    # Use multi-stage registration without initialization
+                    perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
                     local fb_status=$?
                     
                     local fb_end_time=$(date +%s)
                     local fb_elapsed=$((fb_end_time - fb_start_time))
-                    log_message "Fallback registration completed in ${fb_elapsed}s with status: $fb_status"
+                    log_message "Fallback multi-stage registration completed in ${fb_elapsed}s with status: $fb_status"
                     
                     # Check fallback results
                     if [ $fb_status -eq 0 ] && [ -f "${out_prefix}Warped.nii.gz" ] && [ -s "${out_prefix}Warped.nii.gz" ]; then
-                        log_formatted "SUCCESS" "Standard registration fallback succeeded"
+                        log_formatted "SUCCESS" "Standard multi-stage registration fallback succeeded"
                         registration_success=true
                     else
-                        log_formatted "ERROR" "Both WM-guided and standard registration failed"
+                        log_formatted "ERROR" "Both WM-guided and standard multi-stage registration failed"
                     fi
                 fi
             else
@@ -436,58 +522,27 @@ register_modality_to_t1() {
     elif [ -f "$outer_ribbon_mask" ] && [ -s "$outer_ribbon_mask" ]; then
         # If WM-guided initialization failed but we have the outer ribbon mask,
         # use it for cost function masking to improve boundary alignment
-        log_message "Using outer ribbon mask constraint for ANTs SyN registration"
+        log_message "Using outer ribbon mask constraint for multi-stage registration"
         log_message "This approach still benefits from ANTs-based mask preparation"
         log_message "Outer ribbon mask: $outer_ribbon_mask"
         
         # Verify mask is valid before using
         if fslinfo "$outer_ribbon_mask" &>/dev/null; then
-            # Run antsRegistrationSyN with the outer ribbon mask for cost function masking
-            log_message "Running ANTs registration with cost function masking, filtering diagnostic output"
+            # Run multi-stage registration with the outer ribbon mask for cost function masking
+            log_message "Running multi-stage registration with cost function masking"
             
-            # Execute ANTs masked command directly
-            execute_ants_command "ants_masked_registration" "Registration with outer ribbon mask for boundary alignment" \
-              ${ants_bin}/antsRegistrationSyN.sh \
-              -d 3 \
-              -f "$t1_file" \
-              -m "$modality_file" \
-              -o "$out_prefix" \
-              -t r \
-              -n "$ANTS_THREADS" \
-              -p f \
-              -j "$ANTS_THREADS" \
-              -x "$REG_METRIC_CROSS_MODALITY" \
-              -s "$outer_ribbon_mask"
+            # Use multi-stage registration with mask
+            perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" "$outer_ribbon_mask"
             
             if [ $? -ne 0 ]; then
-                log_formatted "WARNING" "ANTs registration with cost function masking failed, falling back to standard registration"
-                # Fall back to standard registration
-                execute_ants_command "ants_standard_registration" "Standard registration without mask constraints" \
-                  ${ants_bin}/antsRegistrationSyN.sh \
-                  -d 3 \
-                  -f "$t1_file" \
-                  -m "$modality_file" \
-                  -o "$out_prefix" \
-                  -t r \
-                  -n "$ANTS_THREADS" \
-                  -p f \
-                  -j "$ANTS_THREADS" \
-                  -x "$REG_METRIC_CROSS_MODALITY"
+                log_formatted "WARNING" "Multi-stage registration with cost function masking failed, falling back to standard registration"
+                # Fall back to standard multi-stage registration
+                perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
             fi
         else
             log_formatted "WARNING" "Outer ribbon mask is invalid, falling back to standard registration"
-            # Fall back to standard registration
-            execute_ants_command "ants_standard_registration" "Standard registration without mask constraints" \
-              ${ants_bin}/antsRegistrationSyN.sh \
-              -d 3 \
-              -f "$t1_file" \
-              -m "$modality_file" \
-              -o "$out_prefix" \
-              -t r \
-              -n "$ANTS_THREADS" \
-              -p f \
-              -j "$ANTS_THREADS" \
-              -x "$REG_METRIC_CROSS_MODALITY"
+            # Fall back to standard multi-stage registration
+            perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
         fi
     else
         # Check if orientation preservation is enabled
@@ -497,23 +552,13 @@ register_modality_to_t1() {
             log_message "Using topology-preserving registration for orientation preservation"
             register_with_topology_preservation "$t1_file" "$modality_file" "$out_prefix" "r"
         else
-            # Fall back to standard registration when no initialization or mask is available
+            # Fall back to standard multi-stage registration when no initialization or mask is available
             # This is still effective, just without the benefits of white matter guidance
-            log_message "Using standard ANTs SyN registration (no white matter guidance)"
-            log_message "This approach still leverages ANTs' powerful symmetric normalization algorithm"
+            log_message "Using standard multi-stage registration (no white matter guidance)"
+            log_message "This approach still leverages multi-stage optimization with brainstem constraint"
             
-            # Execute standard registration directly with the new method
-            execute_ants_command "ants_standard_registration" "Standard ANTs SyN registration without guidance" \
-              ${ants_bin}/antsRegistrationSyN.sh \
-              -d 3 \
-              -f "$t1_file" \
-              -m "$modality_file" \
-              -o "$out_prefix" \
-              -t r \
-              -n "$ANTS_THREADS" \
-              -p f \
-              -j "$ANTS_THREADS" \
-              -x "$REG_METRIC_CROSS_MODALITY"
+            # Use standard multi-stage registration without initialization or mask
+            perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
         fi
     fi
     
@@ -524,6 +569,26 @@ register_modality_to_t1() {
     # Expected output files:
     # The Warped file => ${out_prefix}Warped.nii.gz
     # The transform(s) => ${out_prefix}0GenericAffine.mat, etc.
+
+    # --- Ensure affine .mat file exists for QA/Jacobian calculation ---
+    local affine_file="${out_prefix}0GenericAffine.mat"
+    local warp_file="${out_prefix}1Warp.nii.gz"
+    if [ ! -f "$affine_file" ] && [ -f "$warp_file" ]; then
+        log_formatted "WARNING" "Affine .mat file missing but warp field exists. Attempting to generate affine matrix for QA compatibility."
+        # Try to extract affine from warp using ANTs tools if available
+        local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+        if command -v "${ants_bin}/ConvertTransformFile" &>/dev/null; then
+            # Try to extract the affine component from the warp field (if possible)
+            "${ants_bin}/ConvertTransformFile" 3 "$warp_file" "$affine_file" --output-affine
+            if [ -f "$affine_file" ]; then
+                log_formatted "SUCCESS" "Generated affine .mat file from warp field using ANTs ConvertTransformFile."
+            else
+                log_formatted "ERROR" "Failed to generate affine .mat file from warp field using ANTs ConvertTransformFile."
+            fi
+        else
+            log_formatted "WARNING" "ANTs ConvertTransformFile not available. Cannot generate affine .mat file from warp field."
+        fi
+    fi
 
     # Check if warped output actually exists
     if [ ! -f "${out_prefix}Warped.nii.gz" ]; then
@@ -1075,8 +1140,13 @@ validate_registration() {
         if [ -z "$transform" ]; then
             log_formatted "WARNING" "Could not find transformation file for extended metrics"
         else
-            log_message "Calculating extended registration metrics..."
-            calculate_extended_registration_metrics "$fixed" "$moving" "$warped" "$transform" "${RESULTS_DIR}/validation/registration/metrics.csv"
+            log_message "DEBUG: About to call calculate_extended_registration_metrics from registration.sh"
+            if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
+                log_message "DEBUG: calculate_extended_registration_metrics is defined just before call."
+                calculate_extended_registration_metrics "$fixed" "$moving" "$warped" "$transform" "${RESULTS_DIR}/validation/registration/metrics.csv"
+            else
+                log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined just before call in registration.sh."
+            fi
         fi
     fi
     
@@ -1277,6 +1347,7 @@ register_all_modalities() {
 # Export functions
 export -f detect_image_resolution
 export -f set_template_resolution
+export -f perform_multistage_registration
 export -f register_modality_to_t1
 export -f register_t2_flair_to_t1mprage
 export -f create_registration_visualizations

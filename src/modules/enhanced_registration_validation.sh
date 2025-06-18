@@ -796,6 +796,16 @@ analyze_hyperintensities_in_all_masks() {
             log_message "This may cause anatomical misalignment in analysis"
         fi
         
+        # Diagnostic logging before NAWM mask creation
+        local region_voxels=$(fslstats "$mask" -V | awk '{print $1}')
+        local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}')
+        log_message "Diagnostic: Region mask voxels: $region_voxels"
+        log_message "Diagnostic: Brain mask voxels: $brain_voxels"
+        log_message "Diagnostic: Region mask dimensions: $mask_dims"
+        log_message "Diagnostic: Brain mask dimensions: $brain_dims"
+        log_message "Diagnostic: Region mask orientation: $mask_orient"
+        log_message "Diagnostic: Brain mask orientation: $brain_orient"
+
         # Create NAWM mask (normal-appearing white matter) by excluding the region of interest
         # This gives us a reference for normal tissue intensity
         local nawm_mask="${mask_output_dir}/nawm_mask.nii.gz"
@@ -838,6 +848,13 @@ analyze_hyperintensities_in_all_masks() {
             fi
         fi
         
+        # Check if NAWM mask is empty (all zeros)
+        local nawm_voxels=$(fslstats "$nawm_mask" -V | awk '{print $1}')
+        if [ "$nawm_voxels" -eq 0 ]; then
+            log_formatted "ERROR" "NAWM mask is empty for $mask_name, skipping further analysis for this mask"
+            continue
+        fi
+
         # Calculate mean and standard deviation of NAWM
         local nawm_mean=$(fslstats "$flair_file" -k "$nawm_mask" -M)
         local nawm_std=$(fslstats "$flair_file" -k "$nawm_mask" -S)
@@ -881,6 +898,13 @@ analyze_hyperintensities_in_all_masks() {
             fi
         fi
         
+        # Check if hyperintensity mask is empty (all zeros)
+        local hyper_voxels=$(fslstats "$hyperintensity_bin" -V | awk '{print $1}')
+        if [ "$hyper_voxels" -eq 0 ]; then
+            log_formatted "WARNING" "Hyperintensity mask is empty for $mask_name, skipping further analysis for this mask"
+            continue
+        fi
+
         # Calculate hyperintensity volume
         local volume_voxels=$(fslstats "$hyperintensity_bin" -V | awk '{print $1}')
         local volume_mm3=$(fslstats "$hyperintensity_bin" -V | awk '{print $2}')
