@@ -770,31 +770,9 @@ normalize_flair_brainstem_zscore() {
     local flair_image="$1"
     local region_mask="$2"  # This should be the specific region, not whole brainstem
     local output_zscore="$3"
+    local region_name="${4:-unknown_region}"  # Accept region name as parameter
     
-    # Extract region name for better logging - FIXED regex
-    local region_name=$(basename "$region_mask" .nii.gz)
-    
-    # Try multiple extraction patterns
-    if [[ "$region_name" =~ (left_|right_)?(medulla|pons|midbrain) ]]; then
-        # Extract the anatomical region
-        region_name=$(echo "$region_name" | sed -E 's/.*(left_|right_)?(medulla|pons|midbrain).*/\2/')
-        # Add laterality if present
-        if [[ "$(basename "$region_mask" .nii.gz)" =~ left_ ]]; then
-            region_name="left_${region_name}"
-        elif [[ "$(basename "$region_mask" .nii.gz)" =~ right_ ]]; then
-            region_name="right_${region_name}"
-        fi
-    else
-        # Fallback: use the full basename without extension
-        region_name=$(echo "$region_name" | sed -E 's/.*_([^_]+)$/\1/')
-    fi
-    
-    # Validate region name
-    if [[ "$region_name" == *"/"* ]] || [ ${#region_name} -gt 30 ] || [ -z "$region_name" ]; then
-        region_name="unknown_region"
-    fi
-    
-    log_message "Performing REGION-SPECIFIC z-score normalization for $region_name..."
+    log_message "Performing REGION-SPECIFIC z-score normalization for $region_name (FLAIR hyperintensity detection)..."
     
     # CRITICAL FIX: Get REGION-specific statistics, not whole brainstem
     local stats=$(fslstats "$flair_image" -k "$region_mask" -M -S)
@@ -824,6 +802,7 @@ apply_gaussian_mixture_thresholding() {
     local region_mask="$2"
     local gmm_params_file="$3"
     local output_mask="$4"
+    local gmm_temp_dir="${5:-/tmp}"  # Accept temp directory parameter
     
     # Ensure output mask has proper .nii.gz extension
     if [[ "$output_mask" != *.nii.gz ]]; then
@@ -832,6 +811,8 @@ apply_gaussian_mixture_thresholding() {
     
     # Extract region name from mask file for better logging
     local region_name=$(basename "$region_mask" .nii.gz | sed -E 's/.*_(left_|right_)?(medulla|pons|midbrain).*$/\2/' | sed -E 's/.*_([^_]+)_flair_space$/\1/')
+    
+    log_message "Applying GMM analysis to ${region_name} for FLAIR hyperintensity detection..."
     if [[ "$region_name" == *"/"* ]] || [ ${#region_name} -gt 20 ]; then
         region_name="region"
     fi
@@ -2605,24 +2586,32 @@ fi
         if [ -d "$hyper_dir" ]; then
             log_message "Found hyperintensities directory: $hyper_dir"
             
-            # Look for FLAIR hyperintensity masks
-            for flair_file in "${hyper_dir}/"*"_FLAIR/"*"_hyperintensities_filtered.nii.gz"; do
-                if [ -f "$flair_file" ]; then
-                    add_overlay "$flair_file" "hot" "70" "FLAIR hyperintensities ($(basename "$(dirname "$flair_file")"))"
+            # Look for hyperintensity masks in ANY modality-specific subdirectories (dynamic detection)
+            for hyper_file in "${hyper_dir}/"*"/"*"_hyperintensities_filtered.nii.gz" "${hyper_dir}/"*"/"*"_hypointensities_filtered.nii.gz"; do
+                if [ -f "$hyper_file" ]; then
+                    local region_dir=$(dirname "$hyper_file")
+                    local modality_dir=$(dirname "$region_dir")
+                    local modality=$(basename "$modality_dir")
+                    local region=$(basename "$region_dir")
+                    local filename=$(basename "$hyper_file")
+                    
+                    # Determine colormap based on filename pattern
+                    if [[ "$filename" =~ hyperintensities ]]; then
+                        add_overlay "$hyper_file" "hot" "70" "${modality} hyperintensities (${region})"
+                    else
+                        add_overlay "$hyper_file" "cool" "70" "${modality} hypointensities (${region})"
+                    fi
                 fi
             done
             
-            # Look for T1 hypointensity masks
-            for t1_file in "${hyper_dir}/"*"_T1/"*"_hypointensities_filtered.nii.gz"; do
-                if [ -f "$t1_file" ]; then
-                    add_overlay "$t1_file" "cool" "70" "T1 hypointensities ($(basename "$(dirname "$t1_file")"))"
-                fi
-            done
-            
-            # Look for RGB overlays
-            for rgb_file in "${hyper_dir}/"*/overlay.nii.gz; do
+            # Look for RGB overlays in ANY modality-specific subdirectories (dynamic detection)
+            for rgb_file in "${hyper_dir}/"*"/overlay.nii.gz"; do
                 if [ -f "$rgb_file" ]; then
-                    add_overlay "$rgb_file" "rgb" "60" "RGB overlay ($(basename "$(dirname "$rgb_file")"))"
+                    local region_dir=$(dirname "$rgb_file")
+                    local modality_dir=$(dirname "$region_dir")
+                    local modality=$(basename "$modality_dir")
+                    local region=$(basename "$region_dir")
+                    add_overlay "$rgb_file" "rgb" "60" "RGB overlay (${region} ${modality})"
                 fi
             done
             break
