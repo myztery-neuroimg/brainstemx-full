@@ -192,107 +192,72 @@ detect_hyperintensities() {
     local global_sd_wm=$(fslstats "$flair_brain" -k "$wm_mask" -S)
     log_message "Global WM mean: $global_mean_wm   Global WM std: $global_sd_wm"
     
-    # Compute regional statistics using slice-by-slice analysis
-    local regional_stats_file="${out_prefix}_regional_wm_stats.txt"
-    compute_regional_wm_statistics "$flair_brain" "$wm_mask" "$regional_stats_file"
+    # Find ALL existing atlas-based segmentation masks for region-specific analysis
+    local atlas_regions=()
+    find_all_atlas_regions atlas_regions
     
-    # Use the global THRESHOLD_WM_SD_MULTIPLIER or default to 1.25 if not set
-    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
-    log_message "Using threshold multiplier from config: $threshold_multiplier"
-    
-    # Create default thresholds along with the configured one
-    local thresholds=(1.5 2.0 2.5 3.0)
-    
-    # Make sure the configured threshold is included
-    local configured_included=false
-    for thresh in "${thresholds[@]}"; do
-        if [ "$thresh" = "$threshold_multiplier" ]; then
-            configured_included=true
-            break
-        fi
-    done
-    
-    # If configured threshold isn't in the defaults, add it
-    if [ "$configured_included" = false ]; then
-        thresholds+=("$threshold_multiplier")
-        # Sort the thresholds
-        IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
-        unset IFS
+    if [ ${#atlas_regions[@]} -gt 0 ]; then
+        log_message "Found ${#atlas_regions[@]} atlas-based region masks for sophisticated per-region analysis"
+        
+        # Apply GMM-based analysis to each atlas region separately
+        apply_per_region_gmm_analysis "$flair_brain" atlas_regions "$temp_dir" "$out_prefix"
+        
+        log_message "Using advanced per-region GMM-based thresholding with atlas-specific z-scoring"
+        
+        # Use per-region GMM results as primary detection method
+        local thresholds=("ATLAS_GMM")
+    else
+        log_formatted "ERROR" "No atlas-based segmentation masks found - cannot proceed with atlas-based analysis"
+        return 1
     fi
     
-    log_message "Using thresholds: ${thresholds[*]}"
-    
-    # Create multiple thresholds with enhanced regional filtering
+    # Process atlas-based GMM analysis across all regions
     for mult in "${thresholds[@]}"; do
-        log_message "Processing threshold multiplier: $mult"
+        log_message "Processing atlas-based method: $mult"
         
-        # Create regional adaptive threshold map
-        local regional_thr_map="${out_prefix}_regional_thr_map_${mult}.nii.gz"
-        create_regional_threshold_map "$flair_brain" "$wm_mask" "$regional_stats_file" "$mult" "$regional_thr_map"
-        
-        # Apply regional threshold to FLAIR brain
-        local init_thr="${out_prefix}_init_thr_${mult}.nii.gz"
-        apply_regional_threshold "$flair_brain" "$regional_thr_map" "$flair_mask" "$init_thr"
-        
-        # Combine with tissue masks - focus on supratentorial white matter
-        # Weight by WM probability to prioritize hyperintensities in WM
-        local tissue_mask="${out_prefix}_target_tissue_${mult}.nii.gz"
-        
-        # Combine WM probability (weighted) with the supratentorial mask
-        fslmaths "$wm_prob" -mul "$supratentorial_mask" -thr 0.5 "$tissue_mask"
-        
-        # Exclude cortical ribbon to reduce false positives at GM/CSF boundary
-        fslmaths "$tissue_mask" -sub "$cortical_ribbon_mask" -thr 0 "$tissue_mask"
-        
-        # Apply tissue mask to thresholded image
-        local combined_thr="${out_prefix}_combined_thr_${mult}.nii.gz"
-        fslmaths "$init_thr" -mas "$tissue_mask" "$combined_thr"
-        
-        # Improved morphological cleanup using proper cluster command
-        local cleaned="${out_prefix}_cleaned_${mult}.nii.gz"
-        
-        # Use FSL cluster command for proper connected components analysis
-        # Default threshold of 2 voxels for initial cleaning
-        local min_size_initial="${MIN_HYPERINTENSITY_SIZE:-2}"
-        log_message "Initial cluster filtering with minimum size: $min_size_initial voxels"
-        
-        if cluster --in="$combined_thr" --thresh=0.5 --connectivity=26 \
-                  --minextent="$min_size_initial" --oindex="$cleaned" > /dev/null 2>&1; then
-            log_message "✓ Initial cluster filtering successful"
+        if [ "$mult" = "ATLAS_GMM" ]; then
+            # Use per-region atlas-based GMM detection
+            log_message "Using per-region atlas-based GMM detection with connectivity weighting"
+            
+            local final_mask="${out_prefix}_threshATLAS_GMM.nii.gz"
+            local cleaned="${out_prefix}_cleanedATLAS_GMM.nii.gz"
+            
+            # Use the combined atlas GMM result
+            if [ -n "$ATLAS_GMM_RESULT" ] && [ -f "$ATLAS_GMM_RESULT" ]; then
+                cp "$ATLAS_GMM_RESULT" "$cleaned"
+                
+                # Apply minimum cluster size filtering
+                local min_size="${MIN_HYPERINTENSITY_SIZE:-4}"
+                log_message "Applying cluster filtering with minimum size: $min_size voxels"
+                
+                if cluster --in="$cleaned" --thresh=0.5 --connectivity=26 \
+                          --minextent="$min_size" --oindex="$final_mask" > /dev/null 2>&1; then
+                    log_message "✓ Atlas GMM cluster filtering successful"
+                else
+                    log_formatted "WARNING" "Atlas GMM cluster filtering failed, using raw atlas-based mask"
+                    cp "$cleaned" "$final_mask"
+                fi
+            else
+                log_formatted "ERROR" "Atlas GMM result not available"
+                return 1
+            fi
         else
-            log_formatted "WARNING" "Initial cluster filtering failed, using binary mask"
-            fslmaths "$combined_thr" -bin "$cleaned"
+            log_formatted "ERROR" "Unsupported threshold method: $mult"
+            return 1
         fi
         
-        # Further cleanup with connected components analysis
-        # Use configurable minimum cluster size from the config file (default: 4)
-        local min_size="${MIN_HYPERINTENSITY_SIZE:-4}"
-        log_message "Final cluster filtering with minimum size: $min_size voxels"
-        
-        local final_mask="${out_prefix}_thresh${mult}.nii.gz"
-        
-        # Using cluster command for final connected components analysis
-        if cluster --in="$cleaned" --thresh=0.5 --osize="${out_prefix}_cluster_sizes_${mult}" \
-                  --connectivity=26 --minextent="$min_size" --oindex="$final_mask" > /dev/null 2>&1; then
-            log_message "✓ Final cluster filtering successful"
-        else
-            log_formatted "WARNING" "Final cluster filtering failed, using cleaned mask"
-            cp "$cleaned" "$final_mask"
-        fi
-        
-        log_message "Final hyperintensity mask (threshold $mult) saved to: $final_mask"
+        log_message "Final atlas-based hyperintensity mask (method $mult) saved to: $final_mask"
         
         # Create binary version for analysis
         fslmaths "$final_mask" -bin "${out_prefix}_thresh${mult}_bin.nii.gz"
         
-        # Create intensity-preserved version for heat colormap visualization in freeview
-        # This preserves original FLAIR intensities in hyperintense regions
+        # Create intensity-preserved version for heat colormap visualization
         local intensity_version="${out_prefix}_thresh${mult}_intensity.nii.gz"
         fslmaths "$flair_brain" -mas "${out_prefix}_thresh${mult}_bin.nii.gz" "$intensity_version"
         log_message "Intensity-preserved hyperintensity mask created: $intensity_version"
         
-        # Analyze clusters for this threshold
-        log_message "Analyzing clusters for threshold $mult..."
+        # Analyze clusters
+        log_message "Analyzing clusters for method $mult..."
         analyze_clusters "${out_prefix}_thresh${mult}_bin.nii.gz" "${out_prefix}_clusters_${mult}"
     done
     
@@ -515,6 +480,361 @@ create_supratentorial_mask() {
     fi
     
     rm -rf "$temp_dir"
+    return 0
+}
+
+# Function to find ALL existing atlas-based segmentation regions
+find_all_atlas_regions() {
+    local -n regions_array=$1
+    regions_array=()
+    
+    log_message "Searching for ALL atlas-based segmentation regions..."
+    
+    # Primary locations for Talairach atlas regions
+    local search_dirs=(
+        "${RESULTS_DIR}/segmentation/detailed_brainstem"
+        "${RESULTS_DIR}/segmentation/pons"
+        "${RESULTS_DIR}/comprehensive_analysis/original_space"
+    )
+    
+    # Talairach region patterns to find
+    local region_patterns=(
+        "*left_medulla*.nii.gz"
+        "*right_medulla*.nii.gz"
+        "*left_pons*.nii.gz"
+        "*right_pons*.nii.gz"
+        "*left_midbrain*.nii.gz"
+        "*right_midbrain*.nii.gz"
+        "*_pons.nii.gz"
+    )
+    
+    # Search for all region masks
+    for search_dir in "${search_dirs[@]}"; do
+        if [ -d "$search_dir" ]; then
+            log_message "Searching directory: $search_dir"
+            
+            for pattern in "${region_patterns[@]}"; do
+                for region_file in "$search_dir"/$pattern; do
+                    if [ -f "$region_file" ]; then
+                        # Skip intensity/derivative files
+                        local basename_file=$(basename "$region_file" .nii.gz)
+                        if [[ "$basename_file" == *"_intensity"* ]] || [[ "$basename_file" == *"_flair_"* ]] || [[ "$basename_file" == *"_t1_"* ]] || [[ "$basename_file" == *"_clustered"* ]]; then
+                            continue
+                        fi
+                        
+                        # Validate mask has sufficient voxels
+                        local mask_vol=$(fslstats "$region_file" -V | awk '{print $1}')
+                        if [ "$mask_vol" -gt 10 ]; then
+                            regions_array+=("$region_file")
+                            local region_name=$(basename "$region_file" .nii.gz)
+                            log_message "✓ Found region: $region_name (${mask_vol} voxels)"
+                        fi
+                    fi
+                done
+            done
+        fi
+    done
+    
+    # Remove duplicates and sort
+    if [ ${#regions_array[@]} -gt 0 ]; then
+        readarray -t regions_array < <(printf '%s\n' "${regions_array[@]}" | sort -u)
+        log_message "Found ${#regions_array[@]} unique atlas-based regions for analysis"
+    else
+        log_formatted "ERROR" "No atlas-based segmentation regions found"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to apply per-region GMM analysis to all atlas regions
+apply_per_region_gmm_analysis() {
+    local flair_image="$1"
+    local -n regions_ref=$2
+    local temp_dir="$3"
+    local out_prefix="$4"
+    
+    log_message "Applying per-region GMM analysis to ${#regions_ref[@]} atlas regions..."
+    
+    # Create per-region analysis directory
+    local per_region_dir="${temp_dir}/per_region_analysis"
+    mkdir -p "$per_region_dir"
+    
+    # Store results for each region
+    local region_results=()
+    local combined_result="${temp_dir}/atlas_gmm_combined.nii.gz"
+    
+    # Initialize combined result as zeros
+    fslmaths "$flair_image" -mul 0 "$combined_result"
+    
+    # Process each region separately
+    for region_mask in "${regions_ref[@]}"; do
+        local region_name=$(basename "$region_mask" .nii.gz)
+        local region_base=$(echo "$region_name" | sed -E 's/.*_(left_|right_)?//')
+        
+        log_message "Processing region: $region_base"
+        
+        # Create region-specific working directory
+        local region_work_dir="${per_region_dir}/${region_base}"
+        mkdir -p "$region_work_dir"
+        
+        # Check if mask needs resampling to match FLAIR space
+        local region_resampled="${region_work_dir}/${region_base}_resampled.nii.gz"
+        local mask_dims=$(fslinfo "$region_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        local flair_dims=$(fslinfo "$flair_image" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        
+        if [ "$mask_dims" = "$flair_dims" ]; then
+            cp "$region_mask" "$region_resampled"
+        else
+            log_message "Resampling $region_base mask to FLAIR space..."
+            flirt -in "$region_mask" -ref "$flair_image" -out "$region_resampled" -interp nearestneighbour -dof 6
+        fi
+        
+        # Perform region-specific z-score normalization
+        local region_zscore="${region_work_dir}/${region_base}_zscore.nii.gz"
+        if normalize_flair_brainstem_zscore "$flair_image" "$region_resampled" "$region_zscore"; then
+            
+            # Apply GMM thresholding to this region
+            local region_gmm_params="${region_work_dir}/${region_base}_gmm_params.txt"
+            local region_upper_tail="${region_work_dir}/${region_base}_upper_tail.nii.gz"
+            
+            if apply_gaussian_mixture_thresholding "$region_zscore" "$region_resampled" "$region_gmm_params" "$region_upper_tail"; then
+                
+                # Apply connectivity weighting for this region
+                local region_connectivity="${region_work_dir}/${region_base}_connectivity.nii.gz"
+                if apply_connectivity_weighting "$region_upper_tail" "$region_zscore" "$region_connectivity"; then
+                    
+                    # Add this region's result to combined result
+                    fslmaths "$combined_result" -add "$region_connectivity" "$combined_result"
+                    region_results+=("$region_connectivity")
+                    
+                    log_message "✓ Successfully processed $region_base with GMM analysis"
+                    
+                    # Create region-specific output files
+                    local region_output="${out_prefix}_${region_base}_GMM.nii.gz"
+                    cp "$region_connectivity" "$region_output"
+                    
+                else
+                    log_formatted "WARNING" "Connectivity weighting failed for $region_base"
+                fi
+            else
+                log_formatted "WARNING" "GMM thresholding failed for $region_base"
+            fi
+        else
+            log_formatted "WARNING" "Z-score normalization failed for $region_base"
+        fi
+    done
+    
+    # Finalize combined result
+    if [ ${#region_results[@]} -gt 0 ]; then
+        fslmaths "$combined_result" -bin "$combined_result"
+        log_message "✓ Combined results from ${#region_results[@]} regions into atlas-based GMM detection"
+        
+        # Store combined result globally
+        export ATLAS_GMM_RESULT="$combined_result"
+        
+        return 0
+    else
+        log_formatted "ERROR" "No regions successfully processed with GMM analysis"
+        return 1
+    fi
+}
+
+# Function to perform brainstem-specific z-score normalization
+normalize_flair_brainstem_zscore() {
+    local flair_image="$1"
+    local brainstem_mask="$2"
+    local output_zscore="$3"
+    
+    log_message "Performing brainstem-specific z-score normalization..."
+    
+    # Get brainstem region statistics
+    local stats=$(fslstats "$flair_image" -k "$brainstem_mask" -M -S)
+    local brainstem_mean=$(echo "$stats" | awk '{print $1}')
+    local brainstem_std=$(echo "$stats" | awk '{print $2}')
+    
+    if [ "$brainstem_std" = "0.000000" ] || [ -z "$brainstem_std" ]; then
+        log_formatted "ERROR" "Invalid brainstem statistics for z-score normalization"
+        return 1
+    fi
+    
+    log_message "Brainstem statistics: mean=$brainstem_mean, std=$brainstem_std"
+    
+    # Compute z-score: (intensity - brainstem_mean) / brainstem_std
+    fslmaths "$flair_image" -sub "$brainstem_mean" -div "$brainstem_std" "$output_zscore"
+    
+    # Validate z-score result
+    local zscore_range=$(fslstats "$output_zscore" -k "$brainstem_mask" -R)
+    log_message "Z-score range in brainstem: $zscore_range"
+    
+    return 0
+}
+
+# Function to apply Gaussian Mixture Model (n=3) thresholding
+apply_gaussian_mixture_thresholding() {
+    local zscore_image="$1"
+    local brainstem_mask="$2"
+    local gmm_params_file="$3"
+    local output_mask="$4"
+    
+    log_message "Applying Gaussian Mixture Model (n=3) thresholding..."
+    
+    # Extract z-score values from brainstem region for GMM analysis
+    local temp_dir=$(mktemp -d)
+    local brainstem_values="${temp_dir}/brainstem_values.txt"
+    
+    # Get z-score values within brainstem mask
+    fslmeants -i "$zscore_image" -m "$brainstem_mask" --showall > "$brainstem_values"
+    
+    # Check if we have sufficient data points
+    local num_voxels=$(wc -l < "$brainstem_values")
+    if [ "$num_voxels" -lt 100 ]; then
+        log_formatted "WARNING" "Insufficient brainstem voxels ($num_voxels) for GMM analysis"
+        # Fallback to simple z-score threshold (z > 2.0)
+        fslmaths "$zscore_image" -mas "$brainstem_mask" -thr 2.0 -bin "$output_mask"
+        rm -rf "$temp_dir"
+        return 0
+    fi
+    
+    log_message "Analyzing $num_voxels brainstem voxels with GMM (n=3)..."
+    
+    # Python script for GMM analysis
+    python3 -c "
+import numpy as np
+from sklearn.mixture import GaussianMixture
+import sys
+
+# Read z-score values
+try:
+    values = np.loadtxt('$brainstem_values')
+    values = values[~np.isnan(values)]  # Remove NaN values
+    values = values.reshape(-1, 1)
+    
+    if len(values) < 50:
+        print('Insufficient valid data points')
+        sys.exit(1)
+    
+    # Fit GMM with 3 components
+    gmm = GaussianMixture(n_components=3, random_state=42)
+    gmm.fit(values)
+    
+    # Get component parameters
+    means = gmm.means_.flatten()
+    stds = np.sqrt(gmm.covariances_.flatten())
+    weights = gmm.weights_
+    
+    # Sort components by mean (low, medium, high intensity)
+    sort_idx = np.argsort(means)
+    
+    # Upper tail (highest intensity component) parameters
+    upper_component = sort_idx[2]
+    upper_mean = means[upper_component]
+    upper_std = stds[upper_component]
+    upper_weight = weights[upper_component]
+    
+    # Define threshold as mean + 1.5*std of upper component
+    threshold = upper_mean + 1.5 * upper_std
+    
+    # Responsibility-weighted threshold (more conservative for low-weight components)
+    if upper_weight < 0.1:
+        threshold = upper_mean + 2.5 * upper_std
+    elif upper_weight < 0.3:
+        threshold = upper_mean + 2.0 * upper_std
+    
+    # Save parameters
+    with open('$gmm_params_file', 'w') as f:
+        f.write(f'GMM_COMPONENTS=3\\n')
+        f.write(f'UPPER_MEAN={upper_mean:.6f}\\n')
+        f.write(f'UPPER_STD={upper_std:.6f}\\n')
+        f.write(f'UPPER_WEIGHT={upper_weight:.6f}\\n')
+        f.write(f'THRESHOLD={threshold:.6f}\\n')
+    
+    print(f'GMM threshold: {threshold:.3f} (component weight: {upper_weight:.3f})')
+    
+except Exception as e:
+    print(f'GMM analysis failed: {e}')
+    # Fallback threshold
+    with open('$gmm_params_file', 'w') as f:
+        f.write('THRESHOLD=2.0\\n')
+    print('Using fallback threshold: 2.0')
+"
+    
+    # Read threshold from GMM analysis
+    local threshold="2.0"  # Default fallback
+    if [ -f "$gmm_params_file" ]; then
+        threshold=$(grep "THRESHOLD=" "$gmm_params_file" | cut -d'=' -f2)
+        log_message "✓ GMM analysis complete, using threshold: $threshold"
+    else
+        log_formatted "WARNING" "GMM analysis failed, using fallback threshold: $threshold"
+    fi
+    
+    # Apply threshold to create binary mask
+    fslmaths "$zscore_image" -mas "$brainstem_mask" -thr "$threshold" -bin "$output_mask"
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    # Validate result
+    local detected_volume=$(fslstats "$output_mask" -V | awk '{print $2}')
+    log_message "✓ GMM thresholding detected ${detected_volume} mm³ of hyperintensities"
+    
+    return 0
+}
+
+# Function to apply connectivity weighting for refined detection
+apply_connectivity_weighting() {
+    local initial_mask="$1"
+    local zscore_image="$2"
+    local output_weighted="$3"
+    
+    log_message "Applying connectivity weighting for refined hyperintensity detection..."
+    
+    # Check if initial mask has any voxels
+    local initial_vol=$(fslstats "$initial_mask" -V | awk '{print $1}')
+    if [ "$initial_vol" = "0" ]; then
+        log_message "No initial hyperintensities found, creating empty output"
+        fslmaths "$initial_mask" "$output_weighted"
+        return 0
+    fi
+    
+    local temp_dir=$(mktemp -d)
+    
+    # Create connectivity map using 3D morphological operations
+    # Dilate initial mask to create neighborhood
+    fslmaths "$initial_mask" -dilF "${temp_dir}/dilated.nii.gz"
+    
+    # Create connectivity weight map based on distance to hyperintense regions
+    fslmaths "$initial_mask" -s 1.5 "${temp_dir}/smoothed_mask.nii.gz"
+    
+    # Weight z-scores by connectivity (higher weight for connected regions)
+    fslmaths "$zscore_image" -mul "${temp_dir}/smoothed_mask.nii.gz" "${temp_dir}/weighted_zscore.nii.gz"
+    
+    # Apply refined threshold based on weighted z-scores
+    # Use lower threshold for highly connected regions
+    local base_threshold=$(grep "THRESHOLD=" "$gmm_params" 2>/dev/null | cut -d'=' -f2 || echo "2.0")
+    local connected_threshold=$(echo "$base_threshold * 0.8" | bc -l)
+    
+    log_message "Using connectivity-weighted threshold: $connected_threshold"
+    
+    # Create final mask: high connectivity OR very high intensity
+    fslmaths "${temp_dir}/weighted_zscore.nii.gz" -thr "$connected_threshold" -bin "${temp_dir}/connected.nii.gz"
+    fslmaths "$zscore_image" -thr "$(echo "$base_threshold * 1.5" | bc -l)" -bin "${temp_dir}/very_high.nii.gz"
+    
+    # Combine connected and very high intensity regions
+    fslmaths "${temp_dir}/connected.nii.gz" -add "${temp_dir}/very_high.nii.gz" -bin "$output_weighted"
+    
+    # Apply final morphological cleanup
+    fslmaths "$output_weighted" -kernel boxv 3 -ero -dilF "$output_weighted"
+    
+    rm -rf "$temp_dir"
+    
+    # Report results
+    local weighted_vol=$(fslstats "$output_weighted" -V | awk '{print $2}')
+    local original_vol=$(fslstats "$initial_mask" -V | awk '{print $2}')
+    local refinement_ratio=$(echo "scale=2; $weighted_vol / $original_vol" | bc -l 2>/dev/null || echo "1.0")
+    
+    log_message "✓ Connectivity weighting: ${original_vol} → ${weighted_vol} mm³ (ratio: $refinement_ratio)"
+    
     return 0
 }
 
@@ -2311,6 +2631,11 @@ EOF
 # Export functions
 export -f detect_hyperintensities
 export -f create_supratentorial_mask
+export -f find_all_atlas_regions
+export -f apply_per_region_gmm_analysis
+export -f normalize_flair_brainstem_zscore
+export -f apply_gaussian_mixture_thresholding
+export -f apply_connectivity_weighting
 export -f compute_regional_wm_statistics
 export -f create_regional_threshold_map
 export -f apply_regional_threshold

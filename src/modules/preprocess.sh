@@ -11,7 +11,77 @@
 # and standardization moved to the brain_extraction.sh module for better modularity.
 #
 
-# Function to process Rician NLM denoising
+# Function to standardize image orientation to radiological (RAS/LPS)
+standardize_orientation() {
+    local input_file="$1"
+    
+    # Redirect all logging to ensure clean stdout for command substitution
+    {
+        # Validate input file
+        if ! validate_nifti "$input_file" "Input file for orientation standardization"; then
+            log_formatted "ERROR" "Invalid input file for orientation: $input_file"
+            return $ERR_DATA_CORRUPT
+        fi
+        
+        local basename=$(basename "$input_file" .nii.gz)
+        local output_dir=$(create_module_dir "oriented")
+        local output_file=$(get_output_path "oriented" "$basename" "_oriented")
+        
+        log_message "Checking and standardizing orientation: $input_file"
+        
+        # Check current orientation
+        local current_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
+        log_message "Current orientation: $current_orient"
+        
+        # If orientation is neurological, convert to radiological
+        if [[ "$current_orient" == "NEUROLOGICAL" ]]; then
+            log_message "Converting from NEUROLOGICAL to RADIOLOGICAL orientation"
+            
+            # Use fslswapdim to flip left-right (convert neurological to radiological)
+            fslswapdim "$input_file" -x y z "$output_file"
+            
+            if [ $? -ne 0 ] || [ ! -f "$output_file" ]; then
+                log_formatted "ERROR" "Failed to convert orientation"
+                return 1
+            fi
+            
+            # Set orientation to radiological
+            fslorient -forceradiological "$output_file"
+            
+            log_formatted "SUCCESS" "Converted from NEUROLOGICAL to RADIOLOGICAL orientation"
+            
+        elif [[ "$current_orient" == "RADIOLOGICAL" ]] || [[ "$current_orient" == "UNKNOWN" ]]; then
+            log_message "Image already in RADIOLOGICAL orientation (or unknown), creating symbolic link"
+            # Create symbolic link to avoid unnecessary copying
+            ln -sf "$(realpath "$input_file")" "$output_file"
+            
+            # Ensure it's marked as radiological
+            fslorient -forceradiological "$output_file" 2>/dev/null || true
+            
+        else
+            log_formatted "WARNING" "Unknown orientation '$current_orient', assuming correct and proceeding"
+            ln -sf "$(realpath "$input_file")" "$output_file"
+            fslorient -forceradiological "$output_file" 2>/dev/null || true
+        fi
+        
+        # Validate output
+        if ! validate_nifti "$output_file" "Orientation-standardized image"; then
+            log_formatted "ERROR" "Output validation failed: $output_file"
+            return $ERR_DATA_CORRUPT
+        fi
+        
+        # Verify final orientation
+        local final_orient=$(fslorient -getorient "$output_file" 2>/dev/null || echo "UNKNOWN")
+        log_message "Final orientation: $final_orient"
+        
+    } >&2  # Redirect all logging in this block to stderr
+    
+    # Echo the output file path to stdout (this is what gets captured)
+    echo "$output_file"
+    return 0
+}
+
+# Function to process Rican NLM denoising
 process_rician_nlm_denoising() {
   local file="$1"
   
@@ -199,10 +269,20 @@ process_n4_correction() {
     return $ERR_FILE_CREATION
   fi
 
-  log_message "N4 bias correction with Rician NLM denoising: $file"
+  log_message "N4 bias correction with orientation standardization and Rician NLM denoising: $file"
   
-  # Step 1: Apply Rician NLM denoising first
-  local denoised_file=$(process_rician_nlm_denoising "$file")
+  # Step 1: Standardize orientation FIRST to avoid downstream issues
+  local oriented_file=$(standardize_orientation "$file")
+  local orient_status=$?
+  if [ $orient_status -ne 0 ] || [ ! -f "$oriented_file" ]; then
+    log_formatted "ERROR" "Orientation standardization failed for: $file (status: $orient_status)"
+    return $ERR_PREPROC
+  fi
+  
+  log_message "Using orientation-standardized image: $oriented_file"
+  
+  # Step 2: Apply Rician NLM denoising on oriented image
+  local denoised_file=$(process_rician_nlm_denoising "$oriented_file")
   local denoise_status=$?
   if [ $denoise_status -ne 0 ] || [ ! -f "$denoised_file" ]; then
     log_formatted "ERROR" "Rician NLM denoising failed for: $file (status: $denoise_status)"
@@ -295,7 +375,7 @@ run_parallel_n4_correction() {
   create_module_dir "bias_corrected"
   
   # Export required functions for parallel execution
-  export -f process_n4_correction process_rician_nlm_denoising get_n4_parameters
+  export -f process_n4_correction process_rician_nlm_denoising get_n4_parameters standardize_orientation
   export -f log_message log_formatted validate_nifti validate_file
   export -f get_output_path get_module_dir create_module_dir
   export -f log_diagnostic execute_with_logging perform_brain_extraction execute_ants_command
@@ -314,10 +394,11 @@ run_parallel_n4_correction() {
 }
 
 # Export functions
+export -f standardize_orientation
 export -f process_rician_nlm_denoising
 export -f get_n4_parameters
 export -f optimize_ants_parameters
 export -f process_n4_correction
 export -f run_parallel_n4_correction
 
-log_message "Preprocessing module (denoising + N4) loaded"
+log_message "Preprocessing module (orientation + denoising + N4) loaded"

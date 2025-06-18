@@ -40,6 +40,19 @@ source src/modules/qa.sh
 source src/modules/scan_selection.sh  # Add scan selection module
 source src/modules/reference_space_selection.sh  # Add reference space selection module
 source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
+
+# Debugging: Check if functions are available after sourcing in pipeline.sh
+if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
+    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in pipeline.sh"
+else
+    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in pipeline.sh"
+fi
+if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
+    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in pipeline.sh"
+else
+    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in pipeline.sh"
+fi
+
 #source src/modules/extract_dicom_metadata.py
 
 # Show help message
@@ -751,7 +764,13 @@ run_pipeline() {
     validate_step "Registration" "t1_to_flairWarped.nii.gz" "registered"
     
     # Launch enhanced visual QA for registration (non-blocking) with better error handling
-    enhanced_launch_visual_qa "$t1_std" "$flair_registered" ":colormap=heat:opacity=0.5" "registration" "axial"
+    log_message "DEBUG: About to call enhanced_launch_visual_qa from pipeline.sh"
+    if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
+        log_message "DEBUG: enhanced_launch_visual_qa is defined just before call."
+        enhanced_launch_visual_qa "$t1_std" "$flair_registered" ":colormap=heat:opacity=0.5" "registration" "axial"
+    else
+        log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined just before call in pipeline.sh."
+    fi
     
     # Create registration visualizations
     local validation_dir=$(create_module_dir "validation/registration")
