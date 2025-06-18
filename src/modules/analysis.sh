@@ -641,13 +641,34 @@ apply_per_region_gmm_analysis() {
     # Process each region separately with brain masking
     for region_mask in "${regions_ref[@]}"; do
         local region_name=$(basename "$region_mask" .nii.gz)
-        local region_base=$(echo "$region_name" | sed -E 's/.*_(left_|right_)?//')
         
-        log_message "Processing region: $region_base"
+        # FIXED: Proper region name extraction
+        local region_base=""
+        if [[ "$region_name" =~ (left_|right_)?(medulla|pons|midbrain) ]]; then
+            region_base=$(echo "$region_name" | sed -E 's/.*(left_|right_)?(medulla|pons|midbrain).*/\2/')
+            if [[ "$region_name" =~ left_ ]]; then
+                region_base="left_${region_base}"
+            elif [[ "$region_name" =~ right_ ]]; then
+                region_base="right_${region_base}"
+            fi
+        else
+            region_base=$(echo "$region_name" | sed -E 's/.*_([^_]+)$/\1/')
+        fi
         
-        # Create region-specific working directory
-        local region_work_dir="${per_region_dir}/${region_base}"
+        # Validate and fallback
+        if [ -z "$region_base" ] || [[ "$region_base" == *"/"* ]]; then
+            region_base="unknown_region_$(date +%s)"
+        fi
+        
+        log_message "Processing region: $region_base (FLAIR hyperintensity analysis)"
+        
+        # Create organized region-specific working directory with modality info
+        local region_work_dir="${per_region_dir}/${region_base}_FLAIR_analysis"
         mkdir -p "$region_work_dir"
+        
+        # Create GMM analysis subdirectory for temp files
+        local gmm_temp_dir="${region_work_dir}/gmm_analysis"
+        mkdir -p "$gmm_temp_dir"
         
         # Check if mask needs resampling to match FLAIR space
         local region_resampled="${region_work_dir}/${region_base}_resampled.nii.gz"
@@ -692,16 +713,20 @@ apply_per_region_gmm_analysis() {
         
         # Perform region-specific z-score normalization
         local region_zscore="${region_work_dir}/${region_base}_zscore.nii.gz"
-        if normalize_flair_brainstem_zscore "$flair_image" "$region_resampled" "$region_zscore"; then
+        log_message "Normalizing FLAIR intensities for $region_base using region-specific statistics..."
+        
+        if normalize_flair_brainstem_zscore "$flair_image" "$region_resampled" "$region_zscore" "$region_base"; then
             
-            # Apply GMM thresholding to this region
-            local region_gmm_params="${region_work_dir}/${region_base}_gmm_params.txt"
+            # Apply GMM thresholding to this region - use organized temp directory
+            local region_gmm_params="${gmm_temp_dir}/${region_base}_gmm_params.txt"
             local region_upper_tail="${region_work_dir}/${region_base}_upper_tail.nii.gz"
             
-            if apply_gaussian_mixture_thresholding "$region_zscore" "$region_resampled" "$region_gmm_params" "$region_upper_tail"; then
+            log_message "Applying GMM analysis to $region_base (temp files in: $(basename "$gmm_temp_dir"))"
+            if apply_gaussian_mixture_thresholding "$region_zscore" "$region_resampled" "$region_gmm_params" "$region_upper_tail" "$gmm_temp_dir"; then
                 
                 # Apply connectivity weighting for this region
                 local region_connectivity="${region_work_dir}/${region_base}_connectivity.nii.gz"
+                log_message "Applying connectivity weighting for $region_base..."
                 if apply_connectivity_weighting "$region_upper_tail" "$region_zscore" "$region_connectivity"; then
                     
                     # Add this region's result to combined result
@@ -746,10 +771,27 @@ normalize_flair_brainstem_zscore() {
     local region_mask="$2"  # This should be the specific region, not whole brainstem
     local output_zscore="$3"
     
-    # Extract region name for better logging
-    local region_name=$(basename "$region_mask" .nii.gz | sed -E 's/.*_(left_|right_)?(medulla|pons|midbrain).*$/\2/' | sed -E 's/.*_([^_]+)_brain_masked$/\1/')
-    if [[ "$region_name" == *"/"* ]] || [ ${#region_name} -gt 20 ]; then
-        region_name="region"
+    # Extract region name for better logging - FIXED regex
+    local region_name=$(basename "$region_mask" .nii.gz)
+    
+    # Try multiple extraction patterns
+    if [[ "$region_name" =~ (left_|right_)?(medulla|pons|midbrain) ]]; then
+        # Extract the anatomical region
+        region_name=$(echo "$region_name" | sed -E 's/.*(left_|right_)?(medulla|pons|midbrain).*/\2/')
+        # Add laterality if present
+        if [[ "$(basename "$region_mask" .nii.gz)" =~ left_ ]]; then
+            region_name="left_${region_name}"
+        elif [[ "$(basename "$region_mask" .nii.gz)" =~ right_ ]]; then
+            region_name="right_${region_name}"
+        fi
+    else
+        # Fallback: use the full basename without extension
+        region_name=$(echo "$region_name" | sed -E 's/.*_([^_]+)$/\1/')
+    fi
+    
+    # Validate region name
+    if [[ "$region_name" == *"/"* ]] || [ ${#region_name} -gt 30 ] || [ -z "$region_name" ]; then
+        region_name="unknown_region"
     fi
     
     log_message "Performing REGION-SPECIFIC z-score normalization for $region_name..."
@@ -833,51 +875,50 @@ apply_gaussian_mixture_thresholding() {
     
     log_message "DEBUG: Temp masked file stats - Voxels: $masked_voxels, Volume: $masked_volume mm³, Range: $masked_range"
     
-    # Use Python for reliable voxel-by-voxel extraction with enhanced debugging
+    # Use external Python script for reliable voxel-by-voxel extraction
     if command -v python3 &> /dev/null; then
-        python3 -c "
+        # Determine script directory (relative to this module)
+        local script_dir="$(dirname "${BASH_SOURCE[0]}")/../scripts"
+        local extract_script="$script_dir/extract_voxel_values.py"
+        
+        # Check if external script exists
+        if [ -f "$extract_script" ]; then
+            log_message "Using external Python script for voxel extraction: $(basename "$extract_script")"
+            
+            # Call external script with debug output redirected
+            if python3 "$extract_script" "$temp_masked" "$region_values" 2>"${temp_dir}/python_debug.log"; then
+                log_message "✓ External Python script completed successfully"
+            else
+                log_formatted "WARNING" "External Python script failed, trying fallback"
+                echo "0" > "$region_values"
+            fi
+            
+            # Log Python debug output
+            if [ -f "${temp_dir}/python_debug.log" ]; then
+                while IFS= read -r line; do
+                    log_message "PYTHON: $line"
+                done < "${temp_dir}/python_debug.log"
+            fi
+        else
+            log_formatted "WARNING" "External Python script not found: $extract_script"
+            log_message "Falling back to inline Python extraction..."
+            
+            # Fallback inline Python (simplified version)
+            python3 -c "
 import nibabel as nib
 import numpy as np
-import sys
-
 try:
-    # Load the masked z-score image
     img = nib.load('$temp_masked')
     data = img.get_fdata()
-    
-    print(f'# DEBUG: Image shape: {data.shape}', file=sys.stderr)
-    print(f'# DEBUG: Total voxels in image: {data.size}', file=sys.stderr)
-    print(f'# DEBUG: Non-zero voxels: {np.count_nonzero(data)}', file=sys.stderr)
-    print(f'# DEBUG: Data range: {np.min(data):.6f} to {np.max(data):.6f}', file=sys.stderr)
-    
-    # Extract ALL non-zero finite values
-    mask_data = data[data != 0]
-    finite_values = mask_data[np.isfinite(mask_data)]
-    
-    print(f'# DEBUG: After filtering - finite non-zero values: {len(finite_values)}', file=sys.stderr)
-    
+    finite_values = data[(data != 0) & np.isfinite(data)]
     if len(finite_values) > 0:
-        # Output each individual voxel value on separate lines
         for val in finite_values:
             print(f'{val:.6f}')
-        print(f'# FINAL: Extracted {len(finite_values)} voxel values for GMM', file=sys.stderr)
     else:
-        print('0')  # Fallback if no values found
-        print('# ERROR: No non-zero finite values found in masked image', file=sys.stderr)
-        
+        print('0')
 except Exception as e:
-    print(f'# ERROR: Python extraction failed: {e}', file=sys.stderr)
-    import traceback
-    traceback.print_exc(file=sys.stderr)
-    print('0')  # Fallback value
-    sys.exit(1)
+    print('0')
 " > "$region_values" 2>"${temp_dir}/python_debug.log"
-        
-        # Log Python debug output
-        if [ -f "${temp_dir}/python_debug.log" ]; then
-            while IFS= read -r line; do
-                log_message "PYTHON: $line"
-            done < "${temp_dir}/python_debug.log"
         fi
         
         # Validate Python extraction worked
@@ -1078,8 +1119,8 @@ except Exception as e:
     local gmm_status="unknown"
     
     if [ -f "$gmm_params_file" ] && [ -s "$gmm_params_file" ]; then
-        # Extract threshold with proper sanitization
-        threshold=$(grep "THRESHOLD=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r' | awk '{print $1}')
+        # Extract threshold with proper sanitization - use exact match to avoid MIN_THRESHOLD
+        threshold=$(grep "^THRESHOLD=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r' | awk '{print $1}')
         local n_voxels=$(grep "N_VOXELS=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r' | awk '{print $1}')
         local gmm_failed=$(grep "GMM_FAILED=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r')
         
