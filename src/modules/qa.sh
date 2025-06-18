@@ -1088,17 +1088,34 @@ calculate_extended_registration_metrics() {
         
         # For linear transforms, we can calculate the Jacobian determinant directly from the matrix
         if command -v python3 &>/dev/null && [ -f "$transform" ]; then
-            local temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/jacobian_calc_XXXXXX")
+            local temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/jacobian_calc_v2_XXXXXX")
             
             # Create a Python script to calculate Jacobian from affine matrix
-            cat > "${temp_dir}/calc_jacobian.py" << 'EOF'
+            # Version 2.0 - Fixed hardcoded fallbacks
+            cat > "${temp_dir}/calc_jacobian_v2.py" << 'EOF'
 import sys
 import numpy as np
+import os
+
+print("DEBUG: Starting Jacobian calculation script v2.0")
+
+def read_fsl_affine_matrix(filepath):
+    """Read FSL .mat format (4x4 affine matrix)"""
+    try:
+        matrix = np.loadtxt(filepath)
+        if matrix.shape == (4, 4):
+            # Extract 3x3 linear part (rotation/scaling)
+            return matrix[:3, :3]
+        else:
+            print(f"ERROR: Expected 4x4 matrix, got {matrix.shape}")
+            return None
+    except Exception as e:
+        print(f"ERROR: Failed to read FSL matrix: {e}")
+        return None
 
 def read_ants_affine_matrix(filepath):
     """Read ANTs affine transformation matrix"""
     try:
-        # ANTs .mat format: Parameters followed by FixedParameters
         # Handle potential encoding issues by trying different encodings
         lines = []
         for encoding in ['utf-8', 'latin-1', 'ascii']:
@@ -1113,32 +1130,63 @@ def read_ants_affine_matrix(filepath):
             print("ERROR: Could not read file with any encoding")
             return None
         
-        # Find Parameters line (affine transformation parameters)
+        # Print first few lines for debugging
+        print("DEBUG: First 5 lines of transform file:")
+        for i, line in enumerate(lines[:5]):
+            print(f"  Line {i+1}: {line.strip()}")
+        
+        # Try different parameter line formats
         params_line = None
         for line in lines:
-            if line.startswith('Parameters:'):
-                params_line = line.strip()
+            stripped = line.strip()
+            if stripped.startswith('Parameters:') or stripped.startswith('Parameters '):
+                params_line = stripped
+                break
+            # Also try without colon
+            if stripped.startswith('Parameters') and len(stripped.split()) > 1:
+                params_line = stripped
                 break
         
         if params_line is None:
-            print("ERROR: Could not find Parameters line in transform file")
+            # Try to find any line with 12 numeric values (affine parameters)
+            for line in lines:
+                stripped = line.strip()
+                if stripped and not stripped.startswith('#'):
+                    try:
+                        # Remove any label and try to parse as numbers
+                        cleaned = stripped.replace('Parameters:', '').replace('Parameters', '').strip()
+                        if cleaned:
+                            params = [float(x) for x in cleaned.split()]
+                            if len(params) >= 9:  # At least rotation/scaling part
+                                print(f"DEBUG: Found numeric line with {len(params)} parameters")
+                                # Reshape to 3x3 matrix (rotation/scaling part)
+                                affine_3x3 = np.array(params[:9]).reshape(3, 3)
+                                return affine_3x3
+                    except:
+                        continue
+            
+            print("ERROR: Could not find Parameters line or numeric data in transform file")
             return None
             
-        # Extract the 12 parameters (3x4 affine matrix flattened)
-        params_str = params_line.replace('Parameters:', '').strip()
-        params = [float(x) for x in params_str.split()]
+        # Extract parameters from the found line
+        params_str = params_line.replace('Parameters:', '').replace('Parameters', '').strip()
+        try:
+            params = [float(x) for x in params_str.split()]
+        except ValueError as e:
+            print(f"ERROR: Could not parse parameters as numbers: {e}")
+            return None
         
-        if len(params) < 12:
-            print(f"ERROR: Expected 12 parameters, got {len(params)}")
+        if len(params) < 9:
+            print(f"ERROR: Expected at least 9 parameters for 3x3 matrix, got {len(params)}")
             return None
             
-        # Reshape to 3x4 matrix (rotation/scaling + translation)
-        # ANTs format: [R11, R12, R13, R21, R22, R23, R31, R32, R33, tx, ty, tz]
+        # Reshape to 3x3 matrix (rotation/scaling part)
+        # ANTs format: [R11, R12, R13, R21, R22, R23, R31, R32, R33, ...]
         affine_3x3 = np.array(params[:9]).reshape(3, 3)
         return affine_3x3
         
     except Exception as e:
-        print(f"ERROR: Failed to read matrix: {e}")
+        print(f"ERROR: Failed to read ANTs matrix: {e}")
         return None
 
 def calculate_jacobian_determinant(matrix):
@@ -1156,40 +1204,76 @@ if __name__ == "__main__":
         sys.exit(1)
     
     transform_file = sys.argv[1]
-    matrix = read_ants_affine_matrix(transform_file)
+    
+    # Check if file exists
+    if not os.path.exists(transform_file):
+        print(f"ERROR: Transform file does not exist: {transform_file}")
+        print("JACOBIAN_STD:FAILED")
+        sys.exit(1)
+    
+    # Determine file type and read accordingly
+    matrix = None
+    
+    # First try as FSL .mat file (numeric matrix)
+    try:
+        matrix = read_fsl_affine_matrix(transform_file)
+        if matrix is not None:
+            print("DEBUG: Successfully read as FSL .mat format")
+    except:
+        pass
+    
+    # If FSL failed, try as ANTs format
+    if matrix is None:
+        print("DEBUG: Trying ANTs format...")
+        matrix = read_ants_affine_matrix(transform_file)
+        if matrix is not None:
+            print("DEBUG: Successfully read as ANTs format")
     
     if matrix is not None:
         det = calculate_jacobian_determinant(matrix)
         if det is not None:
-            # For linear transforms, Jacobian is constant, so std dev = 0
+            print(f"DEBUG: Calculated determinant: {det}")
+            # For linear transforms, Jacobian is constant everywhere, so std dev = 0.0
             print(f"JACOBIAN_DET:{det}")
             print(f"JACOBIAN_STD:0.0")
         else:
-            print("JACOBIAN_STD:0.05")
+            print("ERROR: Failed to calculate determinant")
+            print("JACOBIAN_STD:FAILED")
     else:
-        print("JACOBIAN_STD:0.05")
+        print("ERROR: Could not read transform file in any supported format")
+        print("JACOBIAN_STD:FAILED")
 EOF
             
             # Run the Python script to calculate Jacobian
-            local python_output=$(python3 "${temp_dir}/calc_jacobian.py" "$transform" 2>&1)
+            local python_output=$(python3 "${temp_dir}/calc_jacobian_v2.py" "$transform" 2>&1)
             log_message "Python Jacobian calculation output: $python_output"
             
             # Extract the Jacobian std dev from output
             if echo "$python_output" | grep -q "JACOBIAN_STD:"; then
                 jacobian_std=$(echo "$python_output" | grep "JACOBIAN_STD:" | cut -d: -f2)
-                local jacobian_det=$(echo "$python_output" | grep "JACOBIAN_DET:" | cut -d: -f2 2>/dev/null || echo "1.0")
-                log_formatted "SUCCESS" "Linear transform Jacobian determinant: $jacobian_det"
-                log_formatted "SUCCESS" "Linear transform Jacobian std dev: $jacobian_std (constant for linear transforms)"
+                
+                # Check if parsing failed
+                if [ "$jacobian_std" = "FAILED" ]; then
+                    log_formatted "ERROR" "Failed to parse transform file format - cannot calculate Jacobian"
+                    log_message "Transform file may be in an unsupported format"
+                    log_message "Consider checking the transform file manually: $transform"
+                    jacobian_std="N/A"
+                else
+                    local jacobian_det=$(echo "$python_output" | grep "JACOBIAN_DET:" | cut -d: -f2 2>/dev/null || echo "unknown")
+                    log_formatted "SUCCESS" "Linear transform Jacobian determinant: $jacobian_det"
+                    log_formatted "SUCCESS" "Linear transform Jacobian std dev: $jacobian_std (constant for linear transforms)"
+                fi
             else
-                log_formatted "WARNING" "Failed to calculate Jacobian from linear transform, using default"
-                jacobian_std="0.05"
+                log_formatted "ERROR" "Failed to calculate Jacobian from linear transform - no output received"
+                log_message "This indicates a problem with the Python script or numpy availability"
+                jacobian_std="N/A"
             fi
             
             # Clean up
             rm -rf "$temp_dir"
         else
             log_formatted "WARNING" "Python3 not available or transform file missing for linear Jacobian calculation"
-            jacobian_std="0.05"
+            jacobian_std="N/A"
         fi
     elif ! command -v CreateJacobianDeterminantImage &>/dev/null; then
         log_formatted "WARNING" "CreateJacobianDeterminantImage command not available"
@@ -1242,19 +1326,19 @@ EOF
                         log_formatted "SUCCESS" "Non-linear transform Jacobian standard deviation: $jacobian_std"
                     else
                         log_formatted "WARNING" "Failed to get statistics from Jacobian image: $stats_output"
-                        jacobian_std="0.05"
+                        jacobian_std="N/A"
                     fi
                 else
                     log_formatted "WARNING" "Generated Jacobian image is not readable by FSL"
-                    jacobian_std="0.05"
+                    jacobian_std="N/A"
                 fi
             else
                 log_formatted "WARNING" "Failed to create Jacobian determinant image"
-                jacobian_std="0.05"
+                jacobian_std="N/A"
             fi
         else
             log_formatted "WARNING" "Failed to create deformation field from non-linear transform"
-            jacobian_std="0.05"
+            jacobian_std="N/A"
         fi
         
         # Clean up with logging
