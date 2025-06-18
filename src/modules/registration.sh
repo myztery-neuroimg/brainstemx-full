@@ -160,11 +160,11 @@ perform_multistage_registration() {
         "${ants_bin}/antsRegistration"
         "--dimensionality" "3"
         "--float" "0"
-        "--output" "${output_prefix}"
+        "--output" "[${output_prefix}Warped.nii.gz,${output_prefix}InverseWarped.nii.gz]"
         "--interpolation" "Linear"
         "--use-histogram-matching" "0"
-        "--write-composite-transform" "1"
-        "--collapse-output-transforms" "0"
+        "--write-composite-transform" "0"
+        "--collapse-output-transforms" "1"
         "--initialize-transforms-per-stage" "0"
         "--verbose" "1"
     )
@@ -218,11 +218,36 @@ perform_multistage_registration() {
     execute_ants_command "multistage_registration" "Multi-stage registration (rigid→affine→SyN with brainstem constraint)" "${ants_cmd[@]}"
     local reg_status=$?
     
-    if [ $reg_status -eq 0 ] && [ -f "${output_prefix}Warped.nii.gz" ]; then
-        log_formatted "SUCCESS" "Multi-stage registration completed successfully"
-        return 0
+    # Check registration status first
+    if [ $reg_status -eq 0 ]; then
+        # Registration command succeeded, now check for output file
+        if [ -f "${output_prefix}Warped.nii.gz" ]; then
+            log_formatted "SUCCESS" "✅ Multi-stage registration completed successfully"
+            return 0
+        else
+            # Command succeeded but output file missing - check for alternate names
+            log_message "Registration command succeeded but checking for output file variants..."
+            for alt_suffix in "Warped.nii.gz" "_Warped.nii.gz" "1Warped.nii.gz"; do
+                if [ -f "${output_prefix}${alt_suffix}" ]; then
+                    log_message "Found output with alternate suffix: ${alt_suffix}"
+                    if [ "${alt_suffix}" != "Warped.nii.gz" ]; then
+                        # Create symlink with expected name
+                        ln -sf "${output_prefix}${alt_suffix}" "${output_prefix}Warped.nii.gz"
+                        log_message "Created symlink: ${output_prefix}Warped.nii.gz -> ${output_prefix}${alt_suffix}"
+                    fi
+                    log_formatted "SUCCESS" "✅ Multi-stage registration completed successfully (found output: ${alt_suffix})"
+                    return 0
+                fi
+            done
+            # If we get here, command succeeded but no output file found
+            log_formatted "ERROR" "❌ Registration command succeeded but no output file found (expected: ${output_prefix}Warped.nii.gz)"
+            log_message "Available files in output directory:"
+            ls -la "$(dirname "${output_prefix}")" 2>/dev/null | grep "$(basename "${output_prefix}")" || log_message "No matching files found"
+            return 1
+        fi
     else
-        log_formatted "ERROR" "Multi-stage registration failed (status: $reg_status)"
+        # Registration command actually failed
+        log_formatted "ERROR" "❌ Multi-stage registration command failed (exit status: $reg_status)"
         return 1
     fi
 }
