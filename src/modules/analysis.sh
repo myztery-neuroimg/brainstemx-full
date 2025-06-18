@@ -556,18 +556,61 @@ apply_per_region_gmm_analysis() {
     
     log_message "Applying per-region GMM analysis to ${#regions_ref[@]} atlas regions..."
     
-    # Create per-region analysis directory
-    local per_region_dir="${temp_dir}/per_region_analysis"
+    # Create PERMANENT per-region analysis directory for debugging
+    local per_region_dir="${RESULTS_DIR}/per_region_analysis"
     mkdir -p "$per_region_dir"
     
     # Store results for each region
     local region_results=()
-    local combined_result="${temp_dir}/atlas_gmm_combined.nii.gz"
+    local combined_result="${per_region_dir}/atlas_gmm_combined.nii.gz"
     
     # Initialize combined result as zeros
     fslmaths "$flair_image" -mul 0 "$combined_result"
     
-    # Process each region separately
+    # Create or find brain mask for filtering segmentation masks
+    local brain_mask=""
+    local brain_mask_candidates=(
+        "${RESULTS_DIR}/brain_extraction/"*"_brain_mask.nii.gz"
+        "${RESULTS_DIR}/segmentation/"*"_brain_mask.nii.gz"
+        "${temp_dir}/../"*"_brain_mask.nii.gz"
+        "$(dirname "$out_prefix")"*"_brain_mask.nii.gz"
+    )
+    
+    # Find existing brain mask
+    for candidate in "${brain_mask_candidates[@]}"; do
+        for mask_file in $candidate; do
+            if [ -f "$mask_file" ]; then
+                brain_mask="$mask_file"
+                log_message "Found brain mask: $(basename "$brain_mask")"
+                break 2
+            fi
+        done
+    done
+    
+    # If no brain mask found, create one from FLAIR
+    if [ -z "$brain_mask" ] || [ ! -f "$brain_mask" ]; then
+        log_message "Creating brain mask from FLAIR image..."
+        brain_mask="${per_region_dir}/brain_mask_from_flair.nii.gz"
+        
+        # Create brain mask using simple thresholding + morphological operations
+        local flair_mean=$(fslstats "$flair_image" -M)
+        local brain_threshold=$(echo "$flair_mean * 0.1" | bc -l)
+        
+        fslmaths "$flair_image" -thr "$brain_threshold" -bin \
+                 -fillh -dilM -ero -ero -dilM -dilM "$brain_mask"
+        
+        log_message "✓ Created brain mask from FLAIR image"
+    fi
+    
+    # Validate brain mask
+    local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}')
+    if [ "$brain_voxels" -lt 1000 ]; then
+        log_formatted "ERROR" "Brain mask too small ($brain_voxels voxels) - analysis will fail"
+        return 1
+    fi
+    log_message "Using brain mask with $brain_voxels voxels for pre-filtering"
+    
+    # Process each region separately with brain masking
     for region_mask in "${regions_ref[@]}"; do
         local region_name=$(basename "$region_mask" .nii.gz)
         local region_base=$(echo "$region_name" | sed -E 's/.*_(left_|right_)?//')
@@ -589,6 +632,35 @@ apply_per_region_gmm_analysis() {
             log_message "Resampling $region_base mask to FLAIR space..."
             flirt -in "$region_mask" -ref "$flair_image" -out "$region_resampled" -interp nearestneighbour -dof 6
         fi
+        
+        # CRITICAL: Pre-filter segmentation mask with brain mask BEFORE any analysis
+        local region_brain_masked="${region_work_dir}/${region_base}_brain_masked.nii.gz"
+        log_message "Pre-filtering $region_base with brain mask to exclude non-brain voxels..."
+        
+        # Resample brain mask to match region if needed
+        local brain_mask_resampled="$brain_mask"
+        local brain_dims=$(fslinfo "$brain_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        if [ "$brain_dims" != "$flair_dims" ]; then
+            brain_mask_resampled="${region_work_dir}/brain_mask_resampled.nii.gz"
+            flirt -in "$brain_mask" -ref "$flair_image" -out "$brain_mask_resampled" -interp nearestneighbour -dof 6
+        fi
+        
+        # Apply brain mask to region mask
+        fslmaths "$region_resampled" -mas "$brain_mask_resampled" "$region_brain_masked"
+        
+        # Validate brain-masked region has sufficient voxels
+        local brain_masked_voxels=$(fslstats "$region_brain_masked" -V | awk '{print $1}')
+        local original_voxels=$(fslstats "$region_resampled" -V | awk '{print $1}')
+        
+        log_message "$region_base: $original_voxels voxels → $brain_masked_voxels brain voxels"
+        
+        if [ "$brain_masked_voxels" -lt 50 ]; then
+            log_formatted "WARNING" "$region_base has insufficient brain voxels ($brain_masked_voxels) - skipping"
+            continue
+        fi
+        
+        # Use brain-masked region for all subsequent analysis
+        region_resampled="$region_brain_masked"
         
         # Perform region-specific z-score normalization
         local region_zscore="${region_work_dir}/${region_base}_zscore.nii.gz"
@@ -673,49 +745,167 @@ normalize_flair_brainstem_zscore() {
 # Function to apply Gaussian Mixture Model (n=3) thresholding
 apply_gaussian_mixture_thresholding() {
     local zscore_image="$1"
-    local brainstem_mask="$2"
+    local region_mask="$2"
     local gmm_params_file="$3"
     local output_mask="$4"
     
-    log_message "Applying Gaussian Mixture Model (n=3) thresholding..."
+    # Ensure output mask has proper .nii.gz extension
+    if [[ "$output_mask" != *.nii.gz ]]; then
+        output_mask="${output_mask}.nii.gz"
+    fi
     
-    # Extract z-score values from brainstem region for GMM analysis
+    # Extract region name from mask file for better logging
+    local region_name=$(basename "$region_mask" .nii.gz | sed -E 's/.*_(left_|right_)?(medulla|pons|midbrain).*$/\2/' | sed -E 's/.*_([^_]+)_flair_space$/\1/')
+    if [[ "$region_name" == *"/"* ]] || [ ${#region_name} -gt 20 ]; then
+        region_name="region"
+    fi
+    
+    log_message "Applying Gaussian Mixture Model (n=3) thresholding for $region_name..."
+    
+    # Extract z-score values from region for GMM analysis
     local temp_dir=$(mktemp -d)
-    local brainstem_values="${temp_dir}/brainstem_values.txt"
+    local region_values="${temp_dir}/region_values.txt"
     
-    # Get z-score values within brainstem mask
-    fslmeants -i "$zscore_image" -m "$brainstem_mask" --showall > "$brainstem_values"
+    # Ensure region mask is properly binarized for reliable voxel extraction
+    local binary_mask="${temp_dir}/binary_mask.nii.gz"
+    fslmaths "$region_mask" -thr 0.5 -bin "$binary_mask"
     
-    # Check if we have sufficient data points
-    local num_voxels=$(wc -l < "$brainstem_values")
-    if [ "$num_voxels" -lt 100 ]; then
-        log_formatted "WARNING" "Insufficient brainstem voxels ($num_voxels) for GMM analysis"
-        # Fallback to simple z-score threshold (z > 2.0)
-        fslmaths "$zscore_image" -mas "$brainstem_mask" -thr 2.0 -bin "$output_mask"
+    # Validate mask has reasonable size
+    local mask_volume=$(fslstats "$binary_mask" -V | awk '{print $1}')
+    log_message "Region $region_name mask contains $mask_volume voxels"
+    
+    if [ "$mask_volume" -lt 10 ]; then
+        log_formatted "ERROR" "Region mask too small ($mask_volume voxels) for meaningful GMM analysis"
+        fslmaths "$zscore_image" -mas "$binary_mask" -thr 2.0 -bin "$output_mask"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Extract z-score values within binary region mask using robust method
+    log_message "Extracting individual voxel values from brain-masked $region_name region..."
+    
+    # Method 1: Use fslmeants to extract ALL voxel values (not histogram)
+    if ! fslmeants -i "$zscore_image" -m "$binary_mask" --showall 2>/dev/null | \
+         grep -v '^$' | grep -v 'nan' | grep -v 'inf' | \
+         awk 'NF && $1 != 0 {print $1}' > "$region_values"; then
+        
+        log_message "fslmeants failed, trying alternative extraction method..."
+        
+        # Method 2: Use fslstats with percentile extraction
+        local temp_masked="${temp_dir}/temp_masked_values.nii.gz"
+        fslmaths "$zscore_image" -mas "$binary_mask" "$temp_masked"
+        
+        # Extract non-zero values using Python if available
+        if command -v python3 &> /dev/null; then
+            python3 -c "
+import nibabel as nib
+import numpy as np
+import sys
+
+try:
+    img = nib.load('$temp_masked')
+    data = img.get_fdata()
+    
+    # Extract non-zero values
+    nonzero_values = data[data != 0]
+    nonzero_values = nonzero_values[np.isfinite(nonzero_values)]
+    
+    if len(nonzero_values) > 0:
+        for val in nonzero_values:
+            print(val)
+    else:
+        print('0')  # Fallback value
+        
+except Exception as e:
+    print(f'Python extraction failed: {e}', file=sys.stderr)
+    print('0')  # Fallback value
+    sys.exit(1)
+" > "$region_values" 2>/dev/null
+        else
+            log_formatted "WARNING" "Python not available for voxel extraction"
+            # Fallback: create some values based on region statistics
+            local region_mean=$(fslstats "$temp_masked" -M)
+            local region_std=$(fslstats "$temp_masked" -S)
+            echo "$region_mean" > "$region_values"
+        fi
+        
+        rm -f "$temp_masked"
+    fi
+    
+    # Remove any remaining invalid values
+    grep -E '^-?[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$' "$region_values" > "${region_values}.clean" 2>/dev/null && \
+    mv "${region_values}.clean" "$region_values"
+    
+    # Check if we have sufficient data points for robust GMM
+    local num_voxels=$(wc -l < "$region_values")
+    log_message "Extracted $num_voxels z-score values from $region_name for GMM analysis"
+    
+    if [ "$num_voxels" -lt 50 ]; then
+        log_formatted "WARNING" "Insufficient $region_name voxels ($num_voxels) for robust GMM clustering"
+        log_message "GMM requires minimum 50 voxels, using enhanced statistical threshold instead"
+        
+        # Use enhanced statistical threshold based on region statistics
+        local region_stats=$(fslstats "$zscore_image" -k "$binary_mask" -M -S)
+        local region_mean=$(echo "$region_stats" | awk '{print $1}')
+        local region_std=$(echo "$region_stats" | awk '{print $2}')
+        local enhanced_threshold=$(echo "$region_mean + 2.5 * $region_std" | bc -l)
+        
+        log_message "Using enhanced statistical threshold: $enhanced_threshold"
+        fslmaths "$zscore_image" -mas "$binary_mask" -thr "$enhanced_threshold" -bin "$output_mask"
         rm -rf "$temp_dir"
         return 0
     fi
     
-    log_message "Analyzing $num_voxels brainstem voxels with GMM (n=3)..."
+    log_message "Analyzing $num_voxels $region_name voxels with GMM..."
     
-    # Python script for GMM analysis
+    # Adjust GMM components based on available data
+    local n_components=3
+    if [ "$num_voxels" -lt 200 ]; then
+        n_components=2
+        log_message "Using 2-component GMM due to limited data ($num_voxels voxels)"
+    fi
+    
+    # Enhanced Python script for GMM analysis with better error handling
     python3 -c "
 import numpy as np
 from sklearn.mixture import GaussianMixture
 import sys
+import warnings
+warnings.filterwarnings('ignore')
 
-# Read z-score values
+# Read z-score values with robust parsing
 try:
-    values = np.loadtxt('$brainstem_values')
-    values = values[~np.isnan(values)]  # Remove NaN values
+    # Try different parsing methods
+    values = []
+    with open('$region_values', 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                try:
+                    val = float(line)
+                    if not np.isnan(val) and not np.isinf(val):
+                        values.append(val)
+                except ValueError:
+                    continue
+    
+    values = np.array(values)
+    
+    if len(values) < 20:
+        print(f'Insufficient valid data points: {len(values)}')
+        with open('$gmm_params_file', 'w') as f:
+            f.write('THRESHOLD=2.0\\n')
+        sys.exit(0)
+    
+    print(f'Processing {len(values)} valid z-score values')
+    print(f'Value range: {np.min(values):.3f} to {np.max(values):.3f}')
+    
     values = values.reshape(-1, 1)
     
-    if len(values) < 50:
-        print('Insufficient valid data points')
-        sys.exit(1)
+    # Fit GMM with adaptive components
+    n_comp = min($n_components, max(2, len(values) // 30))
+    print(f'Using {n_comp}-component GMM')
     
-    # Fit GMM with 3 components
-    gmm = GaussianMixture(n_components=3, random_state=42)
+    gmm = GaussianMixture(n_components=n_comp, random_state=42, max_iter=200)
     gmm.fit(values)
     
     # Get component parameters
@@ -726,50 +916,120 @@ try:
     # Sort components by mean (low, medium, high intensity)
     sort_idx = np.argsort(means)
     
-    # Upper tail (highest intensity component) parameters
-    upper_component = sort_idx[2]
+    # For hyperintensity detection, focus on upper tail component
+    upper_component = sort_idx[-1]  # Highest mean component
     upper_mean = means[upper_component]
     upper_std = stds[upper_component]
     upper_weight = weights[upper_component]
     
-    # Define threshold as mean + 1.5*std of upper component
-    threshold = upper_mean + 1.5 * upper_std
+    print(f'GMM Components: {n_comp}')
+    print(f'Component means: {[f\"{m:.3f}\" for m in sorted(means)]}')
+    print(f'Component weights: {[f\"{w:.3f}\" for w in weights[sort_idx]]}')
+    print(f'Upper component: mean={upper_mean:.3f}, std={upper_std:.3f}, weight={upper_weight:.3f}')
     
-    # Responsibility-weighted threshold (more conservative for low-weight components)
-    if upper_weight < 0.1:
+    # Adaptive threshold based on component characteristics
+    if n_comp == 2:
+        # For 2-component model: normal vs hyperintense
+        threshold = upper_mean + 1.0 * upper_std
+    else:
+        # For 3-component model: low, normal, hyperintense
+        threshold = upper_mean + 1.5 * upper_std
+    
+    # Weight-adjusted threshold for robust detection
+    if upper_weight < 0.05:
+        # Very small hyperintense component - be more conservative
         threshold = upper_mean + 2.5 * upper_std
-    elif upper_weight < 0.3:
+        print(f'Small hyperintense component detected, using conservative threshold')
+    elif upper_weight < 0.15:
+        # Small but significant component
         threshold = upper_mean + 2.0 * upper_std
+        print(f'Small hyperintense component, using moderate threshold')
     
-    # Save parameters
+    # Ensure threshold is reasonable (not too low)
+    min_threshold = np.percentile(values, 95)  # At least 95th percentile
+    threshold = max(threshold, min_threshold)
+    
+    # Save comprehensive parameters
     with open('$gmm_params_file', 'w') as f:
-        f.write(f'GMM_COMPONENTS=3\\n')
+        f.write(f'GMM_COMPONENTS={n_comp}\\n')
+        f.write(f'N_VOXELS={len(values)}\\n')
         f.write(f'UPPER_MEAN={upper_mean:.6f}\\n')
         f.write(f'UPPER_STD={upper_std:.6f}\\n')
         f.write(f'UPPER_WEIGHT={upper_weight:.6f}\\n')
         f.write(f'THRESHOLD={threshold:.6f}\\n')
+        f.write(f'MIN_THRESHOLD={min_threshold:.6f}\\n')
+        f.write(f'DATA_RANGE={np.min(values):.3f}_{np.max(values):.3f}\\n')
     
-    print(f'GMM threshold: {threshold:.3f} (component weight: {upper_weight:.3f})')
+    print(f'Final GMM threshold: {threshold:.3f} (weight: {upper_weight:.3f}, components: {n_comp})')
     
 except Exception as e:
     print(f'GMM analysis failed: {e}')
-    # Fallback threshold
+    import traceback
+    traceback.print_exc()
+    # Create robust fallback threshold based on data percentiles
+    if len(values) > 10:
+        fallback_threshold = np.percentile(values, 97.5)  # 97.5th percentile
+        print(f'Using data-driven fallback threshold: {fallback_threshold:.3f}')
+    else:
+        fallback_threshold = 2.0
+        print('Using default fallback threshold: 2.0')
+    
     with open('$gmm_params_file', 'w') as f:
-        f.write('THRESHOLD=2.0\\n')
-    print('Using fallback threshold: 2.0')
+        f.write(f'THRESHOLD={fallback_threshold:.6f}\\n')
+        f.write(f'GMM_FAILED=true\\n')
+        f.write(f'N_VOXELS={len(values)}\\n')
 "
     
-    # Read threshold from GMM analysis
+    # Read threshold from GMM analysis with enhanced validation
     local threshold="2.0"  # Default fallback
-    if [ -f "$gmm_params_file" ]; then
-        threshold=$(grep "THRESHOLD=" "$gmm_params_file" | cut -d'=' -f2)
-        log_message "✓ GMM analysis complete, using threshold: $threshold"
+    local gmm_status="unknown"
+    
+    if [ -f "$gmm_params_file" ] && [ -s "$gmm_params_file" ]; then
+        # Extract threshold with proper sanitization
+        threshold=$(grep "THRESHOLD=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r' | awk '{print $1}')
+        local n_voxels=$(grep "N_VOXELS=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r' | awk '{print $1}')
+        local gmm_failed=$(grep "GMM_FAILED=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r')
+        
+        # Validate threshold is a valid number
+        if ! echo "$threshold" | grep -E '^[0-9]+\.?[0-9]*$' >/dev/null; then
+            log_formatted "WARNING" "Invalid threshold value '$threshold', using fallback"
+            threshold="2.0"
+        fi
+        
+        if [ "$gmm_failed" = "true" ]; then
+            gmm_status="failed (using data-driven fallback)"
+        else
+            local n_components=$(grep "GMM_COMPONENTS=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r')
+            local upper_weight=$(grep "UPPER_WEIGHT=" "$gmm_params_file" | cut -d'=' -f2 | tr -d '\n\r')
+            gmm_status="success (${n_components} components, weight: ${upper_weight})"
+        fi
+        
+        log_message "✓ GMM analysis for $region_name: $gmm_status"
+        log_message "  Using threshold: $threshold (from $n_voxels voxels)"
     else
-        log_formatted "WARNING" "GMM analysis failed, using fallback threshold: $threshold"
+        log_formatted "WARNING" "GMM analysis completely failed for $region_name, using fallback: $threshold"
+        gmm_status="completely failed"
     fi
     
-    # Apply threshold to create binary mask
-    fslmaths "$zscore_image" -mas "$brainstem_mask" -thr "$threshold" -bin "$output_mask"
+    # Validate threshold value before applying
+    if [ -z "$threshold" ] || ! echo "$threshold" | grep -E '^[0-9]+\.?[0-9]*$' >/dev/null; then
+        log_formatted "ERROR" "Invalid threshold value: '$threshold', using fallback"
+        threshold="2.0"
+    fi
+    
+    # Apply threshold to create binary mask with error checking
+    log_message "Applying threshold $threshold to create binary mask..."
+    if ! fslmaths "$zscore_image" -mas "$region_mask" -thr "$threshold" -bin "$output_mask"; then
+        log_formatted "ERROR" "Failed to apply threshold - fslmaths operation failed"
+        # Create empty mask as fallback
+        fslmaths "$zscore_image" -mas "$region_mask" -mul 0 "$output_mask"
+    fi
+    
+    # Verify output file was created
+    if [ ! -f "$output_mask" ]; then
+        log_formatted "ERROR" "Output mask not created: $output_mask"
+        return 1
+    fi
     
     # Clean up
     rm -rf "$temp_dir"
@@ -810,18 +1070,47 @@ apply_connectivity_weighting() {
     fslmaths "$zscore_image" -mul "${temp_dir}/smoothed_mask.nii.gz" "${temp_dir}/weighted_zscore.nii.gz"
     
     # Apply refined threshold based on weighted z-scores
-    # Use lower threshold for highly connected regions
-    local base_threshold=$(grep "THRESHOLD=" "$gmm_params" 2>/dev/null | cut -d'=' -f2 || echo "2.0")
-    local connected_threshold=$(echo "$base_threshold * 0.8" | bc -l)
+    # Use region-specific statistical threshold for connectivity weighting
+    local region_stats=$(fslstats "$zscore_image" -k "$initial_mask" -M -S)
+    local region_mean=$(echo "$region_stats" | awk '{print $1}')
+    local region_std=$(echo "$region_stats" | awk '{print $2}')
     
-    log_message "Using connectivity-weighted threshold: $connected_threshold"
+    # Calculate adaptive thresholds
+    local base_threshold=$(echo "$region_mean + 2.0 * $region_std" | bc -l)
+    local connected_threshold=$(echo "$region_mean + 1.5 * $region_std" | bc -l)
+    
+    # Validate thresholds are valid numbers
+    if ! echo "$base_threshold" | grep -E '^-?[0-9]+\.?[0-9]*$' >/dev/null; then
+        base_threshold="2.0"
+    fi
+    if ! echo "$connected_threshold" | grep -E '^-?[0-9]+\.?[0-9]*$' >/dev/null; then
+        connected_threshold="1.5"
+    fi
+    
+    log_message "Using connectivity-weighted threshold: $connected_threshold (base: $base_threshold)"
     
     # Create final mask: high connectivity OR very high intensity
-    fslmaths "${temp_dir}/weighted_zscore.nii.gz" -thr "$connected_threshold" -bin "${temp_dir}/connected.nii.gz"
-    fslmaths "$zscore_image" -thr "$(echo "$base_threshold * 1.5" | bc -l)" -bin "${temp_dir}/very_high.nii.gz"
+    if ! fslmaths "${temp_dir}/weighted_zscore.nii.gz" -thr "$connected_threshold" -bin "${temp_dir}/connected.nii.gz"; then
+        log_formatted "WARNING" "Connected threshold failed, using original mask"
+        cp "$initial_mask" "$output_weighted"
+        rm -rf "$temp_dir"
+        return 0
+    fi
+    
+    if ! fslmaths "$zscore_image" -thr "$base_threshold" -bin "${temp_dir}/very_high.nii.gz"; then
+        log_formatted "WARNING" "High intensity threshold failed, using connected only"
+        cp "${temp_dir}/connected.nii.gz" "$output_weighted"
+        rm -rf "$temp_dir"
+        return 0
+    fi
     
     # Combine connected and very high intensity regions
-    fslmaths "${temp_dir}/connected.nii.gz" -add "${temp_dir}/very_high.nii.gz" -bin "$output_weighted"
+    if ! fslmaths "${temp_dir}/connected.nii.gz" -add "${temp_dir}/very_high.nii.gz" -bin "$output_weighted"; then
+        log_formatted "WARNING" "Failed to combine masks, using original"
+        cp "$initial_mask" "$output_weighted"
+        rm -rf "$temp_dir"
+        return 0
+    fi
     
     # Apply final morphological cleanup
     fslmaths "$output_weighted" -kernel boxv 3 -ero -dilF "$output_weighted"

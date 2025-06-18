@@ -1491,12 +1491,6 @@ create_intensity_mask() {
     # Create output directory if needed
     mkdir -p "$(dirname "$output")"
     
-    # Calculate statistics for normalization
-    local mask_mean=$(fslstats "$intensity_image" -k "$binary_mask" -M)
-    local mask_std=$(fslstats "$intensity_image" -k "$binary_mask" -S)
-    local mask_min=$(fslstats "$intensity_image" -k "$binary_mask" -R | awk '{print $1}')
-    local mask_max=$(fslstats "$intensity_image" -k "$binary_mask" -R | awk '{print $2}')
-    
     # Validate inputs before creating intensity mask
     log_message "Validating inputs for intensity mask creation..."
     
@@ -1527,36 +1521,70 @@ create_intensity_mask() {
     
     log_message "✓ Input validation passed"
     
-    # Create intensity mask with emergency validation as fallback
-    log_message "Creating intensity mask: $intensity_image -mas $binary_mask -> $output"
+    # CRITICAL FIX: Create brain mask from intensity image to constrain segmentation masks
+    local brain_mask="${output}_brain_constraint.nii.gz"
+    log_message "Creating brain mask from intensity image to constrain segmentation..."
     
-    if ! safe_fslmaths "Create intensity mask from binary mask" "$intensity_image" -mas "$binary_mask" "$output"; then
-        log_formatted "ERROR" "safe_fslmaths failed - attempting emergency validation"
-        
-        if emergency_validate_paths "intensity mask creation (fallback)" "$intensity_image" "$binary_mask"; then
-            log_message "Emergency validation passed, retrying with direct fslmaths..."
-            # Try direct fslmaths as fallback
-            if fslmaths "$intensity_image" -mas "$binary_mask" "$output"; then
-                log_formatted "SUCCESS" "Direct fslmaths succeeded as fallback"
-            else
-                log_formatted "ERROR" "Both safe_fslmaths and direct fslmaths failed"
-                return 1
-            fi
-        else
-            log_formatted "ERROR" "Emergency validation failed - cannot create intensity mask"
-            return 1
-        fi
+    if ! safe_fslmaths "Create brain mask constraint" "$intensity_image" -bin "$brain_mask"; then
+        log_formatted "ERROR" "Failed to create brain mask constraint"
+        return 1
     fi
     
-    # Log statistics
-    log_message "Intensity mask created with statistics:"
+    # CRITICAL FIX: Intersect segmentation mask with brain tissue to exclude intensity=0 regions
+    local constrained_mask="${output}_constrained.nii.gz"
+    log_message "Constraining segmentation mask to brain tissue boundaries..."
+    
+    if ! safe_fslmaths "Constrain mask to brain tissue" "$binary_mask" -mas "$brain_mask" "$constrained_mask"; then
+        log_formatted "ERROR" "Failed to constrain segmentation mask to brain tissue"
+        rm -f "$brain_mask"
+        return 1
+    fi
+    
+    # Calculate statistics for normalization using the constrained mask
+    local mask_mean=$(fslstats "$intensity_image" -k "$constrained_mask" -M)
+    local mask_std=$(fslstats "$intensity_image" -k "$constrained_mask" -S)
+    local mask_min=$(fslstats "$intensity_image" -k "$constrained_mask" -R | awk '{print $1}')
+    local mask_max=$(fslstats "$intensity_image" -k "$constrained_mask" -R | awk '{print $2}')
+    
+    log_message "Brain-constrained mask statistics:"
     log_message "  Mean: $mask_mean"
     log_message "  Standard deviation: $mask_std"
     log_message "  Range: $mask_min - $mask_max"
     
-    # Verify output was created
+    # Create intensity mask using brain-constrained segmentation mask
+    log_message "Creating intensity mask: $intensity_image -mas $constrained_mask -> $output"
+    
+    if ! safe_fslmaths "Create intensity mask from brain-constrained binary mask" "$intensity_image" -mas "$constrained_mask" "$output"; then
+        log_formatted "ERROR" "safe_fslmaths failed - attempting emergency validation"
+        
+        if emergency_validate_paths "intensity mask creation (fallback)" "$intensity_image" "$constrained_mask"; then
+            log_message "Emergency validation passed, retrying with direct fslmaths..."
+            # Try direct fslmaths as fallback
+            if fslmaths "$intensity_image" -mas "$constrained_mask" "$output"; then
+                log_formatted "SUCCESS" "Direct fslmaths succeeded as fallback"
+            else
+                log_formatted "ERROR" "Both safe_fslmaths and direct fslmaths failed"
+                rm -f "$brain_mask" "$constrained_mask"
+                return 1
+            fi
+        else
+            log_formatted "ERROR" "Emergency validation failed - cannot create intensity mask"
+            rm -f "$brain_mask" "$constrained_mask"
+            return 1
+        fi
+    fi
+    
+    # Clean up intermediate files
+    rm -f "$brain_mask" "$constrained_mask"
+    
+    # Verify output was created and get final statistics
     if [ -f "$output" ]; then
-        log_formatted "SUCCESS" "Intensity mask created: $output"
+        local final_range=$(fslstats "$output" -R)
+        local final_min=$(echo "$final_range" | awk '{print $1}')
+        local final_max=$(echo "$final_range" | awk '{print $2}')
+        
+        log_formatted "SUCCESS" "Brain-constrained intensity mask created: $output"
+        log_message "Final intensity range: $final_min - $final_max (no zero contamination from outside brain)"
         return 0
     else
         log_formatted "ERROR" "Failed to create intensity mask"

@@ -673,7 +673,7 @@ except Exception as e:
             
             # Brain extraction for Atropos input
             local brain_extracted="${temp_refinement_dir}/brain_extracted.nii.gz"
-            local brain_mask="${temp_refinement_dir}/brain_mask.nii.gz"
+            local brain_mask="${temp_refinement_dir}/brain_extracted_mask.nii.gz"
             
             # Simple brain extraction using bet with conservative parameters
             if bet "$input_image" "$brain_extracted" -m -n -f 0.3 2>/dev/null; then
