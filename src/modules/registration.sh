@@ -160,7 +160,7 @@ perform_multistage_registration() {
         "${ants_bin}/antsRegistration"
         "--dimensionality" "3"
         "--float" "0"
-        "--output" "[${output_prefix}Warped.nii.gz,${output_prefix}InverseWarped.nii.gz]"
+        "--output" "[${output_prefix},${output_prefix}Warped.nii.gz]"
         "--interpolation" "Linear"
         "--use-histogram-matching" "0"
         "--write-composite-transform" "0"
@@ -183,32 +183,66 @@ perform_multistage_registration() {
         log_message "Using registration mask: $mask"
     fi
     
+    # Set registration parameters based on QUALITY_PRESET
+    local quality_preset="${QUALITY_PRESET:-HIGH}"
+    local rigid_convergence="[1000x500x250x100,1e-6,10]"
+    local affine_convergence="[1000x500x250x100,1e-6,10]"
+    local syn_convergence="[100x70x50x20,1e-6,10]"
+    
+    case "$quality_preset" in
+        "ULTRA")
+            rigid_convergence="[2000x1000x500x250,1e-8,15]"
+            affine_convergence="[2000x1000x500x250,1e-8,15]"
+            syn_convergence="[200x150x100x50,1e-8,15]"
+            ;;
+        "HIGH")
+            rigid_convergence="[1000x500x250x100,1e-6,10]"
+            affine_convergence="[1000x500x250x100,1e-6,10]"
+            syn_convergence="[100x70x50x20,1e-6,10]"
+            ;;
+        "MEDIUM")
+            rigid_convergence="[500x250x100x50,1e-5,8]"
+            affine_convergence="[500x250x100x50,1e-5,8]"
+            syn_convergence="[50x35x25x10,1e-5,8]"
+            ;;
+        "LOW")
+            rigid_convergence="[250x100x50x25,1e-4,5]"
+            affine_convergence="[250x100x50x25,1e-4,5]"
+            syn_convergence="[25x20x15x10,1e-4,5]"
+            ;;
+    esac
+    
     # Stage 1: Rigid registration
+    local rigid_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
+    local shrink_factors="${TEMPLATE_SHRINK_FACTORS:-6x4x2x1}"
+    local smoothing_sigmas="${TEMPLATE_SMOOTHING_SIGMAS:-3x2x1x0}"
     ants_cmd+=(
         "--transform" "Rigid[0.1]"
-        "--metric" "MI[${fixed_image},${moving_image},1,32,Regular,0.25]"
-        "--convergence" "[1000x500x250x100,1e-6,10]"
-        "--shrink-factors" "8x4x2x1"
-        "--smoothing-sigmas" "3x2x1x0vox"
+        "--metric" "${rigid_metric}[${fixed_image},${moving_image},1,32,Regular,0.25]"
+        "--convergence" "$rigid_convergence"
+        "--shrink-factors" "$shrink_factors"
+        "--smoothing-sigmas" "${smoothing_sigmas}vox"
     )
     
     # Stage 2: Affine registration
+    local affine_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
     ants_cmd+=(
         "--transform" "Affine[0.1]"
-        "--metric" "MI[${fixed_image},${moving_image},1,32,Regular,0.25]"
-        "--convergence" "[1000x500x250x100,1e-6,10]"
-        "--shrink-factors" "8x4x2x1"
-        "--smoothing-sigmas" "3x2x1x0vox"
+        "--metric" "${affine_metric}[${fixed_image},${moving_image},1,32,Regular,0.25]"
+        "--convergence" "$affine_convergence"
+        "--shrink-factors" "$shrink_factors"
+        "--smoothing-sigmas" "${smoothing_sigmas}vox"
     )
     
     # Stage 3: SyN registration with brainstem ROI constraint
     # Use --restrict-deformation 0x0x1 to constrain deformation above pontomedullary sulcus
+    local syn_metric="${REG_METRIC_SAME_MODALITY:-CC}"
     ants_cmd+=(
         "--transform" "SyN[0.1,3,0]"
-        "--metric" "CC[${fixed_image},${moving_image},1,4]"
-        "--convergence" "[100x70x50x20,1e-6,10]"
-        "--shrink-factors" "8x4x2x1"
-        "--smoothing-sigmas" "3x2x1x0vox"
+        "--metric" "${syn_metric}[${fixed_image},${moving_image},1,4]"
+        "--convergence" "$syn_convergence"
+        "--shrink-factors" "$shrink_factors"
+        "--smoothing-sigmas" "${smoothing_sigmas}vox"
         "--restrict-deformation" "0x0x1"
     )
     
