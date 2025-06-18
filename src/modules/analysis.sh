@@ -100,8 +100,8 @@ detect_hyperintensities() {
         t1_registered="${out_prefix}_T1_registered.nii.gz"
         
         # Check if T1 and FLAIR have matching dimensions, otherwise register
-        local t1_dims=$(fslinfo "$t1_file" | grep ^dim | awk '{print $2}' | paste -sd ",")
-        local flair_dims=$(fslinfo "$flair_brain" | grep ^dim | awk '{print $2}' | paste -sd ",")
+        local t1_dims=$(fslinfo "$t1_file" | grep ^dim | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
+        local flair_dims=$(fslinfo "$flair_brain" | grep ^dim | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
         
         if [ "$t1_dims" = "$flair_dims" ]; then
             log_message "T1 and FLAIR have matching dimensions. Skipping registration."
@@ -268,25 +268,53 @@ detect_hyperintensities() {
     local flair_norm_mgz="${out_prefix}_flair.mgz"
     local hyper_clean_mgz="${out_prefix}_hyper.mgz"
     mri_convert "$flair_brain" "$flair_norm_mgz"
-    mri_convert "${out_prefix}_thresh1.5.nii.gz" "$hyper_clean_mgz"
-
-    cat > "${out_prefix}_view_in_freeview.sh" << EOC
+    
+    # CRITICAL FIX: Use actual created files instead of hardcoded thresh1.5
+    local created_mask=""
+    local created_method=""
+    
+    # Find the actual hyperintensity mask that was created
+    for method in "${thresholds[@]}"; do
+        local candidate_mask="${out_prefix}_thresh${method}_bin.nii.gz"
+        if [ -f "$candidate_mask" ]; then
+            created_mask="$candidate_mask"
+            created_method="$method"
+            break
+        fi
+    done
+    
+    if [ -n "$created_mask" ] && [ -f "$created_mask" ]; then
+        # Convert the actual created mask to mgz
+        local intensity_version="${out_prefix}_thresh${created_method}.nii.gz"
+        if [ -f "$intensity_version" ]; then
+            mri_convert "$intensity_version" "$hyper_clean_mgz"
+        else
+            # Create intensity version from binary mask
+            fslmaths "$flair_brain" -mas "$created_mask" "$intensity_version"
+            mri_convert "$intensity_version" "$hyper_clean_mgz"
+        fi
+        
+        cat > "${out_prefix}_view_in_freeview.sh" << EOC
 #!/usr/bin/env bash
 freeview -v "$flair_norm_mgz" \\
          -v "$hyper_clean_mgz":colormap=heat:opacity=0.5
 EOC
-    chmod +x "${out_prefix}_view_in_freeview.sh"
+        chmod +x "${out_prefix}_view_in_freeview.sh"
 
-    log_message "Hyperintensity detection complete. To view in freeview, run: ${out_prefix}_view_in_freeview.sh"
-    
-    # Perform cluster analysis using the configured threshold
-    analyze_clusters "${out_prefix}_thresh${threshold_multiplier}_bin.nii.gz" "${out_prefix}_clusters"
-    
-    # Quantify volumes
-    quantify_volumes "$out_prefix"
-    
-    # Create 3D rendering if we have suitable files
-    local hyper_mask="${out_prefix}_thresh${threshold_multiplier}_bin.nii.gz"
+        log_message "Hyperintensity detection complete. To view in freeview, run: ${out_prefix}_view_in_freeview.sh"
+        
+        # Perform cluster analysis using the actual created threshold
+        analyze_clusters "$created_mask" "${out_prefix}_clusters_${created_method}"
+        
+        # Quantify volumes
+        quantify_volumes "$out_prefix"
+        
+        # Create 3D rendering if we have suitable files
+        local hyper_mask="$created_mask"
+    else
+        log_formatted "WARNING" "No hyperintensity masks were created - skipping visualization"
+        return 1
+    fi
     if [ -f "$hyper_mask" ]; then
         # Look for pons segmentation file in various possible locations
         local pons_candidates=(
@@ -712,32 +740,38 @@ apply_per_region_gmm_analysis() {
     fi
 }
 
-# Function to perform brainstem-specific z-score normalization
+# Function to perform region-specific z-score normalization (not whole brainstem)
 normalize_flair_brainstem_zscore() {
     local flair_image="$1"
-    local brainstem_mask="$2"
+    local region_mask="$2"  # This should be the specific region, not whole brainstem
     local output_zscore="$3"
     
-    log_message "Performing brainstem-specific z-score normalization..."
+    # Extract region name for better logging
+    local region_name=$(basename "$region_mask" .nii.gz | sed -E 's/.*_(left_|right_)?(medulla|pons|midbrain).*$/\2/' | sed -E 's/.*_([^_]+)_brain_masked$/\1/')
+    if [[ "$region_name" == *"/"* ]] || [ ${#region_name} -gt 20 ]; then
+        region_name="region"
+    fi
     
-    # Get brainstem region statistics
-    local stats=$(fslstats "$flair_image" -k "$brainstem_mask" -M -S)
-    local brainstem_mean=$(echo "$stats" | awk '{print $1}')
-    local brainstem_std=$(echo "$stats" | awk '{print $2}')
+    log_message "Performing REGION-SPECIFIC z-score normalization for $region_name..."
     
-    if [ "$brainstem_std" = "0.000000" ] || [ -z "$brainstem_std" ]; then
-        log_formatted "ERROR" "Invalid brainstem statistics for z-score normalization"
+    # CRITICAL FIX: Get REGION-specific statistics, not whole brainstem
+    local stats=$(fslstats "$flair_image" -k "$region_mask" -M -S)
+    local region_mean=$(echo "$stats" | awk '{print $1}')
+    local region_std=$(echo "$stats" | awk '{print $2}')
+    
+    if [ "$region_std" = "0.000000" ] || [ -z "$region_std" ]; then
+        log_formatted "ERROR" "Invalid $region_name statistics for z-score normalization"
         return 1
     fi
     
-    log_message "Brainstem statistics: mean=$brainstem_mean, std=$brainstem_std"
+    log_message "$region_name statistics: mean=$region_mean, std=$region_std"
     
-    # Compute z-score: (intensity - brainstem_mean) / brainstem_std
-    fslmaths "$flair_image" -sub "$brainstem_mean" -div "$brainstem_std" "$output_zscore"
+    # Compute z-score: (intensity - region_mean) / region_std
+    fslmaths "$flair_image" -sub "$region_mean" -div "$region_std" "$output_zscore"
     
     # Validate z-score result
-    local zscore_range=$(fslstats "$output_zscore" -k "$brainstem_mask" -R)
-    log_message "Z-score range in brainstem: $zscore_range"
+    local zscore_range=$(fslstats "$output_zscore" -k "$region_mask" -R)
+    log_message "Z-score range in $region_name: $zscore_range"
     
     return 0
 }
@@ -784,53 +818,112 @@ apply_gaussian_mixture_thresholding() {
     # Extract z-score values within binary region mask using robust method
     log_message "Extracting individual voxel values from brain-masked $region_name region..."
     
-    # Method 1: Use fslmeants to extract ALL voxel values (not histogram)
-    if ! fslmeants -i "$zscore_image" -m "$binary_mask" --showall 2>/dev/null | \
-         grep -v '^$' | grep -v 'nan' | grep -v 'inf' | \
-         awk 'NF && $1 != 0 {print $1}' > "$region_values"; then
-        
-        log_message "fslmeants failed, trying alternative extraction method..."
-        
-        # Method 2: Use fslstats with percentile extraction
-        local temp_masked="${temp_dir}/temp_masked_values.nii.gz"
-        fslmaths "$zscore_image" -mas "$binary_mask" "$temp_masked"
-        
-        # Extract non-zero values using Python if available
-        if command -v python3 &> /dev/null; then
-            python3 -c "
+    # CRITICAL FIX: Use direct Python-based voxel extraction for reliable results
+    log_message "Extracting individual voxel values from brain-masked $region_name region..."
+    
+    # Create masked z-score image first
+    local temp_masked="${temp_dir}/temp_masked_values.nii.gz"
+    fslmaths "$zscore_image" -mas "$binary_mask" "$temp_masked"
+    
+    # ENHANCED DEBUGGING: Check intermediate files before Python extraction
+    local temp_stats=$(fslstats "$temp_masked" -V)
+    local masked_voxels=$(echo "$temp_stats" | awk '{print $1}')
+    local masked_volume=$(echo "$temp_stats" | awk '{print $2}')
+    local masked_range=$(fslstats "$temp_masked" -R)
+    
+    log_message "DEBUG: Temp masked file stats - Voxels: $masked_voxels, Volume: $masked_volume mm³, Range: $masked_range"
+    
+    # Use Python for reliable voxel-by-voxel extraction with enhanced debugging
+    if command -v python3 &> /dev/null; then
+        python3 -c "
 import nibabel as nib
 import numpy as np
 import sys
 
 try:
+    # Load the masked z-score image
     img = nib.load('$temp_masked')
     data = img.get_fdata()
     
-    # Extract non-zero values
-    nonzero_values = data[data != 0]
-    nonzero_values = nonzero_values[np.isfinite(nonzero_values)]
+    print(f'# DEBUG: Image shape: {data.shape}', file=sys.stderr)
+    print(f'# DEBUG: Total voxels in image: {data.size}', file=sys.stderr)
+    print(f'# DEBUG: Non-zero voxels: {np.count_nonzero(data)}', file=sys.stderr)
+    print(f'# DEBUG: Data range: {np.min(data):.6f} to {np.max(data):.6f}', file=sys.stderr)
     
-    if len(nonzero_values) > 0:
-        for val in nonzero_values:
-            print(val)
+    # Extract ALL non-zero finite values
+    mask_data = data[data != 0]
+    finite_values = mask_data[np.isfinite(mask_data)]
+    
+    print(f'# DEBUG: After filtering - finite non-zero values: {len(finite_values)}', file=sys.stderr)
+    
+    if len(finite_values) > 0:
+        # Output each individual voxel value on separate lines
+        for val in finite_values:
+            print(f'{val:.6f}')
+        print(f'# FINAL: Extracted {len(finite_values)} voxel values for GMM', file=sys.stderr)
     else:
-        print('0')  # Fallback value
+        print('0')  # Fallback if no values found
+        print('# ERROR: No non-zero finite values found in masked image', file=sys.stderr)
         
 except Exception as e:
-    print(f'Python extraction failed: {e}', file=sys.stderr)
+    print(f'# ERROR: Python extraction failed: {e}', file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
     print('0')  # Fallback value
     sys.exit(1)
-" > "$region_values" 2>/dev/null
-        else
-            log_formatted "WARNING" "Python not available for voxel extraction"
-            # Fallback: create some values based on region statistics
-            local region_mean=$(fslstats "$temp_masked" -M)
-            local region_std=$(fslstats "$temp_masked" -S)
-            echo "$region_mean" > "$region_values"
+" > "$region_values" 2>"${temp_dir}/python_debug.log"
+        
+        # Log Python debug output
+        if [ -f "${temp_dir}/python_debug.log" ]; then
+            while IFS= read -r line; do
+                log_message "PYTHON: $line"
+            done < "${temp_dir}/python_debug.log"
         fi
         
-        rm -f "$temp_masked"
+        # Validate Python extraction worked
+        local python_count=$(grep -v '^#' "$region_values" | grep -v '^$' | wc -l)
+        log_message "Python extracted $python_count values from masked region"
+        
+        if [ "$python_count" -lt 10 ]; then
+            log_formatted "WARNING" "Python extraction yielded only $python_count values, investigating..."
+            
+            # Additional debugging for low extraction count
+            log_message "DEBUG: Checking if temp_masked file has actual data..."
+            local temp_nonzero=$(fslstats "$temp_masked" -l 0.0001 -V | awk '{print $1}')
+            log_message "DEBUG: Non-zero voxels above 0.0001: $temp_nonzero"
+            
+            # Try FSL histogram approach as fallback
+            log_message "Trying FSL histogram fallback..."
+            local hist_range=$(fslstats "$temp_masked" -R)
+            local hist_min=$(echo "$hist_range" | awk '{print $1}')
+            local hist_max=$(echo "$hist_range" | awk '{print $2}')
+            
+            if [ "$hist_max" != "0.000000" ] && [ "$hist_min" != "$hist_max" ]; then
+                fslstats "$temp_masked" -H 1000 "$hist_min" "$hist_max" | \
+                awk -v min="$hist_min" -v max="$hist_max" 'BEGIN{bin=0; range=max-min} {if($1>0) for(i=0;i<$1;i++) print min+(bin*range/1000); bin++}' > "$region_values"
+                
+                local hist_count=$(wc -l < "$region_values")
+                log_message "FSL histogram extracted $hist_count values"
+            else
+                log_formatted "ERROR" "No valid range for histogram extraction: $hist_min to $hist_max"
+            fi
+        fi
+    else
+        log_formatted "WARNING" "Python not available - using FSL histogram fallback"
+        # Enhanced FSL histogram fallback
+        local hist_range=$(fslstats "$temp_masked" -R)
+        local hist_min=$(echo "$hist_range" | awk '{print $1}')
+        local hist_max=$(echo "$hist_range" | awk '{print $2}')
+        
+        if [ "$hist_max" != "0.000000" ] && [ "$hist_min" != "$hist_max" ]; then
+            fslstats "$temp_masked" -H 1000 "$hist_min" "$hist_max" | \
+            awk -v min="$hist_min" -v max="$hist_max" 'BEGIN{bin=0; range=max-min} {if($1>0) for(i=0;i<$1;i++) print min+(bin*range/1000); bin++}' > "$region_values"
+        else
+            echo "0" > "$region_values"
+        fi
     fi
+    
+    rm -f "$temp_masked"
     
     # Remove any remaining invalid values
     grep -E '^-?[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$' "$region_values" > "${region_values}.clean" 2>/dev/null && \
@@ -1399,9 +1492,18 @@ quantify_volumes() {
                 # Get largest cluster size
                 largest_cluster=$(head -1 "$cluster_sorted" | awk '{print $2}')
                 
-                # Calculate mean cluster size
+                # Calculate mean cluster size with division by zero protection
                 mean_cluster_size=$(awk '{sum+=$2; count+=1} END {if(count>0) print sum/count; else print 0}' "$cluster_sorted")
+            else
+                # No clusters found - set safe defaults
+                largest_cluster=0
+                mean_cluster_size=0
             fi
+        else
+            # No cluster file - set safe defaults
+            num_clusters=0
+            largest_cluster=0
+            mean_cluster_size=0
         else
             log_message "No cluster analysis file found for threshold $mult, computing basic stats"
         fi
@@ -1763,15 +1865,27 @@ analyze_region_modality() {
     
     log_message "$region ${modality} statistics - Mean: $region_mean, StdDev: $region_std"
     
-    # Apply modality-specific thresholding
-    local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
+    # Apply modality-specific thresholding with different multipliers for T1 vs FLAIR
+    local base_threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
+    local threshold_multiplier
     local threshold_val
     local abnormality_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities.nii.gz"
+    
+    # CRITICAL FIX: Use higher thresholds for T1 hypointensities than FLAIR hyperintensities
+    if [ "$modality" = "T1" ]; then
+        # T1 hypointensities need higher threshold (double the base threshold)
+        threshold_multiplier=$(echo "$base_threshold_multiplier * 2.0" | bc -l)
+        log_message "Using enhanced T1 threshold multiplier: $threshold_multiplier (2x base for hypointensities)"
+    else
+        # FLAIR hyperintensities use standard threshold
+        threshold_multiplier="$base_threshold_multiplier"
+        log_message "Using standard FLAIR threshold multiplier: $threshold_multiplier"
+    fi
     
     if [ "$intensity_type" = "hyper" ]; then
         # FLAIR hyperintensities: mean + multiplier * std (above threshold)
         threshold_val=$(echo "$region_mean + $threshold_multiplier * $region_std" | bc -l)
-        log_message "Using hyperintensity threshold: $threshold_val for ${modality} $region"
+        log_message "Using ${modality} hyperintensity threshold: $threshold_val for $region (multiplier: $threshold_multiplier)"
         
         # Create hyperintensity mask (above threshold)
         if ! fslmaths "$region_image" -thr "$threshold_val" -bin "$abnormality_mask"; then
@@ -1781,7 +1895,7 @@ analyze_region_modality() {
     else
         # T1 hypointensities: mean - multiplier * std (below threshold)
         threshold_val=$(echo "$region_mean - $threshold_multiplier * $region_std" | bc -l)
-        log_message "Using hypointensity threshold: $threshold_val for ${modality} $region"
+        log_message "Using ${modality} hypointensity threshold: $threshold_val for $region (multiplier: $threshold_multiplier)"
         
         # Create hypointensity mask (below threshold)
         if ! fslmaths "$region_image" -uthr "$threshold_val" -bin "$abnormality_mask"; then
