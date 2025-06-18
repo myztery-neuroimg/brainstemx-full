@@ -813,7 +813,7 @@ run_pipeline() {
     # Use the basename of the T1 file, not subject_id
     local t1_basename=$(basename "$t1_std" .nii.gz)
     local brainstem_output=$(get_output_path "segmentation/brainstem" "${t1_basename}" "_brainstem")
-=    
+    
     # Validate files exist
     log_message "Validating output files exist..."
     [ ! -f "$brainstem_output" ] && log_formatted "WARNING" "Brainstem file not found: $brainstem_output"
