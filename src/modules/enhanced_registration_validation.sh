@@ -1521,12 +1521,22 @@ create_intensity_mask() {
     
     log_message "✓ Input validation passed"
     
-    # CRITICAL FIX: Create brain mask from intensity image to constrain segmentation masks
+    # CRITICAL FIX: Create proper brain mask using intensity thresholding, not simple binarization
     local brain_mask="${output}_brain_constraint.nii.gz"
-    log_message "Creating brain mask from intensity image to constrain segmentation..."
+    log_message "Creating proper brain mask with intensity thresholding to exclude background noise..."
     
-    if ! safe_fslmaths "Create brain mask constraint" "$intensity_image" -bin "$brain_mask"; then
-        log_formatted "ERROR" "Failed to create brain mask constraint"
+    # Get intensity statistics to determine proper brain threshold
+    local intensity_stats=$(fslstats "$intensity_image" -R)
+    local min_intensity=$(echo "$intensity_stats" | awk '{print $1}')
+    local max_intensity=$(echo "$intensity_stats" | awk '{print $2}')
+    
+    # Use 10% of max intensity as brain threshold to exclude background noise
+    local brain_threshold=$(echo "$max_intensity * 0.1" | bc -l)
+    log_message "Intensity range: $min_intensity to $max_intensity, using brain threshold: $brain_threshold"
+    
+    # Create proper brain mask by thresholding, not simple binarization
+    if ! safe_fslmaths "Create proper brain mask with threshold" "$intensity_image" -thr "$brain_threshold" -bin "$brain_mask"; then
+        log_formatted "ERROR" "Failed to create proper brain mask with thresholding"
         return 1
     fi
     
