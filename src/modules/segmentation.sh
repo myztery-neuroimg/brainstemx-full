@@ -671,16 +671,37 @@ except Exception as e:
         if command -v Atropos &> /dev/null && [ "$segmentation_successful" = "false" ]; then
             log_message "Using Atropos for tissue segmentation..."
             
-            # Brain extraction for Atropos input
-            local brain_extracted="${temp_refinement_dir}/brain_extracted.nii.gz"
-            local brain_mask="${temp_refinement_dir}/brain_extracted_mask.nii.gz"
+            # Use existing brain extraction system
+            local input_basename=$(basename "$input_image" .nii.gz)
+            local brain_extracted="${RESULTS_DIR}/brain_extraction/${input_basename}_brain.nii.gz"
+            local brain_mask="${RESULTS_DIR}/brain_extraction/${input_basename}_brain_mask.nii.gz"
+            
+            # Ensure brain extraction directory exists
+            mkdir -p "${RESULTS_DIR}/brain_extraction"
             
             # Simple brain extraction using bet with conservative parameters
+            log_message "Running brain extraction: bet $input_image $brain_extracted -m -n -f 0.3"
             if bet "$input_image" "$brain_extracted" -m -n -f 0.3 2>/dev/null; then
                 
+                # Check both outputs were created
+                if [ ! -f "$brain_extracted" ]; then
+                    log_formatted "ERROR" "Brain extraction failed - brain volume not created: $brain_extracted"
+                    log_message "Attempting to create brain volume from input and mask..."
+                    # Create brain volume manually if bet didn't create it
+                    if [ -f "$brain_mask" ]; then
+                        fslmaths "$input_image" -mas "$brain_mask" "$brain_extracted" 2>/dev/null
+                    fi
+                elif [ ! -f "$brain_mask" ]; then
+                    log_formatted "ERROR" "Brain extraction failed - brain mask not created: $brain_mask"
+                else
+                    log_message "Brain extraction outputs created successfully"
+                fi
+                
                 # Validate brain extraction was successful
-                local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}' 2>/dev/null || echo "0")
-                if [ "$brain_voxels" -gt 100 ]; then
+                if [ -f "$brain_mask" ]; then
+                    local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}' 2>/dev/null || echo "0")
+                    log_message "Brain extraction: $brain_voxels voxels in mask"
+                    if [ "$brain_voxels" -gt 100 ]; then
                     
                     # Try 3-class segmentation first with comprehensive error handling
                     log_message "Trying Atropos 3-class segmentation..."

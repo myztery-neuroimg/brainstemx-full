@@ -43,6 +43,36 @@ ensure_safe_fslmaths() {
     return 0
 }
 
+# Function to ensure analysis module is available
+ensure_analysis_module() {
+    if ! declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
+        log_formatted "WARNING" "analyze_talairach_hyperintensities function not available, attempting to source analysis.sh"
+        
+        # Try to find and source analysis.sh
+        local analysis_paths=(
+            "$(dirname "${BASH_SOURCE[0]}")/analysis.sh"
+            "${SCRIPT_DIR}/modules/analysis.sh"
+            "./src/modules/analysis.sh"
+            "../src/modules/analysis.sh"
+        )
+        
+        for analysis_path in "${analysis_paths[@]}"; do
+            if [ -f "$analysis_path" ]; then
+                log_message "Found analysis.sh at: $analysis_path"
+                source "$analysis_path"
+                if declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
+                    log_formatted "SUCCESS" "analyze_talairach_hyperintensities function loaded successfully"
+                    return 0
+                fi
+            fi
+        done
+        
+        log_formatted "WARNING" "Could not load analyze_talairach_hyperintensities function"
+        return 1
+    fi
+    return 0
+}
+
 # Emergency path validation function
 emergency_validate_paths() {
     local operation="$1"
@@ -1711,8 +1741,8 @@ run_comprehensive_analysis() {
     # 6. Analyze hyperintensities in Talairach brainstem regions
     log_message "Step 6: Analyzing hyperintensities in Talairach brainstem regions..."
     
-    # Check if the analyze_talairach_hyperintensities function is available
-    if declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
+    # Ensure analysis module is loaded and check if the analyze_talairach_hyperintensities function is available
+    if ensure_analysis_module && declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
         # Check if Talairach analysis files exist
         if [ -d "${RESULTS_DIR}/comprehensive_analysis/original_space" ]; then
             # Find the appropriate output basename for Talairach files
@@ -1880,5 +1910,6 @@ verify_pipeline_step_outputs() {
 # Export verification function
 export -f verify_pipeline_step_outputs
 export -f emergency_validate_paths
+export -f ensure_analysis_module
 
 log_message "Enhanced registration validation module loaded with coordinate space validation"
