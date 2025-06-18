@@ -28,8 +28,10 @@ source src/modules/environment.sh
 source src/modules/utils.sh     # Load utilities module with execute_ants_command
 source src/modules/fast_wrapper.sh # Load FAST wrapper with parallel processing
 source src/modules/dicom_analysis.sh
+source src/modules/dicom_cluster_mapping.sh  # Add DICOM cluster mapping module
 source src/modules/import.sh
 source src/modules/preprocess.sh
+source src/modules/brain_extraction.sh
 source src/modules/registration.sh
 source src/modules/segmentation.sh
 source src/modules/analysis.sh
@@ -59,7 +61,8 @@ show_help() {
   echo ""
   echo "Pipeline Stages:"
   echo "  import: Import and convert DICOM data"
-  echo "  preprocess: Perform bias correction and brain extraction"
+  echo "  preprocess: Perform Rician denoising and N4 bias correction"
+  echo "  brain_extraction: Brain extraction, standardization, and cropping"
   echo "  registration: Align images to standard space"
   echo "  segmentation: Extract brainstem and pons regions"
   echo "  analysis: Detect and analyze hyperintensities"
@@ -99,20 +102,23 @@ get_stage_number() {
     preprocess|preprocessing|pre|2)
       stage_num=2
       ;;
-    registration|register|reg|3)
+    brain_extraction|brain|extract|3)
       stage_num=3
       ;;
-    segmentation|segment|seg|4)
+    registration|register|reg|4)
       stage_num=4
       ;;
-    analysis|analyze|5)
+    segmentation|segment|seg|5)
       stage_num=5
       ;;
-    visualization|visualize|vis|6)
+    analysis|analyze|6)
       stage_num=6
       ;;
-    tracking|track|progress|7)
+    visualization|visualize|vis|7)
       stage_num=7
+      ;;
+    tracking|track|progress|8)
+      stage_num=8
       ;;
     *)
       stage_num=0  # Invalid stage
@@ -282,9 +288,9 @@ run_pipeline() {
     log_message "Import data exists, continuing from Step $START_STAGE"
   fi
   
-  # Step 2: Preprocessing
+  # Step 2: Preprocessing (Denoising + N4)
   if [ $START_STAGE -le 2 ]; then
-    log_message "Step 2: Preprocessing"
+    log_message "Step 2: Preprocessing (Rician denoising + N4 bias correction)"
     
     # Find T1 and FLAIR files
   # Use simple glob patterns that work reliably with find
@@ -400,17 +406,14 @@ run_pipeline() {
   validate_nifti "$flair_file" "FLAIR input file"
   
   # N4 bias field correction (run in parallel if available)
-  if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
-    log_message "Running N4 bias field correction with parallel processing"
-    # Copy the files to a temporary directory for parallel processing
-    local temp_dir=$(create_module_dir "temp_parallel")
-    cp "$t1_file" "$temp_dir/$(basename "$t1_file")"
-    cp "$flair_file" "$temp_dir/$(basename "$flair_file")"
-    run_parallel_n4_correction "$temp_dir" "*.nii.gz"
-  else
-    log_message "Running N4 bias field correction sequentially"
-    process_n4_correction "$t1_file"
-    process_n4_correction "$flair_file"
+  log_message "Running N4 bias field correction with Rician denoising sequentially"
+  if ! process_n4_correction "$t1_file"; then
+    log_formatted "ERROR" "N4 correction failed for T1: $t1_file"
+    return $ERR_PREPROC
+  fi
+  if ! process_n4_correction "$flair_file"; then
+    log_formatted "ERROR" "N4 correction failed for FLAIR: $flair_file"
+    return $ERR_PREPROC
   fi
   
   # Update file paths
@@ -420,101 +423,161 @@ run_pipeline() {
   flair_file=$(get_output_path "bias_corrected" "$flair_basename" "_n4")
   
   # Validate bias correction step
-  validate_step "N4 bias correction" "$(basename "$t1_file"),$(basename "$flair_file")" "bias_corrected"
+  validate_step "N4 bias correction with Rician denoising" "$(basename "$t1_file"),$(basename "$flair_file")" "bias_corrected"
   
-  # Brain extraction (run in parallel if available)
-  if [ "$PARALLEL_JOBS" -gt 0 ] && check_parallel &>/dev/null; then
-    log_message "Running brain extraction with parallel processing"
-    run_parallel_brain_extraction "$(get_module_dir "bias_corrected")" "*.nii.gz" "$MAX_CPU_INTENSIVE_JOBS"
   else
-    log_message "Running brain extraction sequentially"
-    extract_brain "$t1_file"
-    extract_brain "$flair_file"
-  fi
-  
-  # Update file paths
-  local t1_n4_basename=$(basename "$t1_file" .nii.gz)
-  local flair_n4_basename=$(basename "$flair_file" .nii.gz)
-  
-  t1_brain=$(get_output_path "brain_extraction" "$t1_n4_basename" "_brain")
-  flair_brain=$(get_output_path "brain_extraction" "$flair_n4_basename" "_brain")
-  
-  # Validate brain extraction step
-  validate_step "Brain extraction" "$(basename "$t1_brain"),$(basename "$flair_brain")" "brain_extraction"  
-  # Launch visual QA for brain extraction (non-blocking)
-  # Moving this after standardization since t1_std is defined later
-  # Will be launched after line 315 where t1_std is defined
-  
-  # Smart standardization: detect optimal resolution across T1 and FLAIR
-  log_formatted "INFO" "===== SMART RESOLUTION DETECTION ====="
-  local optimal_resolution=$(detect_optimal_resolution "$t1_brain" "$flair_brain")
-  
-  # Validate the resolution format
-  if [ -z "$optimal_resolution" ] || ! echo "$optimal_resolution" | grep -E "^[0-9.]+x[0-9.]+x[0-9.]+$" > /dev/null; then
-    log_error "Invalid optimal resolution format: '$optimal_resolution'" $ERR_DATA_CORRUPT
-    return $ERR_DATA_CORRUPT
-  fi
-  
-  log_formatted "SUCCESS" "Optimal resolution detected: $optimal_resolution mm"
-  log_message "T1 will be used as reference space for segmentation consistency"
-  
-  # Standardize dimensions using optimal resolution with reference grid approach
-  log_message "Running smart dimension standardization with reference grid approach"
-  log_message "This ensures T1 and FLAIR have IDENTICAL matrix dimensions while preserving highest resolution"
-  
-  # Always use T1 as reference for segmentation consistency
-  local ref_file="$t1_brain"
-  local other_file="$flair_brain"
-  local ref_name="T1"
-  local other_name="FLAIR"
-  
-  # Check if we're downsampling FLAIR
-  local t1_inplane=$(echo "scale=6; ($(fslval "$t1_brain" pixdim1) + $(fslval "$t1_brain" pixdim2)) / 2" | bc -l)
-  local flair_inplane=$(echo "scale=6; ($(fslval "$flair_brain" pixdim1) + $(fslval "$flair_brain" pixdim2)) / 2" | bc -l)
-  
-  if (( $(echo "$flair_inplane < $t1_inplane" | bc -l) )); then
-    log_formatted "INFO" "FLAIR has higher resolution (${flair_inplane}mm vs ${t1_inplane}mm) but using T1 as reference"
-    log_message "This maintains 'T1 native space' consistency for atlas-based segmentation"
-    log_message "FLAIR will be downsampled to match T1 grid for identical dimensions"
-  else
-    log_formatted "SUCCESS" "T1 has equal or higher resolution - optimal for segmentation"
-  fi
-  
-  # Step 1: Standardize T1 first (always reference for segmentation)
-  log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
-  standardize_dimensions "$ref_file" "$optimal_resolution"
-  
-  # Get the standardized T1 file path
-  local ref_basename=$(basename "$ref_file" .nii.gz)
-  local ref_std=$(get_output_path "standardized" "$ref_basename" "_std")
-  
-  # Step 2: Standardize FLAIR using T1 as reference grid
-  log_message "Standardizing FLAIR using T1 as reference grid for identical dimensions"
-  standardize_dimensions "$other_file" "$optimal_resolution" "$ref_std"
-  
-  # Update file paths - T1 is always reference
-  local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
-  local flair_brain_basename=$(basename "$flair_brain" .nii.gz)
-  
-  t1_std=$(get_output_path "standardized" "$t1_brain_basename" "_std")      # Reference T1 (native space)
-  flair_std=$(get_output_path "standardized" "$flair_brain_basename" "_std") # FLAIR resampled to T1 grid
-  
-  log_formatted "SUCCESS" "Both scans standardized in T1 native space with identical dimensions"
-  
-  # Validate standardization step
-  validate_step "Standardize dimensions" "$(basename "$t1_std"),$(basename "$flair_std")" "standardized"
-  
-  # Launch enhanced visual QA for brain extraction with better error handling and guidance
-  enhanced_launch_visual_qa "$t1_std" "$t1_brain" ":colormap=heat:opacity=0.5" "brain-extraction" "sagittal"
-  
+    log_message "Skipping Step 2 (Preprocessing) as requested"
+    log_message "Checking if import data exists..."
+    
+    # Check if essential directories and files exist to continue
+    if [ ! -d "$EXTRACT_DIR" ] || [ $(find "$EXTRACT_DIR" -name "*.nii.gz" | wc -l) -eq 0 ]; then
+      log_formatted "ERROR" "Import data is missing. Cannot skip Step 2."
+      return $ERR_DATA_MISSING
+    fi
+    
+    log_message "Import data exists, continuing from Step $START_STAGE"
   fi  # End of Preprocessing (Step 2)
   
-  # Step 3: Registration
+  # Step 3: Brain Extraction, Standardization, and Cropping
   if [ $START_STAGE -le 3 ]; then
-    log_message "Step 3: Registration"
+    log_message "Step 3: Brain extraction, standardization, and cropping"
+    
+    # If we're skipping previous steps, we need to find the bias-corrected files
+    if [ $START_STAGE -eq 3 ]; then
+      log_message "Looking for bias-corrected files..."
+      t1_file=$(find "$RESULTS_DIR/bias_corrected" -name "*T1*_n4.nii.gz" | head -1)
+      flair_file=$(find "$RESULTS_DIR/bias_corrected" -name "*FLAIR*_n4.nii.gz" | head -1)
+      
+      if [ -z "$t1_file" ] || [ -z "$flair_file" ]; then
+        log_formatted "ERROR" "Bias-corrected data is missing. Cannot skip to Step $START_STAGE."
+        return $ERR_DATA_MISSING
+      fi
+      
+      log_message "Found bias-corrected data:"
+      log_message "T1: $t1_file"
+      log_message "FLAIR: $flair_file"
+    fi
+    
+    # Brain extraction 
+      log_message "Running brain extraction sequentially"
+      if ! extract_brain "$t1_file"; then
+        log_formatted "ERROR" "Brain extraction failed for T1: $t1_file"
+        return $ERR_PREPROC
+      fi
+      if ! extract_brain "$flair_file"; then
+        log_formatted "ERROR" "Brain extraction failed for FLAIR: $flair_file"
+        return $ERR_PREPROC
+      fi
+    
+    # Update file paths
+    local t1_n4_basename=$(basename "$t1_file" .nii.gz)
+    local flair_n4_basename=$(basename "$flair_file" .nii.gz)
+    
+    t1_brain=$(get_output_path "brain_extraction" "$t1_n4_basename" "_brain")
+    flair_brain=$(get_output_path "brain_extraction" "$flair_n4_basename" "_brain")
+    
+    # Validate brain extraction step
+    validate_step "Brain extraction" "$(basename "$t1_brain"),$(basename "$flair_brain")" "brain_extraction"
+    
+    # Smart standardization: detect optimal resolution across T1 and FLAIR
+    log_formatted "INFO" "===== SMART RESOLUTION DETECTION ====="
+    local optimal_resolution=$(detect_optimal_resolution "$t1_brain" "$flair_brain")
+    
+    # Validate the resolution format
+    if [ -z "$optimal_resolution" ] || ! echo "$optimal_resolution" | grep -E "^[0-9.]+x[0-9.]+x[0-9.]+$" > /dev/null; then
+      log_formatted "ERROR" "Invalid optimal resolution format: '$optimal_resolution'"
+      return $ERR_DATA_CORRUPT
+    fi
+    
+    log_formatted "SUCCESS" "Optimal resolution detected: $optimal_resolution mm"
+    log_message "T1 will be used as reference space for segmentation consistency"
+    
+    # Standardize dimensions using optimal resolution with reference grid approach
+    log_message "Running smart dimension standardization with reference grid approach"
+    log_message "This ensures T1 and FLAIR have IDENTICAL matrix dimensions while preserving highest resolution"
+    
+    # Always use T1 as reference for segmentation consistency
+    local ref_file="$t1_brain"
+    local other_file="$flair_brain"
+    local ref_name="T1"
+    local other_name="FLAIR"
+    
+    # Check if we're downsampling FLAIR
+    local t1_inplane=$(echo "scale=6; ($(fslval "$t1_brain" pixdim1) + $(fslval "$t1_brain" pixdim2)) / 2" | bc -l)
+    local flair_inplane=$(echo "scale=6; ($(fslval "$flair_brain" pixdim1) + $(fslval "$flair_brain" pixdim2)) / 2" | bc -l)
+    
+    if (( $(echo "$flair_inplane < $t1_inplane" | bc -l) )); then
+      log_formatted "INFO" "FLAIR has higher resolution (${flair_inplane}mm vs ${t1_inplane}mm) but using T1 as reference"
+      log_message "This maintains 'T1 native space' consistency for atlas-based segmentation"
+      log_message "FLAIR will be downsampled to match T1 grid for identical dimensions"
+    else
+      log_formatted "SUCCESS" "T1 has equal or higher resolution - optimal for segmentation"
+    fi
+    
+    # Step 1: Standardize T1 first (always reference for segmentation)
+    log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
+    if ! standardize_dimensions "$ref_file" "$optimal_resolution"; then
+      log_formatted "ERROR" "T1 standardization failed"
+      return $ERR_PREPROC
+    fi
+    
+    # Get the standardized T1 file path
+    local ref_basename=$(basename "$ref_file" .nii.gz)
+    local ref_std=$(get_output_path "standardized" "$ref_basename" "_std")
+    
+    # Step 2: Standardize FLAIR using T1 as reference grid
+    log_message "Standardizing FLAIR using T1 as reference grid for identical dimensions"
+    if ! standardize_dimensions "$other_file" "$optimal_resolution" "$ref_std"; then
+      log_formatted "ERROR" "FLAIR standardization failed"
+      return $ERR_PREPROC
+    fi
+    
+    # Update file paths - T1 is always reference
+    local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
+    local flair_brain_basename=$(basename "$flair_brain" .nii.gz)
+    
+    t1_std=$(get_output_path "standardized" "$t1_brain_basename" "_std")      # Reference T1 (native space)
+    flair_std=$(get_output_path "standardized" "$flair_brain_basename" "_std") # FLAIR resampled to T1 grid
+        
+    # Validate standardization step
+    validate_step "Standardize dimensions" "$(basename "$t1_std"),$(basename "$flair_std")" "standardized"
+    
+    log_formatted "SUCCESS" "$flair_std standardized in T1 native space with identical dimensions"
+
+    # Launch enhanced visual QA for brain extraction with better error handling and guidance
+    enhanced_launch_visual_qa "$t1_std" "$t1_brain" ":colormap=heat:opacity=0.5" "brain-extraction" "sagittal"
+    
+  else
+    log_message "Skipping Step 3 (Brain extraction) as requested"
+    log_message "Checking if bias-corrected data exists..."
+    
+    # Check if essential files exist to continue
+    local bias_dir="$RESULTS_DIR/bias_corrected"
+    if [ ! -d "$bias_dir" ] || [ $(find "$bias_dir" -name "*_n4.nii.gz" | wc -l) -eq 0 ]; then
+      log_formatted "ERROR" "Bias-corrected data is missing. Cannot skip to Step $START_STAGE."
+      return $ERR_DATA_MISSING
+    fi
+    
+    # Find the standardized files for downstream stages
+    t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
+    flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+    
+    if [ -z "$t1_std" ] || [ -z "$flair_std" ]; then
+      log_formatted "ERROR" "Standardized data is missing. Cannot skip to Step $START_STAGE."
+      return $ERR_DATA_MISSING
+    fi
+    
+    log_message "Found standardized data:"
+    log_message "T1: $t1_std"
+    log_message "FLAIR: $flair_std"
+  fi  # End of Brain Extraction (Step 3)
+  
+  # Step 4: Registration
+  if [ $START_STAGE -le 4 ]; then
+    log_message "Step 4: Registration"
     
     # If we're skipping previous steps, we need to find the standardized files
-    if [ $START_STAGE -eq 3 ]; then
+    if [ $START_STAGE -eq 4 ]; then
       log_message "Looking for standardized files..."
       t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
       flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
@@ -711,7 +774,7 @@ run_pipeline() {
     # Validate visualization step
     validate_step "Registration visualizations" "*.png,quality.txt" "validation/registration"
   else
-    log_message "Skipping Step 3 Registration as requested"
+    log_message "Skipping Step 4 (Registration) as requested"
     log_message "Checking if standardized data exists..."
     
     # Initialize variables for other stages to use
@@ -726,15 +789,14 @@ run_pipeline() {
     log_message "Found standardized data:"
     log_message "T1: $t1_std"
     log_message "FLAIR: $flair_std"
-  fi  # End of Registration (Step 3)
+  fi  # End of Registration (Step 4)
   
-  # Step 4: Segmentation
-  if [ $START_STAGE -le 4 ]; then
-    log_message "Step 4: Segmentation"
+  # Step 5: Segmentation
+  if [ $START_STAGE -le 5 ]; then
+    log_message "Step 5: Segmentation"
     
     # Create output directories for segmentation
     local brainstem_dir=$(create_module_dir "segmentation/brainstem")
-    local pons_dir=$(create_module_dir "segmentation/pons")
     
     log_message "Attempting all available segmentation methods..."
     
@@ -751,23 +813,10 @@ run_pipeline() {
     # Use the basename of the T1 file, not subject_id
     local t1_basename=$(basename "$t1_std" .nii.gz)
     local brainstem_output=$(get_output_path "segmentation/brainstem" "${t1_basename}" "_brainstem")
-    local pons_output=$(get_output_path "segmentation/pons" "${t1_basename}" "_pons")
-    local dorsal_pons=$(get_output_path "segmentation/pons" "${t1_basename}" "_dorsal_pons")
-    local ventral_pons=$(get_output_path "segmentation/pons" "${t1_basename}" "_ventral_pons")
-    
+=    
     # Validate files exist
     log_message "Validating output files exist..."
     [ ! -f "$brainstem_output" ] && log_formatted "WARNING" "Brainstem file not found: $brainstem_output"
-    [ ! -f "$pons_output" ] && log_formatted "WARNING" "Pons file not found: $pons_output"
-    
-    # Note: Dorsal/ventral pons subdivision is not available from Juelich atlas
-    # These files are created as compatibility placeholders by the segmentation module
-    if [ ! -f "$dorsal_pons" ]; then
-        log_formatted "INFO" "Dorsal pons placeholder not found (will be created): $dorsal_pons"
-    fi
-    if [ ! -f "$ventral_pons" ]; then
-        log_formatted "INFO" "Ventral pons placeholder not found (will be created): $ventral_pons"
-    fi
 
     # Validate main segmentation files (dorsal/ventral are just compatibility placeholders)
     validate_step "Segmentation" "${t1_basename}_brainstem.nii.gz,${t1_basename}_pons.nii.gz" "segmentation"
@@ -775,7 +824,6 @@ run_pipeline() {
     # The brainstem output already contains intensity values, no need to create another
     log_message "Using existing intensity segmentation masks for visualization..."
     local brainstem_intensity="$brainstem_output"  # This already contains T1 intensities
-    local dorsal_pons_intensity="$dorsal_pons"      # For consistency
     
     # Only create intensity versions if the outputs are binary masks
     if [ -f "$brainstem_output" ]; then
@@ -786,23 +834,14 @@ run_pipeline() {
             create_intensity_mask "$brainstem_output" "$t1_std" "$brainstem_intensity"
         fi
     fi
-    
-    if [ -f "$dorsal_pons" ]; then
-        local max_val=$(fslstats "$dorsal_pons" -R | awk '{print $2}')
-        if (( $(echo "$max_val <= 1" | bc -l) )); then
-            log_message "Dorsal pons output appears to be binary, creating intensity version..."
-            dorsal_pons_intensity="${RESULTS_DIR}/segmentation/pons/${t1_basename}_dorsal_pons_intensity.nii.gz"
-            create_intensity_mask "$dorsal_pons" "$t1_std" "$dorsal_pons_intensity"
-        fi
-    fi
-    
+        
     # Note: Segmentation location verification moved to QA module
     # Use qa_verify_all_segmentations function for comprehensive validation
     
     # Launch enhanced visual QA for brainstem segmentation (non-blocking)
     enhanced_launch_visual_qa "$t1_std" "$brainstem_intensity" ":colormap=heat:opacity=0.5" "brainstem-segmentation" "coronal"
   else
-    log_message 'Skipping Step 4 (Segmentation) as requested'
+    log_message 'Skipping Step 5 (Segmentation) as requested'
     log_message "Checking if registration data exists..."
     
     # Check if essential files exist to continue
@@ -824,11 +863,11 @@ run_pipeline() {
     fi
     
     log_message "Found registered data: $flair_registered"
-  fi  # End of Segmentation (Step 4)
+  fi  # End of Segmentation (Step 5)
   
-  # Step 5: Analysis
-  if [ $START_STAGE -le 5 ]; then
-    log_message "Step 5: Analysis"
+  # Step 6: Analysis
+  if [ $START_STAGE -le 6 ]; then
+    log_message "Step 6: Analysis"
     
     # Initialize registered directory if we're starting from this stage
     local reg_dir=$(get_module_dir "registered")
@@ -971,6 +1010,56 @@ run_pipeline() {
       analyze_hyperintensity_clusters "$hyperintensity_mask" "$pons_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
     fi
     
+    # NEW: DICOM Cluster Mapping Integration
+    log_formatted "INFO" "===== MAPPING CLUSTERS TO DICOM SPACE ====="
+    log_message "Performing cluster-to-DICOM coordinate mapping for medical viewer compatibility"
+    
+    # Create DICOM mapping directory
+    local dicom_mapping_dir="${RESULTS_DIR}/dicom_cluster_mapping"
+    mkdir -p "$dicom_mapping_dir"
+    
+    # Find cluster analysis results
+    local cluster_analysis_dir="${hyperintensities_dir}/clusters"
+    if [ -d "$cluster_analysis_dir" ] && [ -d "$SRC_DIR" ]; then
+      log_message "Running complete cluster-to-DICOM mapping pipeline..."
+      log_message "  Cluster analysis: $cluster_analysis_dir"
+      log_message "  Results directory: $RESULTS_DIR"
+      log_message "  DICOM directory: $SRC_DIR"
+      log_message "  Output directory: $dicom_mapping_dir"
+      
+      # Perform the complete mapping
+      if perform_cluster_to_dicom_mapping "$cluster_analysis_dir" "$RESULTS_DIR" "$SRC_DIR" "$dicom_mapping_dir"; then
+        log_formatted "SUCCESS" "Cluster-to-DICOM mapping completed successfully"
+        log_message "Medical imaging viewers can now display cluster locations"
+        log_message "Mapping results: $dicom_mapping_dir"
+        
+        # Create summary of mapped clusters
+        local summary_file="${dicom_mapping_dir}/mapping_summary.txt"
+        {
+          echo "DICOM Cluster Mapping Summary"
+          echo "============================"
+          echo "Generated: $(date)"
+          echo ""
+          echo "Mapped cluster files:"
+          find "$dicom_mapping_dir" -name "*_dicom_mapping.txt" -exec basename {} \; | sort
+          echo ""
+          echo "Total clusters mapped:"
+          find "$dicom_mapping_dir" -name "*_dicom_mapping.txt" -exec cat {} \; | tail -n +7 | grep -v "NO_MATCH" | wc -l
+          echo ""
+          echo "Clusters successfully matched to DICOM files:"
+          find "$dicom_mapping_dir" -name "*_dicom_mapping.txt" -exec cat {} \; | tail -n +7 | grep -v "NO_MATCH" | grep -v "UNKNOWN" | wc -l
+        } > "$summary_file"
+        
+        log_message "Mapping summary created: $summary_file"
+      else
+        log_formatted "WARNING" "Cluster-to-DICOM mapping encountered issues"
+        log_message "Check mapping logs for details"
+      fi
+    else
+      log_formatted "WARNING" "Cluster analysis directory not found - skipping DICOM mapping"
+      log_message "Expected cluster analysis at: $cluster_analysis_dir"
+    fi
+    
     # Validate hyperintensities detection
     # Use the basename from the pons mask
     local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
@@ -986,7 +1075,7 @@ run_pipeline() {
       enhanced_launch_visual_qa "$orig_flair" "$all_masks" ":colormap=heat:opacity=0.7" "all-segmentations-hyperintensities" "axial"
     fi
   else
-    log_message 'Skipping Step 5 (Analysis) as requested'
+    log_message 'Skipping Step 6 (Analysis) as requested'
     log_message "Checking if segmentation data exists..."
     
     # Check if essential files exist to continue
@@ -1005,11 +1094,11 @@ run_pipeline() {
     fi
     
     log_message "Found segmentation data: $pons_mask"
-  fi  # End of Analysis (Step 5)
+  fi  # End of Analysis (Step 6)
   
-  # Step 6: Visualization
-  if [ $START_STAGE -le 6 ]; then
-    log_message "Step 6: Visualization"
+  # Step 7: Visualization
+  if [ $START_STAGE -le 7 ]; then
+    log_message "Step 7: Visualization"
     
     # Generate QC visualizations
     generate_qc_visualizations "$subject_id" "$RESULTS_DIR"
@@ -1021,7 +1110,7 @@ run_pipeline() {
     # Generate HTML report
     generate_html_report "$subject_id" "$RESULTS_DIR"
   else
-    log_message 'Skipping Step 6 (Visualization) as requested'
+    log_message 'Skipping Step 7 (Visualization) as requested'
     log_message "Checking if hyperintensity data exists..."
     
     # Check if essential files exist to continue
@@ -1032,11 +1121,11 @@ run_pipeline() {
     fi
     
     log_message "Found hyperintensity data directory: $hyperintensities_dir"
-  fi  # End of Visualization (Step 6)
+  fi  # End of Visualization (Step 7)
   
-  # Step 6.5: Advanced Visualization and Analysis
-  if [ $START_STAGE -le 6 ]; then
-    log_message "Step 6.5: Advanced Visualization and Analysis"
+  # Step 7.5: Advanced Visualization and Analysis
+  if [ $START_STAGE -le 7 ]; then
+    log_message "Step 7.5: Advanced Visualization and Analysis"
     
     # Create advanced visualization directory
     local advanced_viz_dir="${RESULTS_DIR}/advanced_visualization"
@@ -1103,15 +1192,15 @@ run_pipeline() {
       log_message "Skipping advanced visualization generation"
     fi
   else
-    log_message 'Skipping Step 6.5 (Advanced Visualization) as requested'
-  fi  # End of Advanced Visualization (Step 6.5)
+    log_message 'Skipping Step 7.5 (Advanced Visualization) as requested'
+  fi  # End of Advanced Visualization (Step 7.5)
   
-  # Step 7: Track pipeline progress
-  if [ $START_STAGE -le 7 ]; then
-    log_message "Step 7: Tracking pipeline progress"
+  # Step 8: Track pipeline progress
+  if [ $START_STAGE -le 8 ]; then
+    log_message "Step 8: Tracking pipeline progress"
     track_pipeline_progress "$subject_id" "$RESULTS_DIR"
   else
-    log_message 'Skipping Step 7 (Pipeline progress tracking) as requested'
+    log_message 'Skipping Step 8 (Pipeline progress tracking) as requested'
   fi
   
   log_message "Pipeline completed successfully for subject $subject_id"
