@@ -91,4 +91,67 @@ apply_transform() {
             -out "${output_file}" -interp "${interp}"
     fi
 }
-export -f apply_transform
+
+# Function to perform brain extraction using available ANTs tools
+perform_brain_extraction() {
+  local input_file="$1"
+  local output_prefix="$2"
+  
+  # Check if antsBrainExtraction.sh is available
+  if ! command -v antsBrainExtraction.sh &> /dev/null; then
+    log_formatted "WARNING" "antsBrainExtraction.sh not available - trying FSL BET as fallback"
+    
+    # Fallback to FSL BET
+    if command -v bet &> /dev/null; then
+      local brain_file="${output_prefix}BrainExtractionBrain.nii.gz"
+      local mask_file="${output_prefix}BrainExtractionMask.nii.gz"
+      
+      log_message "Using FSL BET for brain extraction"
+      bet "$input_file" "$brain_file" -m -f 0.5
+      
+      # BET creates mask with _mask suffix, rename it
+      if [ -f "${brain_file%%.nii.gz}_mask.nii.gz" ]; then
+        mv "${brain_file%%.nii.gz}_mask.nii.gz" "$mask_file"
+      fi
+      
+      return $?
+    else
+      log_formatted "ERROR" "Neither antsBrainExtraction.sh nor BET available for brain extraction"
+      return 1
+    fi
+  fi
+  
+  # Use ANTs brain extraction with available template
+  local template_dir="${TEMPLATE_DIR:-/usr/local/fsl/data/standard}"
+  local extraction_template="${template_dir}/${EXTRACTION_TEMPLATE:-MNI152_T1_1mm.nii.gz}"
+  local probability_mask="${template_dir}/${PROBABILITY_MASK:-MNI152_T1_1mm_brain_mask.nii.gz}"
+  
+  # Check if templates exist
+  if [ ! -f "$extraction_template" ]; then
+    log_formatted "WARNING" "Template not found: $extraction_template - using without template"
+    extraction_template=""
+  fi
+  
+  if [ ! -f "$probability_mask" ]; then
+    log_formatted "WARNING" "Probability mask not found: $probability_mask - using without mask"
+    probability_mask=""
+  fi
+  
+  # Build ANTs brain extraction command
+  local cmd="antsBrainExtraction.sh -d 3 -a \"$input_file\" -o \"$output_prefix\""
+  
+  if [ -n "$extraction_template" ]; then
+    cmd="$cmd -e \"$extraction_template\""
+  fi
+  
+  if [ -n "$probability_mask" ]; then
+    cmd="$cmd -m \"$probability_mask\""
+  fi
+  
+  log_message "Running ANTs brain extraction: $cmd"
+  eval "$cmd"
+  
+  return $?
+}
+
+export -f apply_transform perform_brain_extraction
