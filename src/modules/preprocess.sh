@@ -27,12 +27,35 @@ process_rician_nlm_denoising() {
   
   # Check if antsDenoiseImage is available
   if ! command -v antsDenoiseImage &> /dev/null; then
-    log_formatted "WARNING" "antsDenoiseImage not available - skipping Rician denoising"
-    log_message "Creating symbolic link to original file instead of denoising"
-    # Create a symbolic link to the original file so downstream processes work
-    ln -sf "$(realpath "$file")" "$output_file"
-    echo "$output_file"
-    return 0
+    log_formatted "WARNING" "antsDenoiseImage not available - using FSL SUSAN for denoising"
+    
+    # Use FSL SUSAN (structure-preserving spatial smoothing)
+    if command -v susan &> /dev/null; then
+      log_message "Using FSL SUSAN for structure-preserving denoising..."
+      
+      # Calculate brightness threshold (typically 10-25% of mean intensity)
+      local mean_intensity=$(fslstats "$file" -M)
+      local brightness_threshold=$(echo "scale=0; $mean_intensity * 0.15" | bc -l)
+      
+      # SUSAN parameters: input, brightness_threshold, spatial_size, dimensionality, use_median, n_usans, output
+      susan "$file" "$brightness_threshold" 2.0 3 1 0 "$output_file"
+      
+      if [ -f "$output_file" ]; then
+        log_message "✓ FSL SUSAN denoising completed"
+        echo "$output_file"
+        return 0
+      else
+        log_formatted "ERROR" "FSL SUSAN denoising failed"
+        return 1
+      fi
+    else
+      log_formatted "WARNING" "FSL SUSAN not available - skipping denoising"
+      log_message "Creating symbolic link to original file instead of denoising"
+      # Create a symbolic link to the original file so downstream processes work
+      ln -sf "$(realpath "$file")" "$output_file"
+      echo "$output_file"
+      return 0
+    fi
   fi
   
   log_message "Rician NLM denoising: $file"

@@ -647,10 +647,22 @@ except Exception as e:
             return 0
         fi
         
-        # Validate contrast (std should be reasonable fraction of mean)
+        # Validate contrast (std should be reasonable fraction of mean) - make threshold more lenient
         local contrast_ratio=$(echo "scale=3; $input_std / $input_mean" | bc -l 2>/dev/null || echo "0")
-        if (( $(echo "$contrast_ratio < 0.1" | bc -l 2>/dev/null || echo 1) )); then
+        if (( $(echo "$contrast_ratio < 0.05" | bc -l 2>/dev/null || echo 1) )); then
             log_formatted "WARNING" "Insufficient tissue contrast (ratio=$contrast_ratio), using original mask"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
+        fi
+        
+        # Additional validation: check if we have reasonable intensity range
+        local input_range=$(fslstats "$input_image" -R 2>/dev/null)
+        local min_val=$(echo "$input_range" | awk '{print $1}')
+        local max_val=$(echo "$input_range" | awk '{print $2}')
+        local intensity_range=$(echo "scale=3; $max_val - $min_val" | bc -l 2>/dev/null || echo "0")
+        
+        if (( $(echo "$intensity_range < 10" | bc -l 2>/dev/null || echo 1) )); then
+            log_formatted "WARNING" "Insufficient intensity range ($intensity_range), using original mask"
             cp "$initial_mask" "$output_refined_mask"
             return 0
         fi
@@ -670,8 +682,9 @@ except Exception as e:
                 local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}' 2>/dev/null || echo "0")
                 if [ "$brain_voxels" -gt 100 ]; then
                     
-                    # Try 3-class segmentation first
+                    # Try 3-class segmentation first with comprehensive error handling
                     log_message "Trying Atropos 3-class segmentation..."
+                    local atropos_output="${temp_refinement_dir}/atropos_3class.log"
                     if Atropos -d 3 \
                         -a "$brain_extracted" \
                         -x "$brain_mask" \
@@ -679,17 +692,20 @@ except Exception as e:
                         -c "[3,0.0001]" \
                         -m "[0.3,1x1x1]" \
                         -i "KMeans[3]" \
-                        -k Gaussian 2>/dev/null; then
+                        -k Gaussian >"$atropos_output" 2>&1; then
                         
                         if [ -f "$tissue_labels" ]; then
                             log_message "✓ Atropos 3-class segmentation successful"
                             segmentation_successful=true
                         fi
+                    else
+                        log_message "Atropos 3-class failed: $(tail -n 2 "$atropos_output" 2>/dev/null | head -n 1)"
                     fi
                     
                     # Fallback to 2-class if 3-class failed
                     if [ "$segmentation_successful" = "false" ]; then
                         log_message "Trying Atropos 2-class segmentation..."
+                        local atropos_output2="${temp_refinement_dir}/atropos_2class.log"
                         if Atropos -d 3 \
                             -a "$brain_extracted" \
                             -x "$brain_mask" \
@@ -697,18 +713,21 @@ except Exception as e:
                             -c "[3,0.0001]" \
                             -m "[0.3,1x1x1]" \
                             -i "KMeans[2]" \
-                            -k Gaussian 2>/dev/null; then
+                            -k Gaussian >"$atropos_output2" 2>&1; then
                             
                             if [ -f "$tissue_labels" ]; then
                                 log_message "✓ Atropos 2-class segmentation successful"
                                 segmentation_successful=true
                             fi
+                        else
+                            log_message "Atropos 2-class failed: $(tail -n 2 "$atropos_output2" 2>/dev/null | head -n 1)"
                         fi
                     fi
                     
                     # Fallback to Otsu initialization if KMeans failed
                     if [ "$segmentation_successful" = "false" ]; then
                         log_message "Trying Atropos with Otsu initialization..."
+                        local atropos_output3="${temp_refinement_dir}/atropos_otsu.log"
                         if Atropos -d 3 \
                             -a "$brain_extracted" \
                             -x "$brain_mask" \
@@ -716,12 +735,36 @@ except Exception as e:
                             -c "[3,0.0001]" \
                             -m "[0.3,1x1x1]" \
                             -i "Otsu[2]" \
-                            -k Gaussian 2>/dev/null; then
+                            -k Gaussian >"$atropos_output3" 2>&1; then
                             
                             if [ -f "$tissue_labels" ]; then
                                 log_message "✓ Atropos Otsu segmentation successful"
                                 segmentation_successful=true
                             fi
+                        else
+                            log_message "Atropos Otsu failed: $(tail -n 2 "$atropos_output3" 2>/dev/null | head -n 1)"
+                        fi
+                    fi
+                    
+                    # Final Atropos fallback: Random initialization with more relaxed parameters
+                    if [ "$segmentation_successful" = "false" ]; then
+                        log_message "Trying Atropos with Random initialization (final fallback)..."
+                        local atropos_output4="${temp_refinement_dir}/atropos_random.log"
+                        if Atropos -d 3 \
+                            -a "$brain_extracted" \
+                            -x "$brain_mask" \
+                            -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                            -c "[5,0.001]" \
+                            -m "[0.1,1x1x1]" \
+                            -i "Random[2]" \
+                            -k Gaussian >"$atropos_output4" 2>&1; then
+                            
+                            if [ -f "$tissue_labels" ]; then
+                                log_message "✓ Atropos Random segmentation successful"
+                                segmentation_successful=true
+                            fi
+                        else
+                            log_message "Atropos Random failed: $(tail -n 2 "$atropos_output4" 2>/dev/null | head -n 1)"
                         fi
                     fi
                 else
@@ -736,26 +779,51 @@ except Exception as e:
         if command -v fast &> /dev/null && [ "$segmentation_successful" = "false" ]; then
             log_message "Using FAST for tissue segmentation..."
             
-            # Try 3-class FAST first
+            # Try 3-class FAST first with better error handling
             log_message "Trying FAST 3-class segmentation..."
-            if fast -t 1 -n 3 -o "${temp_refinement_dir}/fast_" "$input_image" 2>/dev/null; then
+            local fast_output="${temp_refinement_dir}/fast_3class.log"
+            if fast -t 1 -n 3 -o "${temp_refinement_dir}/fast_" "$input_image" >"$fast_output" 2>&1; then
                 if [ -f "${temp_refinement_dir}/fast_seg.nii.gz" ]; then
                     cp "${temp_refinement_dir}/fast_seg.nii.gz" "$tissue_labels"
                     log_message "✓ FAST 3-class segmentation successful"
                     segmentation_successful=true
                 fi
+            else
+                log_message "FAST 3-class failed: $(tail -n 2 "$fast_output" 2>/dev/null | head -n 1)"
             fi
             
             # Fallback to 2-class FAST
             if [ "$segmentation_successful" = "false" ]; then
                 log_message "Trying FAST 2-class segmentation..."
-                if fast -t 1 -n 2 -o "${temp_refinement_dir}/fast2_" "$input_image" 2>/dev/null; then
+                local fast_output2="${temp_refinement_dir}/fast_2class.log"
+                if fast -t 1 -n 2 -o "${temp_refinement_dir}/fast2_" "$input_image" >"$fast_output2" 2>&1; then
                     if [ -f "${temp_refinement_dir}/fast2_seg.nii.gz" ]; then
                         cp "${temp_refinement_dir}/fast2_seg.nii.gz" "$tissue_labels"
                         log_message "✓ FAST 2-class segmentation successful"
                         segmentation_successful=true
                     fi
+                else
+                    log_message "FAST 2-class failed: $(tail -n 2 "$fast_output2" 2>/dev/null | head -n 1)"
                 fi
+            fi
+            
+            # Additional FAST fallback: use brain extracted image if available
+            if [ "$segmentation_successful" = "false" ] && [ -f "$brain_extracted" ]; then
+                log_message "Trying FAST on brain-extracted image..."
+                local fast_output3="${temp_refinement_dir}/fast_brain.log"
+                if fast -t 1 -n 2 -o "${temp_refinement_dir}/fast_brain_" "$brain_extracted" >"$fast_output3" 2>&1; then
+                    if [ -f "${temp_refinement_dir}/fast_brain_seg.nii.gz" ]; then
+                        cp "${temp_refinement_dir}/fast_brain_seg.nii.gz" "$tissue_labels"
+                        log_message "✓ FAST brain-extracted segmentation successful"
+                        segmentation_successful=true
+                    fi
+                else
+                    log_message "FAST brain-extracted failed: $(tail -n 2 "$fast_output3" 2>/dev/null | head -n 1)"
+                fi
+            fi
+        else
+            if [ "$segmentation_successful" = "false" ]; then
+                log_message "FAST not available, proceeding to intensity-based fallback"
             fi
         fi
         
