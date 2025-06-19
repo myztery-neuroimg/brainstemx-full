@@ -62,7 +62,7 @@ tomlkit==0.13.3
 tornado==6.5.1
 typing-extensions==4.13.1
 tzdata==2025.2
-urllib3==2.4.0
+urllib3==2.5.0
 watchdog==6.0.0 ; sys_platform != 'darwin'
 webcolors==24.11.1
 antspyx
