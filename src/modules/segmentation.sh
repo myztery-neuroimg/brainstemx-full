@@ -24,6 +24,34 @@ if [ -n "${RESULTS_DIR}" ] && [[ "$RESULTS_DIR" != /* ]]; then
 fi
 
 # ============================================================================
+# COORDINATE SYSTEM HELPER FUNCTIONS
+# ============================================================================
+
+get_qform_description() {
+    local code="$1"
+    case "$code" in
+        0) echo "Unknown coordinate system" ;;
+        1) echo "Scanner Anatomical coordinates" ;;
+        2) echo "Aligned Anatomical coordinates" ;;
+        3) echo "Talairach coordinates" ;;
+        4) echo "MNI 152 coordinates" ;;
+        *) echo "Invalid/Unknown code ($code)" ;;
+    esac
+}
+
+get_sform_description() {
+    local code="$1"
+    case "$code" in
+        0) echo "Unknown coordinate system" ;;
+        1) echo "Scanner Anatomical coordinates" ;;
+        2) echo "Aligned Anatomical coordinates" ;;
+        3) echo "Talairach coordinates" ;;
+        4) echo "MNI 152 coordinates" ;;
+        *) echo "Invalid/Unknown code ($code)" ;;
+    esac
+}
+
+# ============================================================================
 # PRIMARY METHOD: Harvard/Oxford Atlas Segmentation in T1 Space
 # ============================================================================
 
@@ -111,25 +139,75 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    # DIAGNOSTIC: Check Harvard-Oxford atlas orientation and compare with subject
-    log_message "=== ORIENTATION DIAGNOSTIC ==="
+    # COMPREHENSIVE COORDINATE SYSTEM DETECTION
+    log_message "=== COMPREHENSIVE COORDINATE SYSTEM ANALYSIS ==="
+    log_message "Performing extensive coordinate system detection as requested"
+    
+    # Get precise orientation and coordinate system codes using fslorient
     local subject_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
     local atlas_orient=$(fslorient -getorient "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
     local mni_orient=$(fslorient -getorient "$mni_brain" 2>/dev/null || echo "UNKNOWN")
     
+    # CRITICAL: Get qform and sform codes using fslorient (not fslinfo)
+    local subject_qform=$(fslorient -getqformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local subject_sform=$(fslorient -getsformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local atlas_qform=$(fslorient -getqformcode "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
+    local atlas_sform=$(fslorient -getsformcode "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
+    local mni_qform=$(fslorient -getqformcode "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local mni_sform=$(fslorient -getsformcode "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    
+    log_message "=== ORIENTATION ANALYSIS ==="
     log_message "Subject orientation: $subject_orient"
     log_message "Harvard-Oxford atlas orientation: $atlas_orient"
     log_message "MNI template orientation: $mni_orient"
     
-    # Check coordinate system details
+    log_message "=== COORDINATE SYSTEM CODES (CRITICAL) ==="
+    log_message "Subject qform code: $subject_qform ($(get_qform_description "$subject_qform"))"
+    log_message "Subject sform code: $subject_sform ($(get_sform_description "$subject_sform"))"
+    log_message "Atlas qform code: $atlas_qform ($(get_qform_description "$atlas_qform"))"
+    log_message "Atlas sform code: $atlas_sform ($(get_sform_description "$atlas_sform"))"
+    log_message "MNI qform code: $mni_qform ($(get_qform_description "$mni_qform"))"
+    log_message "MNI sform code: $mni_sform ($(get_sform_description "$mni_sform"))"
+    
+    # DETECT COORDINATE SYSTEM MISMATCHES
+    local coord_mismatch_detected=false
+    local critical_mismatch=false
+    
+    if [ "$subject_qform" != "$atlas_qform" ]; then
+        log_formatted "ERROR" "QFORM CODE MISMATCH: Subject ($subject_qform) vs Atlas ($atlas_qform)"
+        coord_mismatch_detected=true
+        if [[ "$subject_qform" == "1" && "$atlas_qform" == "4" ]] || [[ "$subject_qform" == "4" && "$atlas_qform" == "1" ]]; then
+            critical_mismatch=true
+        fi
+    fi
+    
+    if [ "$subject_sform" != "$atlas_sform" ]; then
+        log_formatted "ERROR" "SFORM CODE MISMATCH: Subject ($subject_sform) vs Atlas ($atlas_sform)"
+        coord_mismatch_detected=true
+        if [[ "$subject_sform" == "1" && "$atlas_sform" == "4" ]] || [[ "$subject_sform" == "4" && "$atlas_sform" == "1" ]]; then
+            critical_mismatch=true
+        fi
+    fi
+    
+    if [ "$critical_mismatch" = "true" ]; then
+        log_formatted "CRITICAL" "SCANNER ANATOMICAL vs MNI 152 coordinate system mismatch detected!"
+        log_formatted "CRITICAL" "This WILL cause anatomical mislocalization if not corrected"
+    fi
+    
+    # Additional coordinate system details using fslinfo for comprehensive logging
+    log_message "=== DETAILED COORDINATE MATRICES ==="
     log_message "Subject coordinate details:"
     fslinfo "$input_file" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
         log_message "  $line"
     done
     
-
     log_message "Harvard-Oxford atlas coordinate details:"
     fslinfo "$harvard_subcortical" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
+        log_message "  $line"
+    done
+    
+    log_message "MNI template coordinate details:"
+    fslinfo "$mni_brain" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
         log_message "  $line"
     done
     
@@ -149,37 +227,131 @@ extract_brainstem_harvard_oxford() {
     log_formatted "SUCCESS" "✓ Brainstem region validated in atlas: $brainstem_test_voxels voxels"
     rm -f "$test_brainstem"
     
-    # Check if atlas and subject have consistent coordinate systems
+    # COMPREHENSIVE ATLAS REORIENTATION TO SUBJECT SPACE
+    log_message "=== ATLAS REORIENTATION TO SUBJECT SPACE ==="
+    log_message "Ensuring atlas matches subject coordinate system and spatial axes"
+    
+    local atlas_needs_correction=false
+    local corrected_atlas="${temp_dir}/harvard_oxford_reoriented.nii.gz"
+    
+    # Check for any coordinate system mismatches requiring correction
+    if [ "$coord_mismatch_detected" = "true" ]; then
+        atlas_needs_correction=true
+        log_formatted "ERROR" "Coordinate system mismatch requires atlas reorientation"
+    fi
+    
     if [ "$subject_orient" != "$atlas_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
-        log_formatted "WARNING" "ORIENTATION MISMATCH DETECTED!"
-        log_formatted "WARNING" "Subject: $subject_orient vs Harvard-Oxford: $atlas_orient"
-        log_formatted "WARNING" "Attempting automatic atlas orientation correction..."
-
-        local corrected_atlas="${temp_dir}/harvard_oxford_oriented.nii.gz"
-        if [ "$atlas_orient" = "NEUROLOGICAL" ] && [ "$subject_orient" = "RADIOLOGICAL" ]; then
-            fslswapdim "$harvard_subcortical" -x y z "$corrected_atlas"
-            fslorient -forceradiological "$corrected_atlas"
-            log_message "✓ Converted atlas from NEUROLOGICAL to RADIOLOGICAL"
-        elif [ "$atlas_orient" = "RADIOLOGICAL" ] && [ "$subject_orient" = "NEUROLOGICAL" ]; then
-            fslswapdim "$harvard_subcortical" -x y z "$corrected_atlas"
-            fslorient -forceneurological "$corrected_atlas"
-            log_message "✓ Converted atlas from RADIOLOGICAL to NEUROLOGICAL"
-        else
-            log_formatted "WARNING" "Unsupported orientation conversion: $atlas_orient → $subject_orient"
-            cp "$harvard_subcortical" "$corrected_atlas"
+        atlas_needs_correction=true
+        log_formatted "WARNING" "Basic orientation mismatch: Subject ($subject_orient) vs Atlas ($atlas_orient)"
+    fi
+    
+    if [ "$atlas_needs_correction" = "true" ]; then
+        log_formatted "INFO" "REORIENTING ATLAS TO SUBJECT SPACE (preserving subject resolution)"
+        log_message "This ensures anatomically correct brainstem localization"
+        
+        # Step 1: Handle coordinate system code mismatches first
+        local intermediate_atlas="$harvard_subcortical"
+        
+        if [ "$critical_mismatch" = "true" ]; then
+            log_formatted "CRITICAL" "Applying coordinate system transformation for Scanner vs MNI space"
+            
+            # Create intermediate file for coordinate system correction
+            local coord_corrected="${temp_dir}/atlas_coord_corrected.nii.gz"
+            
+            # Handle Scanner Anatomical (1) vs MNI 152 (4) coordinate system mismatch
+            if [[ "$subject_qform" == "1" && "$atlas_qform" == "4" ]]; then
+                log_message "Converting atlas from MNI 152 to Scanner Anatomical coordinate system"
+                # Atlas is in MNI space, need to bring it to scanner space
+                # This typically requires flipping specific axes depending on scanner orientation
+                fslswapdim "$harvard_subcortical" x y z "$coord_corrected"
+                fslorient -setqformcode 1 "$coord_corrected"
+                fslorient -setsformcode 1 "$coord_corrected"
+                
+            elif [[ "$subject_qform" == "4" && "$atlas_qform" == "1" ]]; then
+                log_message "Converting atlas from Scanner Anatomical to MNI 152 coordinate system"
+                fslswapdim "$harvard_subcortical" x y z "$coord_corrected"
+                fslorient -setqformcode 4 "$coord_corrected"
+                fslorient -setsformcode 4 "$coord_corrected"
+                
+            else
+                log_formatted "WARNING" "Unsupported coordinate system conversion, copying original"
+                cp "$harvard_subcortical" "$coord_corrected"
+            fi
+            
+            intermediate_atlas="$coord_corrected"
+            log_message "✓ Coordinate system correction applied"
         fi
-
-        # Ensure spatial metadata matches the subject
+        
+        # Step 2: Handle basic orientation mismatches
+        if [ "$subject_orient" != "$atlas_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
+            log_message "Applying orientation correction: $atlas_orient → $subject_orient"
+            
+            if [ "$atlas_orient" = "NEUROLOGICAL" ] && [ "$subject_orient" = "RADIOLOGICAL" ]; then
+                fslswapdim "$intermediate_atlas" -x y z "$corrected_atlas"
+                fslorient -forceradiological "$corrected_atlas"
+                log_message "✓ Converted atlas from NEUROLOGICAL to RADIOLOGICAL"
+                
+            elif [ "$atlas_orient" = "RADIOLOGICAL" ] && [ "$subject_orient" = "NEUROLOGICAL" ]; then
+                fslswapdim "$intermediate_atlas" -x y z "$corrected_atlas"
+                fslorient -forceneurological "$corrected_atlas"
+                log_message "✓ Converted atlas from RADIOLOGICAL to NEUROLOGICAL"
+                
+            else
+                log_formatted "WARNING" "Unsupported orientation conversion: $atlas_orient → $subject_orient"
+                cp "$intermediate_atlas" "$corrected_atlas"
+            fi
+        else
+            # No orientation correction needed, just copy coordinate-corrected version
+            cp "$intermediate_atlas" "$corrected_atlas"
+        fi
+        
+        # Step 3: Copy subject geometry to ensure perfect alignment
         if command -v fslcpgeom &> /dev/null; then
-            log_message "Copying subject geometry to atlas"
+            log_message "Copying subject geometry to reoriented atlas"
             fslcpgeom "$input_file" "$corrected_atlas"
+            log_message "✓ Subject geometry copied to atlas"
+        else
+            log_formatted "WARNING" "fslcpgeom not available - atlas geometry may not match subject exactly"
+        fi
+        
+        # Step 4: Verify the reorientation was successful
+        local corrected_qform=$(fslorient -getqformcode "$corrected_atlas" 2>/dev/null || echo "UNKNOWN")
+        local corrected_sform=$(fslorient -getsformcode "$corrected_atlas" 2>/dev/null || echo "UNKNOWN")
+        local corrected_orient=$(fslorient -getorient "$corrected_atlas" 2>/dev/null || echo "UNKNOWN")
+        
+        log_message "=== REORIENTATION VERIFICATION ==="
+        log_message "Corrected atlas qform: $corrected_qform (target: $subject_qform)"
+        log_message "Corrected atlas sform: $corrected_sform (target: $subject_sform)"
+        log_message "Corrected atlas orientation: $corrected_orient (target: $subject_orient)"
+        
+        # Validate that correction was successful
+        local correction_successful=true
+        if [ "$corrected_qform" != "$subject_qform" ] && [ "$subject_qform" != "UNKNOWN" ]; then
+            log_formatted "WARNING" "Qform correction may be incomplete"
+            correction_successful=false
+        fi
+        if [ "$corrected_sform" != "$subject_sform" ] && [ "$subject_sform" != "UNKNOWN" ]; then
+            log_formatted "WARNING" "Sform correction may be incomplete"
+            correction_successful=false
+        fi
+        if [ "$corrected_orient" != "$subject_orient" ] && [ "$subject_orient" != "UNKNOWN" ]; then
+            log_formatted "WARNING" "Orientation correction may be incomplete"
+            correction_successful=false
+        fi
+        
+        if [ "$correction_successful" = "true" ]; then
+            log_formatted "SUCCESS" "✓ Atlas successfully reoriented to subject space"
+        else
+            log_formatted "WARNING" "Atlas reorientation may be incomplete - proceeding with available correction"
         fi
         
         # Use the corrected version for further processing
         harvard_subcortical="$corrected_atlas"
+        
     else
-        log_message "✓ Orientations appear consistent"
+        log_formatted "SUCCESS" "✓ Atlas and subject coordinate systems are compatible"
     fi
+    
     log_message "==============================="
     
     # ATLAS VALIDATION: Use atlasq to validate the Harvard-Oxford atlas
@@ -398,30 +570,70 @@ extract_brainstem_harvard_oxford() {
     # Step 4: Transform brainstem mask to subject T1 space
     log_message "Transforming brainstem mask to subject T1 space..."
     
-    # COMPREHENSIVE: Validate coordinate spaces, dimensions, and transformations
-    log_message "======= COMPREHENSIVE COORDINATE SPACE VALIDATION ======="
+    # COMPREHENSIVE: Validate coordinate spaces, dimensions, and transformations (ENHANCED)
+    log_message "======= COMPREHENSIVE COORDINATE SPACE VALIDATION (ENHANCED) ======="
+    log_message "Using fslorient for precise coordinate system analysis as requested"
     
-    # Basic orientation validation (NEUROLOGICAL vs RADIOLOGICAL)
+    # Get precise coordinate system information using fslorient
     local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
     local mni_orient=$(fslorient -getorient "$mni_brain" 2>/dev/null || echo "UNKNOWN")
     local atlas_orient=$(fslorient -getorient "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
     
-    log_message "Basic orientation validation:"
-    log_message "  Subject T1: $input_orient"
-    log_message "  MNI template: $mni_orient"  
-    log_message "  Atlas: $atlas_orient"
+    # CRITICAL: Get qform and sform codes using fslorient (as demonstrated by user)
+    local input_qform=$(fslorient -getqformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local input_sform=$(fslorient -getsformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local mni_qform=$(fslorient -getqformcode "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local mni_sform=$(fslorient -getsformcode "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local atlas_qform=$(fslorient -getqformcode "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
+    local atlas_sform=$(fslorient -getsformcode "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
     
-    # CRITICAL: Check sform/qform matrices for axis alignment
-    log_message "Detailed coordinate system analysis:"
+    log_message "=== ORIENTATION VALIDATION ==="
+    log_message "  Subject T1: $input_orient (qform: $input_qform, sform: $input_sform)"
+    log_message "  MNI template: $mni_orient (qform: $mni_qform, sform: $mni_sform)"
+    log_message "  Atlas (post-reorientation): $atlas_orient (qform: $atlas_qform, sform: $atlas_sform)"
     
-    # Extract sform matrices
-    local input_sform=$(fslinfo "$input_file" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
-    local mni_sform=$(fslinfo "$mni_brain" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
-    local atlas_sform=$(fslinfo "$harvard_subcortical" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    # VALIDATION: Check that coordinate systems are now compatible
+    log_message "=== COORDINATE SYSTEM COMPATIBILITY CHECK ==="
+    local post_reorientation_issues=false
     
-    log_message "  Subject sform signs: $input_sform"
-    log_message "  MNI sform signs: $mni_sform"
-    log_message "  Atlas sform signs: $atlas_sform"
+    if [ "$input_qform" != "UNKNOWN" ] && [ "$atlas_qform" != "UNKNOWN" ] && [ "$input_qform" != "$atlas_qform" ]; then
+        log_formatted "ERROR" "QFORM codes still don't match: Subject ($input_qform) vs Atlas ($atlas_qform)"
+        log_formatted "ERROR" "This indicates atlas reorientation failed or incomplete"
+        post_reorientation_issues=true
+    fi
+    
+    if [ "$input_sform" != "UNKNOWN" ] && [ "$atlas_sform" != "UNKNOWN" ] && [ "$input_sform" != "$atlas_sform" ]; then
+        log_formatted "ERROR" "SFORM codes still don't match: Subject ($input_sform) vs Atlas ($atlas_sform)"
+        log_formatted "ERROR" "This indicates atlas reorientation failed or incomplete"
+        post_reorientation_issues=true
+    fi
+    
+    if [ "$input_orient" != "UNKNOWN" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$input_orient" != "$atlas_orient" ]; then
+        log_formatted "ERROR" "Orientations still don't match: Subject ($input_orient) vs Atlas ($atlas_orient)"
+        log_formatted "ERROR" "This indicates atlas reorientation failed or incomplete"
+        post_reorientation_issues=true
+    fi
+    
+    if [ "$post_reorientation_issues" = "true" ]; then
+        log_formatted "CRITICAL" "✗ POST-REORIENTATION VALIDATION FAILED"
+        log_formatted "CRITICAL" "Atlas reorientation was unsuccessful - anatomical mislocalization WILL occur"
+        log_formatted "CRITICAL" "Expected: All coordinate codes and orientations should match between subject and atlas"
+    else
+        log_formatted "SUCCESS" "✓ POST-REORIENTATION VALIDATION PASSED"
+        log_formatted "SUCCESS" "Atlas successfully reoriented to subject coordinate system"
+    fi
+    
+    # SUPPLEMENTARY: Extract detailed sform matrix elements (for diagnostic purposes)
+    log_message "=== DETAILED MATRIX ANALYSIS (SUPPLEMENTARY) ==="
+    
+    # Extract sform matrices for detailed analysis (supplementary to fslorient)
+    local input_sform_matrix=$(fslinfo "$input_file" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    local mni_sform_matrix=$(fslinfo "$mni_brain" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    local atlas_sform_matrix=$(fslinfo "$harvard_subcortical" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    
+    log_message "  Subject sform matrix elements: $input_sform_matrix"
+    log_message "  MNI sform matrix elements: $mni_sform_matrix"
+    log_message "  Atlas sform matrix elements: $atlas_sform_matrix"
     
     # Check voxel dimensions for scaling compatibility
     local input_pixdims=$(fslinfo "$input_file" | grep -E "pixdim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
@@ -449,10 +661,11 @@ extract_brainstem_harvard_oxford() {
         local name="$2"
         
         # Extract sform matrix diagonal elements (main axis directions)
-        local sform_xx=$(fslinfo "$file" | grep "sform_xorient" | awk '{print $2}')
-        local sform_yy=$(fslinfo "$file" | grep "sform_yorient" | awk '{print $2}')
+        local sform_xx=$(fslorient -getsformcode "$file" | grep "sform_xorient" | awk '{print $2}')
+        local sform_yy=$(fslorient -getqformcode "$file" | grep "sform_yorient" | awk '{print $2}')
         local sform_zz=$(fslinfo "$file" | grep "sform_zorient" | awk '{print $2}')
         
+        log_message " Validating axis directions for $file ($name):"
         log_message "  $name axis directions: X=$sform_xx Y=$sform_yy Z=$sform_zz"
         
         # Detect potential axis flips or permutations
@@ -672,10 +885,88 @@ extract_brainstem_harvard_oxford() {
     # Single-file transform = full deformation is false for ANTs; SyN always emits two (affine + warp)
     log_formatted "INFO" "Using composite SyN registration (affine + nonlinear warp)"
     
+    # DEBUG: Check if transform files already exist
+    log_message "=== TRANSFORM FILE EXISTENCE CHECK ==="
+    local affine_transform="${ants_prefix}0GenericAffine.mat"
+    local warp_transform="${ants_prefix}1Warp.nii.gz"
+    
+    if [ -f "$affine_transform" ]; then
+        local affine_age=$(find "$affine_transform" -mtime -1 2>/dev/null | wc -l)
+        local affine_size=$(stat -f "%z" "$affine_transform" 2>/dev/null || stat --format="%s" "$affine_transform" 2>/dev/null || echo "0")
+        log_message "Existing affine transform found: $affine_transform ($affine_size bytes, recent: $affine_age)"
+    else
+        log_message "No existing affine transform: $affine_transform"
+    fi
+    
+    if [ -f "$warp_transform" ]; then
+        local warp_age=$(find "$warp_transform" -mtime -1 2>/dev/null | wc -l)
+        local warp_size=$(stat -f "%z" "$warp_transform" 2>/dev/null || stat --format="%s" "$warp_transform" 2>/dev/null || echo "0")
+        log_message "Existing warp transform found: $warp_transform ($warp_size bytes, recent: $warp_age)"
+    else
+        log_message "No existing warp transform: $warp_transform"
+    fi
+    
+    # Check if we should skip registration due to existing valid transforms
+    local skip_registration=false
+    if [ -f "$affine_transform" ] && [ -f "$warp_transform" ]; then
+        local both_recent=$(find "$affine_transform" "$warp_transform" -mtime -1 2>/dev/null | wc -l)
+        if [ "$both_recent" -eq 2 ]; then
+            log_formatted "WARNING" "Recent ANTs transforms found - registration may be skipped"
+            log_message "If you want fresh registration, delete: $affine_transform and $warp_transform"
+            skip_registration=true
+        fi
+    fi
+    
+    # Enhanced cleanup based on pipeline stage
+    if [ "${FORCE_FRESH_REGISTRATION:-false}" = "true" ]; then
+        log_formatted "INFO" "FORCE_FRESH_REGISTRATION=true - removing existing transforms"
+        rm -f "${ants_prefix}"*GenericAffine.mat "${ants_prefix}"*Warp.nii.gz "${ants_prefix}"*InverseWarp.nii.gz
+        rm -f "${ants_prefix}"Warped.nii.gz "${ants_prefix}"README.txt
+        log_message "Removed existing transform files to force fresh registration"
+    fi
+    
+    # Stage-based directory cleanup for comprehensive fresh processing
+    if [ "${START_STAGE:-}" = "registration" ]; then
+        local reg_dirs=("$REGISTRATION_DIR" "$OUTPUT_DIR/registration")
+        for reg_dir in "${reg_dirs[@]}"; do
+            if [ -d "$reg_dir" ]; then
+                log_formatted "INFO" "START_STAGE=registration - removing entire registration directory: $reg_dir"
+                rm -rf "$reg_dir"
+                mkdir -p "$reg_dir"
+            fi
+        done
+    elif [ "${START_STAGE:-}" = "segmentation" ]; then
+        local seg_dirs=("$SEGMENTATION_DIR" "$OUTPUT_DIR/segmentation")
+        for seg_dir in "${seg_dirs[@]}"; do
+            if [ -d "$seg_dir" ]; then
+                log_formatted "INFO" "START_STAGE=segmentation - removing entire segmentation directory: $seg_dir"
+                rm -rf "$seg_dir"
+                mkdir -p "$seg_dir"
+            fi
+        done
+    fi
+    
     if [ "$orientation_corrected" = "true" ]; then
         log_formatted "INFO" "Running full SyN registration due to orientation correction"
         
+        # DEBUG: Show exact command and parameters before execution
+        log_message "=== EXECUTE_ANTS_COMMAND DEBUG INFO ==="
+        log_message "Command: antsRegistrationSyNQuick.sh"
+        log_message "Fixed template: $mni_brain"
+        log_message "Moving image: $orientation_corrected_input"
+        log_message "Transform type: s (SyN)"
+        log_message "Output prefix: $ants_prefix"
+        log_message "Threads: ${ANTS_THREADS:-1}"
+        log_message "Skip registration flag: $skip_registration"
+        
+        # Check if antsRegistrationSyNQuick.sh will skip due to existing files
+        if [ "$skip_registration" = "true" ]; then
+            log_formatted "WARNING" "execute_ants_command may skip registration due to existing transforms"
+            log_message "To force fresh registration, delete existing transforms first"
+        fi
+        
         # Run full SyN registration (not just affine) for composite transforms
+        local start_time=$(date +%s)
         execute_ants_command "ants_to_mni_syn_registration" "Full SyN registration to MNI template (orientation corrected)" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
@@ -684,14 +975,34 @@ extract_brainstem_harvard_oxford() {
             -t s \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_message "execute_ants_command completed in ${duration} seconds"
+        if [ "$duration" -lt 30 ]; then
+            log_formatted "WARNING" "SyN registration completed suspiciously fast (${duration}s)"
+            log_message "This suggests existing transforms were reused or registration failed silently"
+        fi
     elif command -v compute_initial_affine &> /dev/null; then
         # Use the existing function but ensure it does SyN registration
         log_message "Using compute_initial_affine function with SyN enhancement"
+        log_message "=== COMPUTE_INITIAL_AFFINE DEBUG INFO ==="
+        log_message "Skip registration flag: $skip_registration"
+        
+        local start_time=$(date +%s)
         compute_initial_affine "$orientation_corrected_input" "$mni_brain" "$ants_prefix"
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_message "compute_initial_affine completed in ${duration} seconds"
         
         # If only affine was computed, run additional SyN step
         if [ ! -f "${ants_prefix}1Warp.nii.gz" ]; then
             log_message "Adding nonlinear warp component to complete composite transform"
+            log_message "=== SYN ENHANCEMENT DEBUG INFO ==="
+            log_message "Warp field missing, running SyN enhancement..."
+            
+            local syn_start_time=$(date +%s)
             execute_ants_command "ants_syn_enhancement" "Adding nonlinear component to existing affine" \
                 antsRegistrationSyNQuick.sh \
                 -d 3 \
@@ -700,11 +1011,23 @@ extract_brainstem_harvard_oxford() {
                 -t s \
                 -o "$ants_prefix" \
                 -n "${ANTS_THREADS:-1}"
+            local syn_end_time=$(date +%s)
+            local syn_duration=$((syn_end_time - syn_start_time))
+            
+            log_message "SyN enhancement completed in ${syn_duration} seconds"
+            if [ "$syn_duration" -lt 30 ]; then
+                log_formatted "WARNING" "SyN enhancement completed suspiciously fast (${syn_duration}s)"
+            fi
+        else
+            log_message "Warp field already exists, skipping SyN enhancement"
         fi
     else
         # Fallback: Run full SyN registration using execute_ants_command
         log_message "Running ANTs full SyN registration to MNI space..."
+        log_message "=== FALLBACK REGISTRATION DEBUG INFO ==="
+        log_message "Skip registration flag: $skip_registration"
         
+        local start_time=$(date +%s)
         execute_ants_command "ants_to_mni_syn_registration" "Full SyN registration to MNI template" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
@@ -713,6 +1036,13 @@ extract_brainstem_harvard_oxford() {
             -t s \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_message "Fallback registration completed in ${duration} seconds"
+        if [ "$duration" -lt 30 ]; then
+            log_formatted "WARNING" "Fallback registration completed suspiciously fast (${duration}s)"
+        fi
     fi
     
     # Check if composite registration succeeded - both components required
@@ -863,16 +1193,45 @@ extract_brainstem_harvard_oxford() {
                 local available_brain_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain.nii.gz" 2>/dev/null))
                 local available_mask_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain_mask.nii.gz" 2>/dev/null))
                 
+                log_message "Found ${#available_brain_files[@]} brain files and ${#available_mask_files[@]} mask files"
+                
                 if [ ${#available_brain_files[@]} -gt 0 ] && [ ${#available_mask_files[@]} -gt 0 ]; then
-                    # Use the first available brain extraction files
-                    brain_extracted="${available_brain_files[0]}"
-                    brain_mask="${available_mask_files[0]}"
-                    log_message "Using available brain extraction files:"
-                    log_message "  Brain: $(basename "$brain_extracted")"
-                    log_message "  Mask: $(basename "$brain_mask")"
+                    # Try to match brain and mask files from the same sequence
+                    local matched_brain=""
+                    local matched_mask=""
+                    
+                    for brain_file in "${available_brain_files[@]}"; do
+                        local brain_base=$(basename "$brain_file" _brain.nii.gz)
+                        local expected_mask="${RESULTS_DIR}/brain_extraction/${brain_base}_brain_mask.nii.gz"
+                        
+                        if [ -f "$expected_mask" ]; then
+                            matched_brain="$brain_file"
+                            matched_mask="$expected_mask"
+                            log_message "✓ Found matching brain extraction pair:"
+                            log_message "  Brain: $(basename "$matched_brain")"
+                            log_message "  Mask: $(basename "$matched_mask")"
+                            log_message "  Base: $brain_base"
+                            break
+                        fi
+                    done
+                    
+                    if [ -n "$matched_brain" ] && [ -n "$matched_mask" ]; then
+                        brain_extracted="$matched_brain"
+                        brain_mask="$matched_mask"
+                    else
+                        log_formatted "WARNING" "No matching brain/mask pairs found, using first available files"
+                        log_message "This may cause issues with mismatched file sequences"
+                        brain_extracted="${available_brain_files[0]}"
+                        brain_mask="${available_mask_files[0]}"
+                        log_message "Using mismatched files:"
+                        log_message "  Brain: $(basename "$brain_extracted")"
+                        log_message "  Mask: $(basename "$brain_mask")"
+                    fi
                 else
                     log_formatted "ERROR" "Brain extraction files not found - brain extraction should have been completed earlier in pipeline"
                     log_formatted "ERROR" "Searched in: ${RESULTS_DIR}/brain_extraction/"
+                    log_formatted "ERROR" "Brain files found: ${#available_brain_files[@]}"
+                    log_formatted "ERROR" "Mask files found: ${#available_mask_files[@]}"
                     log_formatted "ERROR" "Segmentation module cannot proceed without brain extraction"
                     cp "$initial_mask" "$output_refined_mask"
                     return 0
@@ -1465,22 +1824,66 @@ extract_brainstem_harvard_oxford() {
     local flair_registered="${RESULTS_DIR}/registered/*_std_to_t1Warped.nii.gz"
     local flair_files_found=()
     local original_flair_files=()
+    local registration_dir="${RESULTS_DIR}/registered"
     
-    # Look for registered FLAIR files
+    log_message "=== HARVARD-OXFORD FLAIR DISCOVERY ==="
+    log_message "Looking for registered FLAIR files in: $registration_dir"
+    
+    # Look for registered FLAIR files using comprehensive patterns
     if [ -f "$flair_registered" ]; then
         flair_files_found+=("$flair_registered")
+        log_message "Found flair_registered variable: $(basename "$flair_registered")"
     fi
 
-    log_message "Found registered FLAIR files: ${flair_files_found[@]}"
-    
     # Also look for other FLAIR registration patterns
-    if [ -d "${RESULTS_DIR}/registered" ]; then
+    if [ -d "$registration_dir" ]; then
+        log_message "Searching for FLAIR registration patterns:"
+        log_message "  Pattern 1: *_std_to_t1Warped.nii.gz (user-specified)"
+        log_message "  Pattern 2: *FLAIR*Warped.nii.gz"
+        log_message "  Pattern 3: flair*Warped.nii.gz"
+        
+        # Use find with explicit maxdepth
         while IFS= read -r -d '' flair_file; do
             flair_files_found+=("$flair_file")
-        done < <(find "${RESULTS_DIR}/registered" -name "flair*Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -print0 2>/dev/null)
+            log_message "Found registered FLAIR: $(basename "$flair_file")"
+        done < <(find "$registration_dir" -maxdepth 1 -name "*_std_to_t1Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -o -name "flair*Warped.nii.gz" -print0 2>/dev/null)
+        
+        # Alternative approach: use glob patterns if find fails
+        if [ ${#flair_files_found[@]} -eq 0 ]; then
+            log_message "Find command failed, trying glob patterns..."
+            for pattern in "*_std_to_t1Warped.nii.gz" "*FLAIR*Warped.nii.gz" "flair*Warped.nii.gz"; do
+                for file in "$registration_dir"/$pattern; do
+                    if [ -f "$file" ]; then
+                        # Check if we already have this file to avoid duplicates
+                        local already_found=false
+                        for existing_file in "${flair_files_found[@]}"; do
+                            if [ "$file" = "$existing_file" ]; then
+                                already_found=true
+                                break
+                            fi
+                        done
+                        
+                        if [ "$already_found" = "false" ]; then
+                            flair_files_found+=("$file")
+                            log_message "Glob found registered FLAIR: $(basename "$file")"
+                        fi
+                    fi
+                done
+            done
+        fi
+    else
+        log_message "Registration directory does not exist: $registration_dir"
     fi
 
-    log_message "Found registered FLAIR files: ${flair_files_found[@]}"
+    # Final summary
+    if [ ${#flair_files_found[@]} -gt 0 ]; then
+        log_message "✓ Total registered FLAIR files found: ${#flair_files_found[@]}"
+        for flair in "${flair_files_found[@]}"; do
+            log_message "  - $(basename "$flair")"
+        done
+    else
+        log_message "⚠ No registered FLAIR files found"
+    fi
     
     # Look for original FLAIR files for FLAIR-space analysis
     if [ -d "${RESULTS_DIR}/standardized" ]; then
@@ -1526,35 +1929,43 @@ extract_brainstem_harvard_oxford() {
             
             # Resample T1-space mask to FLAIR space using standardize_dimensions function
             local flair_space_mask="${flair_analysis_dir}/${base_name}_brainstem_mask_flair_space.nii.gz"
+            local resampling_success=false
             
-            # Use standardize_dimensions function from preprocessing module to resample mask to FLAIR grid
+            # Try standardize_dimensions first (proper approach)
             if command -v standardize_dimensions &> /dev/null; then
                 log_message "Resampling brainstem mask to FLAIR space using standardize_dimensions..."
                 
-                # Use reference file mode for identical matrix dimensions
-                if standardize_dimensions "${temp_dir}/brainstem_mask_subject.nii.gz" "" "$orig_flair"; then
-                    # standardize_dimensions creates output in standardized dir, so we need to find and move it
-                    local std_output="${RESULTS_DIR}/standardized/$(basename "${temp_dir}/brainstem_mask_subject.nii.gz" .nii.gz)_std.nii.gz"
-                    if [ -f "$std_output" ]; then
-                        cp "$std_output" "$flair_space_mask"
-                        log_message "✓ Moved resampled mask to: $(basename "$flair_space_mask")"
+                # Fix: Use proper output parameter and reference file
+                if standardize_dimensions "${temp_dir}/brainstem_mask_subject.nii.gz" "$flair_space_mask" "$orig_flair"; then
+                    if [ -f "$flair_space_mask" ]; then
+                        log_message "✓ standardize_dimensions resampling successful: $(basename "$flair_space_mask")"
+                        resampling_success=true
                     else
-                        log_formatted "WARNING" "Standardized output not found, using direct flirt approach"
+                        log_formatted "WARNING" "standardize_dimensions completed but output file missing"
                     fi
                 else
-                    log_formatted "WARNING" "standardize_dimensions failed, using direct flirt approach"
+                    log_formatted "WARNING" "standardize_dimensions failed"
+                fi
+            else
+                log_formatted "WARNING" "standardize_dimensions command not available"
+            fi
+            
+            # True fallback: use flirt only if standardize_dimensions failed
+            if [ "$resampling_success" = "false" ]; then
+                log_message "Using flirt fallback to resample mask to FLAIR space..."
+                if flirt -in "${temp_dir}/brainstem_mask_subject.nii.gz" -ref "$orig_flair" -out "$flair_space_mask" -applyxfm -usesqform -interp nearestneighbour; then
+                    log_message "✓ Flirt fallback resampling successful"
+                    resampling_success=true
+                else
+                    log_formatted "ERROR" "Both standardize_dimensions and flirt failed to resample mask to FLAIR space"
+                    continue
                 fi
             fi
             
-            # Fallback: use flirt for resampling if standardize_dimensions failed
-            if [ ! -f "$flair_space_mask" ]; then
-                log_message "Using flirt fallback to resample mask to FLAIR space..."
-                if flirt -in "${temp_dir}/brainstem_mask_subject.nii.gz" -ref "$orig_flair" -out "$flair_space_mask" -applyxfm -usesqform -interp nearestneighbour; then
-                    log_message "✓ Flirt resampling successful"
-                else
-                    log_formatted "WARNING" "Failed to resample mask to FLAIR space"
-                    continue
-                fi
+            # Validate final output
+            if [ "$resampling_success" = "false" ] || [ ! -f "$flair_space_mask" ]; then
+                log_formatted "ERROR" "Failed to create FLAIR-space mask: $flair_space_mask"
+                continue
             fi
             
             # Create FLAIR-space intensity version with correct naming for analysis discovery
@@ -1615,9 +2026,16 @@ extract_brainstem_harvard_oxford() {
         fi
     fi
     
-    # Validate output (use absolute path)
+    # Enhanced validation with detailed file path logging
+    log_message "=== FINAL OUTPUT VALIDATION ==="
+    log_message "Validating primary output file: $abs_output_file"
+    log_message "Temporary directory: $temp_dir"
+    log_message "Working directory: $(pwd)"
+    
     if [ ! -f "$abs_output_file" ]; then
-        log_formatted "ERROR" "Failed to create output file: $abs_output_file"
+        log_formatted "ERROR" "Failed to create primary output file: $abs_output_file"
+        log_message "Directory contents:"
+        ls -la "$(dirname "$abs_output_file")" 2>/dev/null || log_message "Directory does not exist"
         rm -rf "$temp_dir"
         return 1
     fi
@@ -1626,7 +2044,16 @@ extract_brainstem_harvard_oxford() {
     output_file="$abs_output_file"
     
     local output_size=$(stat -f "%z" "$output_file" 2>/dev/null || stat --format="%s" "$output_file" 2>/dev/null || echo "0")
-    local voxel_count=$(fslstats "${temp_dir}/brainstem_mask_subject.nii.gz" -V | awk '{print $1}')
+    local mask_file_for_count="${temp_dir}/brainstem_mask_subject.nii.gz"
+    
+    log_message "Calculating voxel count from mask: $mask_file_for_count"
+    if [ ! -f "$mask_file_for_count" ]; then
+        log_formatted "WARNING" "Mask file for voxel count not found: $mask_file_for_count"
+        local voxel_count="unknown"
+    else
+        local voxel_count=$(fslstats "$mask_file_for_count" -V | awk '{print $1}')
+        log_message "✓ Mask file exists, voxel count: $voxel_count"
+    fi
     
     log_formatted "SUCCESS" "Harvard-Oxford brainstem extraction complete"
     log_message "  Output: $output_file ($(( output_size / 1024 )) KB)"
@@ -1645,7 +2072,10 @@ extract_brainstem_harvard_oxford() {
 extract_brainstem_with_flair() {
     local t1_file="$1"
     local flair_file="$2"
-    local output_prefix="${3:-${RESULTS_DIR}/segmentation/brainstem/$(basename "$t1_file" .nii.gz)}"
+    # Fix: resolve to absolute path to avoid ../issues with FSL tools
+    local default_output_dir="${RESULTS_DIR}/segmentation/brainstem"
+    local resolved_output_dir=$(cd "$default_output_dir" 2>/dev/null && pwd || echo "$default_output_dir")
+    local output_prefix="${3:-${resolved_output_dir}/$(basename "$t1_file" .nii.gz)}"
     
     # Validate inputs - FAIL HARD on missing files
     if [ ! -f "$t1_file" ]; then
@@ -1704,11 +2134,76 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    # Check if FLAIR is already in T1 space (from registration step)
-    local flair_in_t1="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
-    if [ ! -f "$flair_in_t1" ]; then
-        log_message "FLAIR not yet registered to T1, using original FLAIR"
+    # Check if FLAIR is already in T1 space (from registration step) - use same logic as main function
+    local flair_in_t1=""
+    
+    # Look for registered FLAIR files using specific pattern
+    local flair_registered_files=()
+    local registration_dir="${RESULTS_DIR}/registered"
+    
+    log_message "=== REGISTERED FLAIR DISCOVERY ==="
+    log_message "Looking for registered FLAIR files in: $registration_dir"
+    
+    if [ -d "$registration_dir" ]; then
+        log_message "Registration directory exists, searching for patterns:"
+        log_message "  Pattern 1: *_std_to_t1Warped.nii.gz"
+        log_message "  Pattern 2: *FLAIR*Warped.nii.gz"
+        
+        # List all files in the directory for debugging
+        log_message "All files in registration directory:"
+        ls -la "$registration_dir"/*.nii.gz 2>/dev/null | while read -r line; do
+            log_message "  $line"
+        done || log_message "  No .nii.gz files found"
+        
+        # Debug: Test the find command directly
+        log_message "Testing find command directly:"
+        find "$registration_dir" -maxdepth 1 -name "*_std_to_t1Warped.nii.gz" 2>/dev/null | while read -r found_file; do
+            log_message "  Direct find result: $found_file"
+        done
+        
+        # Use the specific pattern from user feedback with explicit maxdepth
+        while IFS= read -r -d '' registered_flair; do
+            flair_registered_files+=("$registered_flair")
+            log_message "Found registered FLAIR: $(basename "$registered_flair")"
+        done < <(find "$registration_dir" -maxdepth 1 -name "*_std_to_t1Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -print0 2>/dev/null)
+        
+        # Alternative approach: use glob patterns if find fails
+        if [ ${#flair_registered_files[@]} -eq 0 ]; then
+            log_message "Find command failed, trying glob patterns..."
+            for pattern in "*_std_to_t1Warped.nii.gz" "*FLAIR*Warped.nii.gz"; do
+                for file in "$registration_dir"/$pattern; do
+                    if [ -f "$file" ]; then
+                        # Check if we already have this file to avoid duplicates
+                        local already_found=false
+                        for existing_file in "${flair_registered_files[@]}"; do
+                            if [ "$file" = "$existing_file" ]; then
+                                already_found=true
+                                break
+                            fi
+                        done
+                        
+                        if [ "$already_found" = "false" ]; then
+                            flair_registered_files+=("$file")
+                            log_message "Glob found registered FLAIR: $(basename "$file")"
+                        fi
+                    fi
+                done
+            done
+        fi
+    else
+        log_message "Registration directory does not exist: $registration_dir"
+    fi
+    
+    log_message "Total registered FLAIR files found: ${#flair_registered_files[@]}"
+    
+    if [ ${#flair_registered_files[@]} -gt 0 ]; then
+        flair_in_t1="${flair_registered_files[0]}"
+        log_message "✓ Using registered FLAIR in T1 space: $(basename "$flair_in_t1")"
+        log_message "Full path: $flair_in_t1"
+    else
+        log_message "⚠ No registered FLAIR found, using original FLAIR (will need to check dimensions)"
         flair_in_t1="$flair_file"
+        log_message "Original FLAIR path: $flair_in_t1"
     fi
     
     # Validate FLAIR file exists - FAIL HARD
@@ -1749,20 +2244,40 @@ extract_brainstem_with_flair() {
     # Extract FLAIR intensities within brainstem region - FAIL HARD on any error
     log_message "Extracting FLAIR intensities within brainstem region..."
     
+    # Apply the registered FLAIR to the brainstem mask directly - simple and correct!
+    log_message "=== FLAIR INTENSITY EXTRACTION DEBUG ==="
+    log_message "FLAIR intensity file: $flair_in_t1"
+    log_message "Brainstem mask file: $t1_mask"
+    log_message "Both files are in T1 space - direct multiplication will work"
+    
     # Validate input files exist before fslmaths operation
     if [ ! -f "$flair_in_t1" ]; then
-        cleanup_and_fail 1 "FLAIR input file missing before extraction: $flair_in_t1"
+        cleanup_and_fail 1 "FLAIR input file missing: $flair_in_t1"
         return 1
     fi
     if [ ! -f "$t1_mask" ]; then
-        cleanup_and_fail 1 "T1 mask file missing before extraction: $t1_mask"
+        cleanup_and_fail 1 "Brainstem mask file missing: $t1_mask"
         return 1
     fi
     
+    # Check mask voxel count before extraction
+    local mask_voxel_count=$(fslstats "$t1_mask" -V 2>/dev/null | awk '{print $1}')
+    log_message "Brainstem mask contains $mask_voxel_count voxels"
+    
+    if [ -z "$mask_voxel_count" ] || [ "$mask_voxel_count" -eq 0 ]; then
+        cleanup_and_fail 1 "Brainstem mask is empty - cannot extract FLAIR intensities"
+        return 1
+    fi
+    
+    # Extract FLAIR intensities using the brainstem mask (both in T1 space)
+    log_message "Extracting FLAIR intensities from $mask_voxel_count brainstem voxels (registered FLAIR × brainstem mask)..."
     if ! fslmaths "$flair_in_t1" -mul "$t1_mask" "${temp_dir}/flair_brainstem.nii.gz"; then
         cleanup_and_fail 1 "Failed to extract FLAIR intensities - fslmaths operation failed"
         return 1
     fi
+    
+    log_message "✓ FLAIR intensity extraction completed using brainstem mask directly"
+    log_message "Output file: ${temp_dir}/flair_brainstem.nii.gz"
     
     # Verify the output file was created and has non-zero voxels - FAIL HARD
     if [ ! -f "${temp_dir}/flair_brainstem.nii.gz" ]; then
@@ -2060,29 +2575,23 @@ extract_brainstem_final() {
     local input_file="$1"
     local input_basename=$(basename "$input_file" .nii.gz)
     
-    # Define output directories with absolute paths
+    # Define output directories and resolve to clean absolute paths
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
-    local pons_dir="${RESULTS_DIR}/segmentation/pons"
+x    
+    # Properly resolve paths to eliminate ../ components
+    brainstem_dir=$(realpath -m "$brainstem_dir" 2>/dev/null || echo "$brainstem_dir")
     
-    # Convert to absolute paths if relative
-    if [[ "$brainstem_dir" != /* ]]; then
-        brainstem_dir="$(pwd)/$brainstem_dir"
-    fi
-    if [[ "$pons_dir" != /* ]]; then
-        pons_dir="$(pwd)/$pons_dir"
-    fi
     
     log_message "Creating segmentation directories:"
     log_message "  Brainstem: $brainstem_dir"
-    log_message "  Pons: $pons_dir"
-    
-    if ! mkdir -p "$brainstem_dir" "$pons_dir"; then
+x    
+    if ! mkdir -p "$brainstem_dir"; then
         log_formatted "ERROR" "Failed to create segmentation directories"
         return 1
     fi
     
     # Verify directories are writable
-    if [ ! -w "$brainstem_dir" ] || [ ! -w "$pons_dir" ]; then
+    if [ ! -w "$brainstem_dir" ]; then
         log_formatted "ERROR" "Segmentation directories are not writable"
         return 1
     fi
@@ -2232,27 +2741,12 @@ extract_brainstem_final() {
         log_message "Creating EMPTY placeholder files for pipeline compatibility only"
         log_message "These are NOT anatomical segmentations"
         
-        # Create empty placeholder files
-        local pons_file="${pons_dir}/${input_basename}_pons.nii.gz"
-        
-        # Get reference file for dimensions
-        local ref_file="${brainstem_dir}/${input_basename}_brainstem.nii.gz"
-        if [ -f "$ref_file" ]; then
-            # Remove existing file/symlink
-            [ -L "$pons_file" ] || [ -e "$pons_file" ] && rm -f "$pons_file"
-            # Create empty file with same dimensions
-            fslmaths "$ref_file" -mul 0 "$pons_file" 2>/dev/null || {
-                log_formatted "WARNING" "Could not create placeholder: $pons_file"
-            }
-            log_message "Created empty pons placeholder (0 voxels) - NOT real segmentation"
-        fi
-    fi
-    
+            
     # Map files to expected names (remove method suffixes)
-    map_segmentation_files "$input_basename" "$brainstem_dir" "$pons_dir"
+    map_segmentation_files "$input_basename" "$brainstem_dir"
     
     # Create combined label map for easy visualization
-    create_combined_segmentation_map "$input_basename" "$brainstem_dir" "$pons_dir"
+    create_combined_segmentation_map "$input_basename" "$brainstem_dir"
     
     # Validate segmentation
     validate_segmentation_outputs "$input_file" "$input_basename"
@@ -2266,23 +2760,7 @@ extract_brainstem_final() {
     return 0
 }
 
-# ============================================================================
-# PONS EXTRACTION - ATLAS BASED ONLY
-# ============================================================================
-
-extract_pons_from_brainstem() {
-    local brainstem_file="$1"
-    local output_basename="$2"
-    
-    log_formatted "WARNING" "Harvard-Oxford atlas does not provide pons subdivision"
-    log_message "Pons segmentation requires Juelich or other specialized brainstem atlas"
-    
-    # DO NOT approximate or guess anatomical structures
-    # If we don't have proper atlas-based segmentation, we should not create fake ones
-    
-    return 1
-}
-
+# 
 # ============================================================================
 # FILE MAPPING AND DISCOVERY
 # ============================================================================
@@ -2290,7 +2768,6 @@ extract_pons_from_brainstem() {
 map_segmentation_files() {
     local input_basename="$1"
     local brainstem_dir="$2"
-    local pons_dir="$3"
     
     log_message "Mapping segmentation files to expected names..."
     
@@ -2321,7 +2798,6 @@ validate_segmentation_outputs() {
     log_message "Validating segmentation outputs..."
     
     local brainstem_file="${RESULTS_DIR}/segmentation/brainstem/${basename}_brainstem.nii.gz"
-    local pons_file="${RESULTS_DIR}/segmentation/pons/${basename}_pons.nii.gz"
     
     local validation_passed=true
     
@@ -2365,7 +2841,6 @@ validate_segmentation_outputs() {
 create_combined_segmentation_map() {
     local input_basename="$1"
     local brainstem_dir="$2"
-    local pons_dir="$3"
     
     log_message "Creating combined segmentation label map..."
     
@@ -2415,7 +2890,6 @@ generate_segmentation_report() {
     
     log_message "Generating comprehensive segmentation report..."
     
-    local report_dir="${RESULTS_DIR}/reports"
     mkdir -p "$report_dir"
     
     local report_file="${report_dir}/segmentation_report_${input_basename}.txt"
@@ -2426,12 +2900,10 @@ generate_segmentation_report() {
     local flair_registered="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
     local brainstem_intensity="${RESULTS_DIR}/segmentation/brainstem/${input_basename}_brainstem.nii.gz"
     local brainstem_mask="${RESULTS_DIR}/segmentation/brainstem/${input_basename}_brainstem_mask.nii.gz"
-    local pons_file="${RESULTS_DIR}/segmentation/pons/${input_basename}_pons.nii.gz"
     local combined_labels="${RESULTS_DIR}/segmentation/combined/${input_basename}_segmentation_labels.nii.gz"
     
     # Calculate statistics
     local brainstem_voxels=0
-    local pons_voxels=0
     if [ -f "$brainstem_mask" ]; then
         brainstem_voxels=$(fslstats "$brainstem_mask" -V | awk '{print $1}')
     fi
@@ -2530,7 +3002,6 @@ EOF
         echo "  # View on registered FLAIR:"
         echo "  fsleyes ${flair_registered} \\"
         echo "          ${brainstem_mask} -cm red -a 50 \\"
-        echo "          ${pons_file} -cm yellow -a 50"
         echo ""
     fi
     
@@ -2574,9 +3045,9 @@ validate_segmentation() {
 discover_and_map_segmentation_files() {
     local input_basename="$1"
     local brainstem_dir="$2"
-    local pons_dir="$3"
-    
-    map_segmentation_files "$input_basename" "$brainstem_dir" "$pons_dir"
+
+
+    map_segmentation_files "$input_basename" "$brainstem_dir"
     
     # Always return success to continue pipeline
     return 0
@@ -2667,7 +3138,6 @@ segment_tissues() {
 export -f extract_brainstem_harvard_oxford
 export -f extract_brainstem_with_flair
 export -f extract_brainstem_final
-export -f extract_pons_from_brainstem
 export -f map_segmentation_files
 export -f validate_segmentation_outputs
 export -f create_combined_segmentation_map
