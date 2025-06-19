@@ -24,31 +24,45 @@ import sys
 import os
 
 
-def compute_edge_indicator_function(image, sigma=1.0, k=1.0):
+def compute_brainstem_edge_function(image, tissue_maps=None, atlas_region=None, sigma=1.0, k=1.0):
     """
-    Compute edge indicator function g(x) = 1/(1 + k*|∇G_σ * I|²)
-    where G_σ is Gaussian kernel with standard deviation σ
+    Compute edge function specifically optimized for brainstem tissue boundaries
     """
-    # Smooth image with Gaussian
+    # Base edge detection from image gradients
     smoothed = gaussian_filter(image.astype(np.float64), sigma=sigma)
-    
-    # Compute gradient magnitude
     grad_x, grad_y, grad_z = np.gradient(smoothed)
     grad_magnitude = np.sqrt(grad_x**2 + grad_y**2 + grad_z**2)
     
-    # Edge indicator function
-    g = 1.0 / (1.0 + k * grad_magnitude**2)
+    # Basic edge indicator function
+    g_image = 1.0 / (1.0 + k * grad_magnitude**2)
     
-    return g
+    # If tissue maps available, enhance with tissue boundary information
+    if tissue_maps is not None:
+        # Create tissue boundary edges (important for brainstem structure)
+        tissue_gradient = np.gradient(tissue_maps)
+        tissue_mag = np.sqrt(sum(grad**2 for grad in tissue_gradient))
+        g_tissue = 1.0 / (1.0 + 0.5 * tissue_mag**2)
+        
+        # Combine image and tissue edges
+        g = 0.7 * g_image + 0.3 * g_tissue
+    else:
+        g = g_image
+    
+    # Enhance edges at atlas boundaries to prevent excessive expansion
+    if atlas_region is not None:
+        atlas_boundary = binary_dilation(atlas_region > 0) ^ (atlas_region > 0)
+        edge_enhancement = np.where(atlas_boundary, 0.5, 1.0)  # Stronger edges at atlas boundary
+        g = g * edge_enhancement
+    
+    # Ensure minimum edge strength to prevent runaway evolution
+    return np.clip(g, 0.1, 1.0)
 
 
-def compute_speed_function(phi, g, alpha=1.0, beta=1.0):
+def compute_atlas_guided_speed_function(phi, g, atlas_constraint=None, tissue_region=None, 
+                                       image_intensities=None, alpha=1.0, beta=1.0):
     """
-    Compute speed function for geodesic active contour:
-    F = g(α + β*κ) where κ is mean curvature
-    
-    For morphological implementation, we approximate curvature
-    using the divergence of the normalized gradient
+    Compute atlas-guided speed function for brainstem segmentation:
+    F = g(α + β*κ) * tissue_affinity * distance_regulation
     """
     # Approximate mean curvature using morphological operations
     # This is a simplified but computationally efficient approach
@@ -65,26 +79,57 @@ def compute_speed_function(phi, g, alpha=1.0, beta=1.0):
     # Approximate curvature as divergence of normalized gradient
     curvature = np.gradient(nx)[0] + np.gradient(ny)[1] + np.gradient(nz)[2]
     
-    # Speed function
-    speed = g * (alpha + beta * curvature)
+    # Base speed function
+    base_speed = g * (alpha + beta * curvature)
+    
+    # Atlas-guided modifications
+    if atlas_constraint is not None and tissue_region is not None:
+        # Distance-based regulation - slower speed farther from atlas
+        distance_from_atlas = distance_transform_edt(~(atlas_constraint > 0))
+        distance_regulation = np.exp(-distance_from_atlas / 3.0)  # 3mm decay
+        
+        # Tissue preference (encourage growth in tissue vs background)
+        tissue_preference = np.where(tissue_region > 0, 1.0, 0.1)
+        
+        # Intensity consistency if available
+        if image_intensities is not None:
+            current_mask = phi > 0
+            if np.sum(current_mask) > 10:  # Ensure sufficient sample
+                region_intensities = image_intensities[current_mask]
+                mean_intensity = np.mean(region_intensities)
+                std_intensity = np.std(region_intensities) + 1e-6
+                
+                # Favor regions with similar intensities
+                intensity_similarity = np.exp(-0.5 * ((image_intensities - mean_intensity) / std_intensity)**2)
+            else:
+                intensity_similarity = 1.0
+        else:
+            intensity_similarity = 1.0
+        
+        # Combined speed function with all constraints
+        speed = base_speed * distance_regulation * tissue_preference * intensity_similarity
+    else:
+        speed = base_speed
     
     return speed
 
 
-def morphological_geodesic_active_contour(image, initial_mask, tissue_region, 
-                                        num_iterations=10, sigma=1.0, k=1.0, 
-                                        alpha=0.1, beta=0, dt=0.1):
+def atlas_guided_morphological_geodesic_active_contour(image, initial_mask, tissue_region, 
+                                                      atlas_constraint=None, num_iterations=10, 
+                                                      sigma=1.0, k=1.0, alpha=0.1, beta=0, dt=0.1):
     """
-    Morphological implementation of geodesic active contour
+    Atlas-guided morphological implementation of geodesic active contour
     
     Parameters:
     -----------
     image : ndarray
         Input image (e.g., T1 or tissue probability map)
     initial_mask : ndarray
-        Initial binary mask
+        Initial binary mask (seed region)
     tissue_region : ndarray
-        Constraint region (e.g., tissue segmentation)
+        Tissue constraint region
+    atlas_constraint : ndarray
+        Original atlas mask for boundary constraints
     num_iterations : int
         Number of evolution iterations
     sigma : float
@@ -103,23 +148,34 @@ def morphological_geodesic_active_contour(image, initial_mask, tissue_region,
     final_mask : ndarray
         Evolved binary mask
     """
-    print("Starting morphological geodesic active contour evolution...")
+    print("Starting atlas-guided morphological geodesic active contour evolution...")
     print(f"Parameters: sigma={sigma}, k={k}, alpha={alpha}, beta={beta}, dt={dt}")
+    
+    # Validate atlas constraint
+    if atlas_constraint is not None:
+        atlas_volume = np.sum(atlas_constraint > 0)
+        print(f"Atlas constraint: {atlas_volume} voxels")
+    else:
+        print("No atlas constraint provided")
     
     # Initialize level set function as signed distance transform
     phi = np.where(initial_mask > 0, 1, -1).astype(np.float64)
     phi = distance_transform_edt(phi < 0) - distance_transform_edt(phi >= 0)
     
-    # Compute edge indicator function
-    print(f"Computing edge indicator function...")
-    g = compute_edge_indicator_function(image, sigma=sigma, k=k)
+    # Compute brainstem-specific edge function
+    print(f"Computing brainstem-optimized edge function...")
+    g = compute_brainstem_edge_function(image, tissue_maps=tissue_region, 
+                                      atlas_region=atlas_constraint, sigma=sigma, k=k)
     
     # Evolution iterations
     for iteration in range(num_iterations):
         print(f"Iteration {iteration + 1}/{num_iterations}")
         
-        # Compute speed function
-        speed = compute_speed_function(phi, g, alpha=alpha, beta=beta)
+        # Compute atlas-guided speed function
+        speed = compute_atlas_guided_speed_function(phi, g, atlas_constraint=atlas_constraint, 
+                                                   tissue_region=tissue_region, 
+                                                   image_intensities=image, 
+                                                   alpha=alpha, beta=beta)
         
         # Morphological evolution step
         # Forward differences for upwind scheme approximation
@@ -151,12 +207,21 @@ def morphological_geodesic_active_contour(image, initial_mask, tissue_region,
         # Update level set function
         phi_new = phi + dt * evolution
         
-        # Constrain to tissue region (geodesic constraint)
+        # Apply multiple levels of constraints
         current_mask = phi_new > 0
-        constrained_mask = current_mask & (tissue_region > 0)
         
-        # Update phi based on constraint
-        phi = np.where(constrained_mask, 
+        # Level 1: Tissue constraint (soft)
+        tissue_constrained = current_mask & (tissue_region > 0)
+        
+        # Level 2: Atlas constraint (hard boundary - never expand beyond 2mm from atlas)
+        if atlas_constraint is not None:
+            atlas_dilated = binary_dilation(atlas_constraint > 0, ball(2))  # 2mm expansion limit
+            atlas_constrained = tissue_constrained & atlas_dilated
+        else:
+            atlas_constrained = tissue_constrained
+        
+        # Update phi based on hierarchical constraints
+        phi = np.where(atlas_constrained, 
                       np.abs(phi_new), 
                       -np.abs(phi_new))
         
@@ -168,10 +233,19 @@ def morphological_geodesic_active_contour(image, initial_mask, tissue_region,
         current_volume = np.sum(phi > 0)
         print(f"  Current volume: {current_volume} voxels")
         
-        # Check for convergence (optional)
-        if iteration > 0 and abs(current_volume - previous_volume) < 10:
-            print(f"  Converged at iteration {iteration + 1}")
-            break
+        # Check for convergence and quality
+        if iteration > 0:
+            volume_change = abs(current_volume - previous_volume)
+            if volume_change < 5:  # Tighter convergence for stability
+                print(f"  Converged at iteration {iteration + 1} (volume change: {volume_change})")
+                break
+            
+            # Safety check: prevent excessive growth
+            if atlas_constraint is not None:
+                atlas_volume = np.sum(atlas_constraint > 0)
+                if current_volume > 2 * atlas_volume:  # Never grow more than 2x atlas size
+                    print(f"  Stopping evolution: excessive growth detected")
+                    break
         
         previous_volume = current_volume
     
@@ -205,17 +279,18 @@ def validate_inputs(image, initial_mask, tissue_region):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Morphological Geodesic Active Contour')
+    parser = argparse.ArgumentParser(description='Atlas-Guided Morphological Geodesic Active Contour')
     parser.add_argument('input_image', help='Input image (T1, probability map, etc.)')
-    parser.add_argument('initial_mask', help='Initial binary mask')
+    parser.add_argument('initial_mask', help='Initial binary mask (seed region)')
     parser.add_argument('tissue_region', help='Tissue constraint region')
     parser.add_argument('output_mask', help='Output refined mask')
+    parser.add_argument('--atlas_constraint', help='Original atlas mask for boundary constraints')
     parser.add_argument('--iterations', type=int, default=10, help='Number of iterations')
-    parser.add_argument('--sigma', type=float, default=2.0, help='Edge detection smoothing')
-    parser.add_argument('--k', type=float, default=1.0, help='Edge sensitivity')
-    parser.add_argument('--alpha', type=float, default=0.1, help='Constant speed weight')
+    parser.add_argument('--sigma', type=float, default=1.5, help='Edge detection smoothing')
+    parser.add_argument('--k', type=float, default=2.0, help='Edge sensitivity')
+    parser.add_argument('--alpha', type=float, default=0.02, help='Constant speed weight')
     parser.add_argument('--beta', type=float, default=0.1, help='Curvature weight')
-    parser.add_argument('--dt', type=float, default=0.5, help='Time step')
+    parser.add_argument('--dt', type=float, default=0.05, help='Time step')
     
     args = parser.parse_args()
     
@@ -228,17 +303,28 @@ def main():
         
         # Get data arrays
         image = image_nii.get_fdata()
-        #initial_mask = initial_mask_nii.get_fdata()
-        tissue_region = tissue_region_nii.get_fdata()
         initial_mask = initial_mask_nii.get_fdata()
+        tissue_region = tissue_region_nii.get_fdata()
+        
+        # Load atlas constraint if provided
+        atlas_constraint = None
+        if args.atlas_constraint:
+            atlas_constraint_nii = nib.load(args.atlas_constraint)
+            atlas_constraint = atlas_constraint_nii.get_fdata()
+            print(f"Loaded atlas constraint: {args.atlas_constraint}")
+        
         # Validate inputs
         validate_inputs(image, initial_mask, tissue_region)
+        if atlas_constraint is not None:
+            if atlas_constraint.shape != image.shape:
+                raise ValueError(f"Atlas constraint shape mismatch: {atlas_constraint.shape} vs {image.shape}")
         
-        # Run morphological geodesic active contour
-        refined_mask = morphological_geodesic_active_contour(
+        # Run atlas-guided morphological geodesic active contour
+        refined_mask = atlas_guided_morphological_geodesic_active_contour(
             image=image,
             initial_mask=initial_mask,
             tissue_region=tissue_region,
+            atlas_constraint=atlas_constraint,
             num_iterations=args.iterations,
             sigma=args.sigma,
             k=args.k,
@@ -264,7 +350,20 @@ def main():
         print(f"  Overlap: {overlap} voxels")
         print(f"  Dice coefficient: {2*overlap/(initial_volume + refined_volume):.3f}")
         
-        print(f"Morphological geodesic active contour completed successfully!")
+        # Validate output quality
+        if atlas_constraint is not None:
+            initial_atlas_volume = np.sum(atlas_constraint > 0)
+            refined_volume = np.sum(refined_mask > 0)
+            overlap_with_atlas = np.sum((refined_mask > 0) & (atlas_constraint > 0))
+            
+            # Quality checks
+            if refined_volume > 2 * initial_atlas_volume:
+                print(f"WARNING: Refined mask is unusually large ({refined_volume} vs {initial_atlas_volume} atlas voxels)")
+            
+            if overlap_with_atlas < 0.5 * initial_atlas_volume:
+                print(f"WARNING: Poor overlap with original atlas ({overlap_with_atlas} / {initial_atlas_volume})")
+        
+        print(f"Atlas-guided morphological geodesic active contour completed successfully!")
         
     except Exception as e:
         print(f"ERROR: {str(e)}", file=sys.stderr)
