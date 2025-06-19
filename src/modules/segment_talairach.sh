@@ -13,9 +13,41 @@
 # - Maintains orientation consistency with main pipeline
 #
 
+# ============================================================================
+# COORDINATE SYSTEM HELPER FUNCTIONS (LOCAL COPIES)
+# ============================================================================
+
+get_qform_description_local() {
+    local code="$1"
+    case "$code" in
+        0) echo "Unknown coordinate system" ;;
+        1) echo "Scanner Anatomical coordinates" ;;
+        2) echo "Aligned Anatomical coordinates" ;;
+        3) echo "Talairach coordinates" ;;
+        4) echo "MNI 152 coordinates" ;;
+        *) echo "Invalid/Unknown code ($code)" ;;
+    esac
+}
+
+get_sform_description_local() {
+    local code="$1"
+    case "$code" in
+        0) echo "Unknown coordinate system" ;;
+        1) echo "Scanner Anatomical coordinates" ;;
+        2) echo "Aligned Anatomical coordinates" ;;
+        3) echo "Talairach coordinates" ;;
+        4) echo "MNI 152 coordinates" ;;
+        *) echo "Invalid/Unknown code ($code)" ;;
+    esac
+}
+
+# ============================================================================
+# TALAIRACH ATLAS CONSTANTS
+# ============================================================================
+
 # Talairach brainstem region indices (from atlasq summary talairach)
 TALAIRACH_LEFT_MEDULLA=5      # Left Brainstem.Medulla
-TALAIRACH_RIGHT_MEDULLA=6     # Right Brainstem.Medulla  
+TALAIRACH_RIGHT_MEDULLA=6     # Right Brainstem.Medulla
 TALAIRACH_LEFT_PONS=71        # Left Brainstem.Pons
 TALAIRACH_RIGHT_PONS=72       # Right Brainstem.Pons
 TALAIRACH_LEFT_MIDBRAIN=215   # Left Brainstem.Midbrain
@@ -108,6 +140,167 @@ extract_brainstem_talairach_with_transform() {
             log_formatted "WARNING" "Could not validate Talairach brainstem structures with atlasq"
         fi
     fi
+    
+    # COMPREHENSIVE COORDINATE SYSTEM DETECTION FOR TALAIRACH ATLAS
+    log_message "=== TALAIRACH ATLAS COORDINATE SYSTEM ANALYSIS ==="
+    log_message "Performing extensive coordinate system detection for Talairach atlas"
+    
+    # Get precise orientation and coordinate system codes using fslorient
+    local subject_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local talairach_orient=$(fslorient -getorient "$talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+    
+    # CRITICAL: Get qform and sform codes using fslorient (as demonstrated by user)
+    local subject_qform=$(fslorient -getqformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local subject_sform=$(fslorient -getsformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local talairach_qform=$(fslorient -getqformcode "$talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+    local talairach_sform=$(fslorient -getsformcode "$talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+    
+    log_message "=== TALAIRACH ORIENTATION ANALYSIS ==="
+    log_message "Subject orientation: $subject_orient"
+    log_message "Talairach atlas orientation: $talairach_orient"
+    
+    log_message "=== TALAIRACH COORDINATE SYSTEM CODES ==="
+    log_message "Subject qform code: $subject_qform ($(get_qform_description_local "$subject_qform"))"
+    log_message "Subject sform code: $subject_sform ($(get_sform_description_local "$subject_sform"))"
+    log_message "Talairach qform code: $talairach_qform ($(get_qform_description_local "$talairach_qform"))"
+    log_message "Talairach sform code: $talairach_sform ($(get_sform_description_local "$talairach_sform"))"
+    
+    # DETECT COORDINATE SYSTEM MISMATCHES FOR TALAIRACH
+    local talairach_coord_mismatch=false
+    local talairach_critical_mismatch=false
+    
+    if [ "$subject_qform" != "$talairach_qform" ]; then
+        log_formatted "ERROR" "TALAIRACH QFORM CODE MISMATCH: Subject ($subject_qform) vs Talairach ($talairach_qform)"
+        talairach_coord_mismatch=true
+        if [[ "$subject_qform" == "1" && "$talairach_qform" == "4" ]] || [[ "$subject_qform" == "4" && "$talairach_qform" == "1" ]]; then
+            talairach_critical_mismatch=true
+        fi
+    fi
+    
+    if [ "$subject_sform" != "$talairach_sform" ]; then
+        log_formatted "ERROR" "TALAIRACH SFORM CODE MISMATCH: Subject ($subject_sform) vs Talairach ($talairach_sform)"
+        talairach_coord_mismatch=true
+        if [[ "$subject_sform" == "1" && "$talairach_sform" == "4" ]] || [[ "$subject_sform" == "4" && "$talairach_sform" == "1" ]]; then
+            talairach_critical_mismatch=true
+        fi
+    fi
+    
+    if [ "$talairach_critical_mismatch" = "true" ]; then
+        log_formatted "CRITICAL" "TALAIRACH: Scanner Anatomical vs MNI 152 coordinate system mismatch detected!"
+        log_formatted "CRITICAL" "This WILL cause anatomical mislocalization if not corrected"
+    elif [ "$talairach_coord_mismatch" = "false" ]; then
+        log_formatted "SUCCESS" "✓ Talairach atlas coordinate system compatible with subject"
+        log_message "No coordinate system reorientation needed for Talairach atlas"
+    else
+        log_formatted "WARNING" "Talairach atlas has some coordinate system differences"
+    fi
+    
+    # TALAIRACH ATLAS REORIENTATION (if needed)
+    local talairach_needs_correction=false
+    local corrected_talairach_atlas="$talairach_atlas"
+    
+    if [ "$talairach_coord_mismatch" = "true" ] || [ "$subject_orient" != "$talairach_orient" ]; then
+        talairach_needs_correction=true
+        log_message "=== TALAIRACH ATLAS REORIENTATION ==="
+        log_message "Reorienting Talairach atlas to match subject coordinate system"
+        
+        corrected_talairach_atlas="${temp_dir}/talairach_atlas_reoriented.nii.gz"
+        
+        # Step 1: Handle coordinate system code mismatches
+        local intermediate_talairach="$talairach_atlas"
+        
+        if [ "$talairach_critical_mismatch" = "true" ]; then
+            log_formatted "CRITICAL" "Applying coordinate system transformation for Talairach Scanner vs MNI space"
+            
+            local coord_corrected="${temp_dir}/talairach_coord_corrected.nii.gz"
+            
+            if [[ "$subject_qform" == "1" && "$talairach_qform" == "4" ]]; then
+                log_message "Converting Talairach atlas from MNI 152 to Scanner Anatomical coordinate system"
+                fslswapdim "$talairach_atlas" x y z "$coord_corrected"
+                fslorient -setqformcode 1 "$coord_corrected"
+                fslorient -setsformcode 1 "$coord_corrected"
+                
+            elif [[ "$subject_qform" == "4" && "$talairach_qform" == "1" ]]; then
+                log_message "Converting Talairach atlas from Scanner Anatomical to MNI 152 coordinate system"
+                fslswapdim "$talairach_atlas" x y z "$coord_corrected"
+                fslorient -setqformcode 4 "$coord_corrected"
+                fslorient -setsformcode 4 "$coord_corrected"
+                
+            else
+                log_formatted "WARNING" "Unsupported Talairach coordinate system conversion, copying original"
+                cp "$talairach_atlas" "$coord_corrected"
+            fi
+            
+            intermediate_talairach="$coord_corrected"
+            log_message "✓ Talairach coordinate system correction applied"
+        fi
+        
+        # Step 2: Handle basic orientation mismatches
+        if [ "$subject_orient" != "$talairach_orient" ] && [ "$talairach_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
+            log_message "Applying Talairach orientation correction: $talairach_orient → $subject_orient"
+            
+            if [ "$talairach_orient" = "NEUROLOGICAL" ] && [ "$subject_orient" = "RADIOLOGICAL" ]; then
+                fslswapdim "$intermediate_talairach" -x y z "$corrected_talairach_atlas"
+                fslorient -forceradiological "$corrected_talairach_atlas"
+                log_message "✓ Converted Talairach atlas from NEUROLOGICAL to RADIOLOGICAL"
+                
+            elif [ "$talairach_orient" = "RADIOLOGICAL" ] && [ "$subject_orient" = "NEUROLOGICAL" ]; then
+                fslswapdim "$intermediate_talairach" -x y z "$corrected_talairach_atlas"
+                fslorient -forceneurological "$corrected_talairach_atlas"
+                log_message "✓ Converted Talairach atlas from RADIOLOGICAL to NEUROLOGICAL"
+                
+            else
+                log_formatted "WARNING" "Unsupported Talairach orientation conversion: $talairach_orient → $subject_orient"
+                cp "$intermediate_talairach" "$corrected_talairach_atlas"
+            fi
+        else
+            cp "$intermediate_talairach" "$corrected_talairach_atlas"
+        fi
+        
+        # Step 3: Copy subject geometry to ensure perfect alignment
+        if command -v fslcpgeom &> /dev/null; then
+            log_message "Copying subject geometry to reoriented Talairach atlas"
+            fslcpgeom "$input_file" "$corrected_talairach_atlas"
+            log_message "✓ Subject geometry copied to Talairach atlas"
+        fi
+        
+        # Step 4: Verify Talairach reorientation was successful
+        local corrected_talairach_qform=$(fslorient -getqformcode "$corrected_talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+        local corrected_talairach_sform=$(fslorient -getsformcode "$corrected_talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+        local corrected_talairach_orient=$(fslorient -getorient "$corrected_talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+        
+        log_message "=== TALAIRACH REORIENTATION VERIFICATION ==="
+        log_message "Corrected Talairach qform: $corrected_talairach_qform (target: $subject_qform)"
+        log_message "Corrected Talairach sform: $corrected_talairach_sform (target: $subject_sform)"
+        log_message "Corrected Talairach orientation: $corrected_talairach_orient (target: $subject_orient)"
+        
+        # Validate that Talairach correction was successful
+        local talairach_correction_successful=true
+        if [ "$corrected_talairach_qform" != "$subject_qform" ] && [ "$subject_qform" != "UNKNOWN" ]; then
+            log_formatted "WARNING" "Talairach qform correction may be incomplete"
+            talairach_correction_successful=false
+        fi
+        if [ "$corrected_talairach_sform" != "$subject_sform" ] && [ "$subject_sform" != "UNKNOWN" ]; then
+            log_formatted "WARNING" "Talairach sform correction may be incomplete"
+            talairach_correction_successful=false
+        fi
+        if [ "$corrected_talairach_orient" != "$subject_orient" ] && [ "$subject_orient" != "UNKNOWN" ]; then
+            log_formatted "WARNING" "Talairach orientation correction may be incomplete"
+            talairach_correction_successful=false
+        fi
+        
+        if [ "$talairach_correction_successful" = "true" ]; then
+            log_formatted "SUCCESS" "✓ Talairach atlas successfully reoriented to subject space"
+        else
+            log_formatted "WARNING" "Talairach atlas reorientation may be incomplete - proceeding with available correction"
+        fi
+        
+    else
+        log_formatted "SUCCESS" "✓ Talairach atlas and subject coordinate systems are compatible"
+    fi
+    
+    # Update the atlas variable to use corrected version
+    talairach_atlas="$corrected_talairach_atlas"
     
     # Skip registration - use provided transform instead
     log_message "Skipping duplicate registration - reusing Harvard-Oxford transform"
@@ -691,13 +884,136 @@ extract_brainstem_talairach() {
         return 1
     fi
     
-    # Handle orientation correction (same as Harvard-Oxford module)
-    log_message "Validating coordinate spaces for Talairach transformation..."
+    # COMPREHENSIVE COORDINATE SYSTEM DETECTION FOR STANDALONE TALAIRACH
+    log_message "=== STANDALONE TALAIRACH COORDINATE SYSTEM ANALYSIS ==="
+    log_message "Performing comprehensive coordinate system detection for standalone Talairach processing"
+    
+    # Get precise orientation and coordinate system codes using fslorient
     local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
     local mni_orient=$(fslorient -getorient "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local talairach_orient=$(fslorient -getorient "$talairach_atlas" 2>/dev/null || echo "UNKNOWN")
     
-    log_message "Subject T1 orientation: $input_orient"
-    log_message "MNI template orientation: $mni_orient"
+    # CRITICAL: Get qform and sform codes using fslorient
+    local input_qform=$(fslorient -getqformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local input_sform=$(fslorient -getsformcode "$input_file" 2>/dev/null || echo "UNKNOWN")
+    local mni_qform=$(fslorient -getqformcode "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local mni_sform=$(fslorient -getsformcode "$mni_brain" 2>/dev/null || echo "UNKNOWN")
+    local talairach_qform=$(fslorient -getqformcode "$talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+    local talairach_sform=$(fslorient -getsformcode "$talairach_atlas" 2>/dev/null || echo "UNKNOWN")
+    
+    log_message "=== STANDALONE ORIENTATION ANALYSIS ==="
+    log_message "Subject T1 orientation: $input_orient (qform: $input_qform, sform: $input_sform)"
+    log_message "MNI template orientation: $mni_orient (qform: $mni_qform, sform: $mni_sform)"
+    log_message "Talairach atlas orientation: $talairach_orient (qform: $talairach_qform, sform: $talairach_sform)"
+    
+    # DETECT COORDINATE SYSTEM MISMATCHES FOR STANDALONE TALAIRACH
+    local standalone_coord_mismatch=false
+    local standalone_critical_mismatch=false
+    
+    # Check subject vs MNI compatibility
+    if [ "$input_qform" != "$mni_qform" ]; then
+        log_formatted "ERROR" "STANDALONE: Subject vs MNI QFORM mismatch: Subject ($input_qform) vs MNI ($mni_qform)"
+        standalone_coord_mismatch=true
+        if [[ "$input_qform" == "1" && "$mni_qform" == "4" ]] || [[ "$input_qform" == "4" && "$mni_qform" == "1" ]]; then
+            standalone_critical_mismatch=true
+        fi
+    fi
+    
+    # Check subject vs Talairach compatibility
+    if [ "$input_qform" != "$talairach_qform" ]; then
+        log_formatted "ERROR" "STANDALONE: Subject vs Talairach QFORM mismatch: Subject ($input_qform) vs Talairach ($talairach_qform)"
+        standalone_coord_mismatch=true
+        if [[ "$input_qform" == "1" && "$talairach_qform" == "4" ]] || [[ "$input_qform" == "4" && "$talairach_qform" == "1" ]]; then
+            standalone_critical_mismatch=true
+        fi
+    fi
+    
+    if [ "$standalone_critical_mismatch" = "true" ]; then
+        log_formatted "CRITICAL" "STANDALONE TALAIRACH: Critical coordinate system mismatch detected!"
+        log_formatted "CRITICAL" "Scanner Anatomical vs MNI 152 coordinate system differences will cause mislocalization"
+    elif [ "$standalone_coord_mismatch" = "false" ]; then
+        log_formatted "SUCCESS" "✓ Standalone Talairach coordinate systems compatible"
+    else
+        log_formatted "WARNING" "Standalone Talairach has some coordinate system differences"
+    fi
+    
+    # STANDALONE TALAIRACH ATLAS REORIENTATION
+    local standalone_talairach_needs_correction=false
+    local corrected_standalone_talairach="$talairach_atlas"
+    
+    if [ "$standalone_coord_mismatch" = "true" ] || [ "$input_orient" != "$talairach_orient" ]; then
+        standalone_talairach_needs_correction=true
+        log_message "=== STANDALONE TALAIRACH REORIENTATION ==="
+        log_message "Reorienting Talairach atlas for standalone processing"
+        
+        corrected_standalone_talairach="${temp_dir}/standalone_talairach_reoriented.nii.gz"
+        
+        # Apply same reorientation logic as the shared function
+        local intermediate_standalone="$talairach_atlas"
+        
+        if [ "$standalone_critical_mismatch" = "true" ]; then
+            log_formatted "CRITICAL" "Applying coordinate system transformation for standalone Talairach"
+            
+            local coord_corrected="${temp_dir}/standalone_talairach_coord_corrected.nii.gz"
+            
+            if [[ "$input_qform" == "1" && "$talairach_qform" == "4" ]]; then
+                log_message "Converting standalone Talairach from MNI 152 to Scanner Anatomical"
+                fslswapdim "$talairach_atlas" x y z "$coord_corrected"
+                fslorient -setqformcode 1 "$coord_corrected"
+                fslorient -setsformcode 1 "$coord_corrected"
+                
+            elif [[ "$input_qform" == "4" && "$talairach_qform" == "1" ]]; then
+                log_message "Converting standalone Talairach from Scanner Anatomical to MNI 152"
+                fslswapdim "$talairach_atlas" x y z "$coord_corrected"
+                fslorient -setqformcode 4 "$coord_corrected"
+                fslorient -setsformcode 4 "$coord_corrected"
+                
+            else
+                log_formatted "WARNING" "Unsupported standalone Talairach coordinate conversion"
+                cp "$talairach_atlas" "$coord_corrected"
+            fi
+            
+            intermediate_standalone="$coord_corrected"
+            log_message "✓ Standalone Talairach coordinate system correction applied"
+        fi
+        
+        # Handle orientation differences
+        if [ "$input_orient" != "$talairach_orient" ] && [ "$talairach_orient" != "UNKNOWN" ] && [ "$input_orient" != "UNKNOWN" ]; then
+            log_message "Applying standalone Talairach orientation correction: $talairach_orient → $input_orient"
+            
+            if [ "$talairach_orient" = "NEUROLOGICAL" ] && [ "$input_orient" = "RADIOLOGICAL" ]; then
+                fslswapdim "$intermediate_standalone" -x y z "$corrected_standalone_talairach"
+                fslorient -forceradiological "$corrected_standalone_talairach"
+                log_message "✓ Converted standalone Talairach from NEUROLOGICAL to RADIOLOGICAL"
+                
+            elif [ "$talairach_orient" = "RADIOLOGICAL" ] && [ "$input_orient" = "NEUROLOGICAL" ]; then
+                fslswapdim "$intermediate_standalone" -x y z "$corrected_standalone_talairach"
+                fslorient -forceneurological "$corrected_standalone_talairach"
+                log_message "✓ Converted standalone Talairach from RADIOLOGICAL to NEUROLOGICAL"
+                
+            else
+                log_formatted "WARNING" "Unsupported standalone Talairach orientation conversion"
+                cp "$intermediate_standalone" "$corrected_standalone_talairach"
+            fi
+        else
+            cp "$intermediate_standalone" "$corrected_standalone_talairach"
+        fi
+        
+        # Copy subject geometry
+        if command -v fslcpgeom &> /dev/null; then
+            log_message "Copying subject geometry to standalone Talairach atlas"
+            fslcpgeom "$input_file" "$corrected_standalone_talairach"
+            log_message "✓ Subject geometry copied to standalone Talairach atlas"
+        fi
+        
+        log_formatted "SUCCESS" "✓ Standalone Talairach atlas reoriented to subject space"
+        
+    else
+        log_formatted "SUCCESS" "✓ Standalone Talairach atlas compatible with subject coordinate system"
+    fi
+    
+    # Update atlas variable to use corrected version
+    talairach_atlas="$corrected_standalone_talairach"
     
     local orientation_corrected_input="$input_file"
     local orientation_corrected=false
@@ -735,7 +1051,37 @@ extract_brainstem_talairach() {
     # Single-file transform = full deformation is false for ANTs; SyN always emits two (affine + warp)
     log_formatted "INFO" "Using composite SyN registration for Talairach (affine + nonlinear warp)"
     
+    # Enhanced cleanup based on pipeline stage
+    if [ "${FORCE_FRESH_REGISTRATION:-false}" = "true" ]; then
+        log_formatted "INFO" "FORCE_FRESH_REGISTRATION=true - removing existing Talairach transforms"
+        rm -f "${ants_prefix}"*GenericAffine.mat "${ants_prefix}"*Warp.nii.gz "${ants_prefix}"*InverseWarp.nii.gz
+        rm -f "${ants_prefix}"Warped.nii.gz "${ants_prefix}"README.txt
+        log_message "Removed existing Talairach transform files to force fresh registration"
+    fi
+    
+    # Stage-based directory cleanup for comprehensive fresh processing
+    if [ "${START_STAGE:-}" = "registration" ]; then
+        local reg_dirs=("$REGISTRATION_DIR" "$OUTPUT_DIR/registration")
+        for reg_dir in "${reg_dirs[@]}"; do
+            if [ -d "$reg_dir" ]; then
+                log_formatted "INFO" "START_STAGE=registration - removing Talairach registration directory: $reg_dir"
+                rm -rf "$reg_dir"
+                mkdir -p "$reg_dir"
+            fi
+        done
+    elif [ "${START_STAGE:-}" = "segmentation" ]; then
+        local seg_dirs=("$SEGMENTATION_DIR" "$OUTPUT_DIR/segmentation")
+        for seg_dir in "${seg_dirs[@]}"; do
+            if [ -d "$seg_dir" ]; then
+                log_formatted "INFO" "START_STAGE=segmentation - removing Talairach segmentation directory: $seg_dir"
+                rm -rf "$seg_dir"
+                mkdir -p "$seg_dir"
+            fi
+        done
+    fi
+    
     if [ "$orientation_corrected" = "true" ]; then
+        local start_time=$(date +%s)
         execute_ants_command "talairach_to_mni_syn_registration" "Talairach: Full SyN registration to MNI template (orientation corrected)" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
@@ -744,7 +1090,16 @@ extract_brainstem_talairach() {
             -t s \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_message "Talairach registration completed in ${duration} seconds"
+        if [ "$duration" -lt 30 ]; then
+            log_formatted "WARNING" "Talairach SyN registration completed suspiciously fast (${duration}s)"
+            log_message "This suggests existing transforms were reused. Set FORCE_FRESH_REGISTRATION=true to force fresh registration."
+        fi
     else
+        local start_time=$(date +%s)
         execute_ants_command "talairach_to_mni_syn_registration" "Talairach: Full SyN registration to MNI template" \
             antsRegistrationSyNQuick.sh \
             -d 3 \
@@ -753,6 +1108,14 @@ extract_brainstem_talairach() {
             -t s \
             -o "$ants_prefix" \
             -n "${ANTS_THREADS:-1}"
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        
+        log_message "Talairach registration completed in ${duration} seconds"
+        if [ "$duration" -lt 30 ]; then
+            log_formatted "WARNING" "Talairach SyN registration completed suspiciously fast (${duration}s)"
+            log_message "This suggests existing transforms were reused. Set FORCE_FRESH_REGISTRATION=true to force fresh registration."
+        fi
     fi
     
     # Check composite registration success - both components required
