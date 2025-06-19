@@ -1879,7 +1879,7 @@ extract_brainstem_harvard_oxford() {
     if [ ${#flair_files_found[@]} -gt 0 ]; then
         log_message "✓ Total registered FLAIR files found: ${#flair_files_found[@]}"
         for flair in "${flair_files_found[@]}"; do
-            log_message "  - $(basename "$flair")"
+            log_message "  - $(basename $flair)"
         done
     else
         log_message "⚠ No registered FLAIR files found"
@@ -2012,7 +2012,7 @@ extract_brainstem_harvard_oxford() {
     if [ -f "$t1_intensity_file" ] && [ "$t1_intensity_file" != "$qa_t1_intensity" ]; then
         ln -sf "$(basename "$t1_intensity_file")" "$qa_t1_intensity" 2>/dev/null || \
         cp "$t1_intensity_file" "$qa_t1_intensity"
-        log_message "✓ Created QA-compatible T1 intensity: $(basename "$qa_t1_intensity")"
+        log_message "✓ Created QA-compatible T1 intensity: $qa_t1_intensity"
     fi
     
     # Create QA-compatible FLAIR intensity if it exists
@@ -2184,7 +2184,7 @@ extract_brainstem_with_flair() {
                         
                         if [ "$already_found" = "false" ]; then
                             flair_registered_files+=("$file")
-                            log_message "Glob found registered FLAIR: $(basename "$file")"
+                            log_message "Glob found registered FLAIR: $(basename $file)"
                         fi
                     fi
                 done
@@ -2575,24 +2575,20 @@ extract_brainstem_final() {
     local input_file="$1"
     local input_basename=$(basename "$input_file" .nii.gz)
     
-    # Define output directories and resolve to clean absolute paths
+    # Define output directory - brainstem only
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
-x    
-    # Properly resolve paths to eliminate ../ components
-    brainstem_dir=$(realpath -m "$brainstem_dir" 2>/dev/null || echo "$brainstem_dir")
     
-    
-    log_message "Creating segmentation directories:"
+    log_message "Creating brainstem segmentation directory:"
     log_message "  Brainstem: $brainstem_dir"
-x    
+    
     if ! mkdir -p "$brainstem_dir"; then
-        log_formatted "ERROR" "Failed to create segmentation directories"
+        log_formatted "ERROR" "Failed to create brainstem segmentation directory"
         return 1
     fi
     
-    # Verify directories are writable
+    # Verify directory is writable
     if [ ! -w "$brainstem_dir" ]; then
-        log_formatted "ERROR" "Segmentation directories are not writable"
+        log_formatted "ERROR" "Brainstem segmentation directory is not writable"
         return 1
     fi
     
@@ -2740,7 +2736,7 @@ x
         log_message "No valid brainstem subdivision available within Harvard-Oxford boundaries"
         log_message "Creating EMPTY placeholder files for pipeline compatibility only"
         log_message "These are NOT anatomical segmentations"
-        
+    fi
             
     # Map files to expected names (remove method suffixes)
     map_segmentation_files "$input_basename" "$brainstem_dir"
