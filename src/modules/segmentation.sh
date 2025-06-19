@@ -66,7 +66,7 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    log_formatted "INFO" "===== HARVARD/OXFORD ATLAS SEGMENTATION (GOLD STANDARD) ====="
+    log_formatted "INFO" "===== HARVARD/OXFORD ATLAS SEGMENTATION ====="
     log_message "Processing in subject's native T1 space - no resampling to standard space"
     
     # Create temporary directory
@@ -100,7 +100,7 @@ extract_brainstem_harvard_oxford() {
     for atlas_file in "${atlas_search_paths[@]}"; do
         if [ -f "$atlas_file" ]; then
             harvard_subcortical="$atlas_file"
-            log_message "Found Harvard-Oxford atlas: $atlas_file"
+            log_message "Using Harvard-Oxford atlas: $atlas_file"
             break
         fi
     done
@@ -127,10 +127,20 @@ extract_brainstem_harvard_oxford() {
         log_message "  $line"
     done
     
-    log_message "Harvard-Oxford atlas coordinate details:"
-    fslinfo "$harvard_subcortical" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
+
+    local brainstem_harvard_oxford_3d="${temp_dir}/brainstem_harvard_oxford_3d.nii.gz"
+    local final_harvard_oxford_brainstem_mask="${RESULTS_DIR}/segmentation/brainstem/brainstem_harvard_oxford_msk.nii.gz"
+    # 1. Extract volume index 6 (zero-based → label 7) from the 4D atlas
+    #fslmaths "$harvard_subcortical" -thr 7 -uthr 7 -bin "$final_harvard_oxford_brainstem_mask" -odt int
+    final_harvard_oxford_brainstem_mask=$harvard_subcortical
+    log_message "Harvard-Oxford brainstem atlas coordinate details:"
+    fslinfo "$final_harvard_oxford_brainstem_mask" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
         log_message "  $line"
     done
+
+    # 3. Now inspect pixdim on your 3D mask
+    fslinfo ${brainstem_mask_mni_file} | grep -E "(orient|sform|qform|pixdim)" \
+    | while read line; do log_message "  $line"; done
     
     # Check if atlas and subject have consistent coordinate systems
     if [ "$subject_orient" != "$atlas_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
@@ -156,7 +166,7 @@ extract_brainstem_harvard_oxford() {
             log_formatted "WARNING" "atlasq summary failed - using direct file validation"
             
             # Fallback: try direct file query if summary fails
-            local atlas_info=$(atlasq -a "$harvard_subcortical" 2>/dev/null || echo "QUERY_FAILED")
+            local atlas_info=$(atlasq -a "$final_harvard_oxford_brainstem_mask" 2>/dev/null || echo "QUERY_FAILED")
             if [ "$atlas_info" != "QUERY_FAILED" ]; then
                 log_message "Direct atlas query successful: $atlas_info"
             fi
@@ -242,16 +252,16 @@ extract_brainstem_harvard_oxford() {
     log_message "Performing FSL-based atlas validation..."
     
     # Check if atlas is a valid NIfTI file
-    if ! fslinfo "$harvard_subcortical" >/dev/null 2>&1; then
+    if ! fslinfo "$final_harvard_oxford_brainstem_mask" >/dev/null 2>&1; then
         log_formatted "ERROR" "Harvard-Oxford atlas is not a valid NIfTI file"
         rm -rf "$temp_dir"
         return 1
     fi
     
     # Check atlas dimensions and basic properties
-    local atlas_dims=$(fslinfo "$harvard_subcortical" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-    local atlas_voxels=$(fslstats "$harvard_subcortical" -V | awk '{print $1}')
-    local atlas_max=$(fslstats "$harvard_subcortical" -R | awk '{print $2}')
+    local atlas_dims=$(fslinfo "$final_harvard_oxford_brainstem_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local atlas_voxels=$(fslstats "$final_harvard_oxford_brainstem_mask" -V | awk '{print $1}')
+    local atlas_max=$(fslstats "$final_harvard_oxford_brainstem_mask" -R | awk '{print $2}')
     
     log_message "Atlas validation results:"
     log_message "  Dimensions: $atlas_dims"
@@ -271,7 +281,7 @@ extract_brainstem_harvard_oxford() {
     
     # Validate brainstem region specifically
     log_message "Validating brainstem region (index 7) in atlas..."
-    fslmaths "$harvard_subcortical" -thr 7 -uthr 7 -bin "${temp_dir}/test_brainstem.nii.gz"
+    fslmaths "$final_harvard_oxford_brainstem_mask" -thr 7 -uthr 7 -bin "${temp_dir}/test_brainstem.nii.gz"
     local brainstem_test_voxels=$(fslstats "${temp_dir}/test_brainstem.nii.gz" -V | awk '{print $1}')
     
     if [ "$brainstem_test_voxels" -lt 100 ]; then
@@ -314,6 +324,7 @@ extract_brainstem_harvard_oxford() {
         
         # Apply transforms to create registered moving image using centralized function
         local registered_moving="${validation_dir}/registered_moving_temp.nii.gz"
+        apply_transformation "$moving_image" "$fixed_image" "$registered_moving" "$transform_prefix" "Linear"
         if apply_transformation "$moving_image" "$fixed_image" "$registered_moving" "$transform_prefix" "Linear"; then
             log_message "✓ Successfully applied transform for validation using centralized function"
         else
@@ -344,68 +355,9 @@ extract_brainstem_harvard_oxford() {
                 fi
             else
                 log_formatted "WARNING" "Failed to compute true MI with MeasureImageSimilarity"
-            fi
-        else
-            log_formatted "WARNING" "MeasureImageSimilarity not available - computing MI with numpy alternative"
-            
-            # Fallback: compute with numpy histogram (256 bins) for QC
-            python3 -c "
-import numpy as np
-import nibabel as nib
-import sys
-from scipy.stats import entropy
-
-try:
-    # Load images
-    fixed = nib.load('$fixed_image').get_fdata().flatten()
-    moving = nib.load('$registered_moving').get_fdata().flatten()
-    
-    # Remove zero values and normalize
-    mask = (fixed != 0) & (moving != 0) & np.isfinite(fixed) & np.isfinite(moving)
-    fixed = fixed[mask]
-    moving = moving[mask]
-    
-    if len(fixed) < 1000:
-        print('Insufficient non-zero voxels for MI calculation')
-        sys.exit(1)
-    
-    # Compute 2D histogram with 256 bins
-    hist_2d, _, _ = np.histogram2d(fixed, moving, bins=256)
-    
-    # Normalize to get probabilities
-    hist_2d = hist_2d / np.sum(hist_2d)
-    
-    # Compute marginal distributions
-    px = np.sum(hist_2d, axis=1)
-    py = np.sum(hist_2d, axis=0)
-    
-    # Compute mutual information
-    # MI = sum(p(x,y) * log(p(x,y) / (p(x) * p(y))))
-    mi = 0.0
-    for i in range(256):
-        for j in range(256):
-            if hist_2d[i,j] > 0 and px[i] > 0 and py[j] > 0:
-                mi += hist_2d[i,j] * np.log2(hist_2d[i,j] / (px[i] * py[j]))
-    
-    print(f'True MI (numpy histogram, 256 bins): {mi:.6f}')
-    
-except Exception as e:
-    print(f'MI calculation failed: {e}')
-    sys.exit(1)
-" > "${validation_dir}/numpy_mi_result.txt" 2>&1
-            
-            if [ $? -eq 0 ]; then
-                local numpy_mi=$(grep "True MI" "${validation_dir}/numpy_mi_result.txt" | awk '{print $NF}')
-                if [ -n "$numpy_mi" ]; then
-                    log_formatted "SUCCESS" "Numpy-computed True MI: $numpy_mi"
-                else
-                    log_formatted "WARNING" "Numpy MI calculation produced no result"
-                fi
-            else
-                log_formatted "WARNING" "Numpy MI calculation failed"
+                return 1
             fi
         fi
-        
         # Clean up temporary file
         rm -f "$registered_moving"
         return 0
@@ -428,6 +380,30 @@ except Exception as e:
     log_message "Subject T1 orientation: $input_orient"
     log_message "MNI template orientation: $mni_orient"
     log_message "Atlas orientation: $atlas_orient"
+    
+    # ===== HARVARD-OXFORD ATLAS ORIENTATION CORRECTION =========================
+    # Ensure atlas orientation matches MNI before registration.
+    local atlas_corrected="$harvard_subcortical"
+    if [ "$atlas_orient" != "$mni_orient" ] && \
+       [ "$atlas_orient" != "UNKNOWN" ] && [ "$mni_orient" != "UNKNOWN" ]; then
+        log_formatted "INFO" "Correcting Harvard-Oxford atlas orientation ($atlas_orient → $mni_orient)"
+        atlas_corrected="${temp_dir}/harvard_oxford_orient_corr.nii.gz"
+        if [ "$atlas_orient" = "NEUROLOGICAL" ] && [ "$mni_orient" = "RADIOLOGICAL" ]; then
+            fslswapdim "$harvard_subcortical" -x y z "$atlas_corrected"
+            fslorient -forceradiological "$atlas_corrected"
+        elif [ "$atlas_orient" = "RADIOLOGICAL" ] && [ "$mni_orient" = "NEUROLOGICAL" ]; then
+            fslswapdim "$harvard_subcortical" -x y z "$atlas_corrected"
+            fslorient -forceneurological "$atlas_corrected"
+        else
+            log_formatted "WARNING" "Unsupported atlas-orientation correction: $atlas_orient → $mni_orient; copying unchanged"
+            cp "$harvard_subcortical" "$atlas_corrected"
+        fi
+        # Sanity-check after correction
+        local atlas_corr_orient=$(fslorient -getorient "$atlas_corrected" 2>/dev/null || echo "UNKNOWN")
+        log_message "Atlas corrected orientation: $atlas_corr_orient (file: $(basename "$atlas_corrected"))"
+    else
+        log_message "Atlas orientation already matches MNI – no correction needed"
+    fi
     
     # CRITICAL FIX: Handle orientation mismatch
     local orientation_corrected_input="$input_file"
@@ -585,7 +561,7 @@ except Exception as e:
     log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
     
     # Use centralized apply_transformation function for consistent SyN transform handling
-    if apply_transformation "$harvard_subcortical" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "GenericLabel"; then
+    if apply_transformation "$atlas_corrected" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "GenericLabel"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -671,128 +647,127 @@ except Exception as e:
         if command -v Atropos &> /dev/null && [ "$segmentation_successful" = "false" ]; then
             log_message "Using Atropos for tissue segmentation..."
             
-            # Use existing brain extraction system
+            # Use already extracted brain files from brain extraction step
             local input_basename=$(basename "$input_image" .nii.gz)
             local brain_extracted="${RESULTS_DIR}/brain_extraction/${input_basename}_brain.nii.gz"
             local brain_mask="${RESULTS_DIR}/brain_extraction/${input_basename}_brain_mask.nii.gz"
             
-            # Ensure brain extraction directory exists
-            mkdir -p "${RESULTS_DIR}/brain_extraction"
-            
-            # Simple brain extraction using bet with conservative parameters
-            log_message "Running brain extraction: bet $input_image $brain_extracted -m -n -f 0.3"
-            if bet "$input_image" "$brain_extracted" -m -n -f 0.3 2>/dev/null; then
+            # Check if brain extraction files exist (should have been created earlier in pipeline)
+            if [ ! -f "$brain_extracted" ] || [ ! -f "$brain_mask" ]; then
+                log_message "Exact basename match not found, searching for available brain extraction files..."
                 
-                # Check both outputs were created
-                if [ ! -f "$brain_extracted" ]; then
-                    log_formatted "ERROR" "Brain extraction failed - brain volume not created: $brain_extracted"
-                    log_message "Attempting to create brain volume from input and mask..."
-                    # Create brain volume manually if bet didn't create it
-                    if [ -f "$brain_mask" ]; then
-                        fslmaths "$input_image" -mas "$brain_mask" "$brain_extracted" 2>/dev/null
-                    fi
-                elif [ ! -f "$brain_mask" ]; then
-                    log_formatted "ERROR" "Brain extraction failed - brain mask not created: $brain_mask"
+                # Find available brain extraction files
+                local available_brain_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain.nii.gz" 2>/dev/null))
+                local available_mask_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain_mask.nii.gz" 2>/dev/null))
+                
+                if [ ${#available_brain_files[@]} -gt 0 ] && [ ${#available_mask_files[@]} -gt 0 ]; then
+                    # Use the first available brain extraction files
+                    brain_extracted="${available_brain_files[0]}"
+                    brain_mask="${available_mask_files[0]}"
+                    log_message "Using available brain extraction files:"
+                    log_message "  Brain: $(basename "$brain_extracted")"
+                    log_message "  Mask: $(basename "$brain_mask")"
                 else
-                    log_message "Brain extraction outputs created successfully"
+                    log_formatted "ERROR" "Brain extraction files not found - brain extraction should have been completed earlier in pipeline"
+                    log_formatted "ERROR" "Searched in: ${RESULTS_DIR}/brain_extraction/"
+                    log_formatted "ERROR" "Segmentation module cannot proceed without brain extraction"
+                    cp "$initial_mask" "$output_refined_mask"
+                    return 0
+                fi
+            fi
+            
+            # Validate brain extraction was successful
+            local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}' 2>/dev/null || echo "0")
+            log_message "Using existing brain extraction: $brain_voxels voxels in mask"
+            
+            if [ "$brain_voxels" -gt 100 ]; then
+                # Try 3-class segmentation first with comprehensive error handling
+                log_message "Trying Atropos 3-class segmentation..."
+                local atropos_output="${temp_refinement_dir}/atropos_3class.log"
+                if Atropos -d 3 \
+                    -a "$brain_extracted" \
+                    -x "$brain_mask" \
+                    -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                    -c "[3,0.0001]" \
+                    -m "[0.3,1x1x1]" \
+                    -i "KMeans[3]" \
+                    -k Gaussian >"$atropos_output" 2>&1; then
+                    
+                    if [ -f "$tissue_labels" ]; then
+                        log_message "✓ Atropos 3-class segmentation successful"
+                        segmentation_successful=true
+                    fi
+                else
+                    log_message "Atropos 3-class failed: $(tail -n 2 "$atropos_output" 2>/dev/null | head -n 1)"
                 fi
                 
-                # Validate brain extraction was successful
-                if [ -f "$brain_mask" ]; then
-                    local brain_voxels=$(fslstats "$brain_mask" -V | awk '{print $1}' 2>/dev/null || echo "0")
-                    log_message "Brain extraction: $brain_voxels voxels in mask"
-                    if [ "$brain_voxels" -gt 100 ]; then
-                    
-                    # Try 3-class segmentation first with comprehensive error handling
-                    log_message "Trying Atropos 3-class segmentation..."
-                    local atropos_output="${temp_refinement_dir}/atropos_3class.log"
+                # Fallback to 2-class if 3-class failed
+                if [ "$segmentation_successful" = "false" ]; then
+                    log_message "Trying Atropos 2-class segmentation..."
+                    local atropos_output2="${temp_refinement_dir}/atropos_2class.log"
                     if Atropos -d 3 \
                         -a "$brain_extracted" \
                         -x "$brain_mask" \
                         -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
                         -c "[3,0.0001]" \
                         -m "[0.3,1x1x1]" \
-                        -i "KMeans[3]" \
-                        -k Gaussian >"$atropos_output" 2>&1; then
+                        -i "KMeans[2]" \
+                        -k Gaussian >"$atropos_output2" 2>&1; then
                         
                         if [ -f "$tissue_labels" ]; then
-                            log_message "✓ Atropos 3-class segmentation successful"
+                            log_message "✓ Atropos 2-class segmentation successful"
                             segmentation_successful=true
                         fi
                     else
-                        log_message "Atropos 3-class failed: $(tail -n 2 "$atropos_output" 2>/dev/null | head -n 1)"
+                        log_message "Atropos 2-class failed: $(tail -n 2 "$atropos_output2" 2>/dev/null | head -n 1)"
                     fi
-                    
-                    # Fallback to 2-class if 3-class failed
-                    if [ "$segmentation_successful" = "false" ]; then
-                        log_message "Trying Atropos 2-class segmentation..."
-                        local atropos_output2="${temp_refinement_dir}/atropos_2class.log"
-                        if Atropos -d 3 \
-                            -a "$brain_extracted" \
-                            -x "$brain_mask" \
-                            -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
-                            -c "[3,0.0001]" \
-                            -m "[0.3,1x1x1]" \
-                            -i "KMeans[2]" \
-                            -k Gaussian >"$atropos_output2" 2>&1; then
-                            
-                            if [ -f "$tissue_labels" ]; then
-                                log_message "✓ Atropos 2-class segmentation successful"
-                                segmentation_successful=true
-                            fi
-                        else
-                            log_message "Atropos 2-class failed: $(tail -n 2 "$atropos_output2" 2>/dev/null | head -n 1)"
+                fi
+                
+                # Fallback to Otsu initialization if KMeans failed
+                if [ "$segmentation_successful" = "false" ]; then
+                    log_message "Trying Atropos with Otsu initialization..."
+                    local atropos_output3="${temp_refinement_dir}/atropos_otsu.log"
+                    if Atropos -d 3 \
+                        -a "$brain_extracted" \
+                        -x "$brain_mask" \
+                        -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                        -c "[3,0.0001]" \
+                        -m "[0.3,1x1x1]" \
+                        -i "Otsu[2]" \
+                        -k Gaussian >"$atropos_output3" 2>&1; then
+                        
+                        if [ -f "$tissue_labels" ]; then
+                            log_message "✓ Atropos Otsu segmentation successful"
+                            segmentation_successful=true
                         fi
+                    else
+                        log_message "Atropos Otsu failed: $(tail -n 2 "$atropos_output3" 2>/dev/null | head -n 1)"
                     fi
-                    
-                    # Fallback to Otsu initialization if KMeans failed
-                    if [ "$segmentation_successful" = "false" ]; then
-                        log_message "Trying Atropos with Otsu initialization..."
-                        local atropos_output3="${temp_refinement_dir}/atropos_otsu.log"
-                        if Atropos -d 3 \
-                            -a "$brain_extracted" \
-                            -x "$brain_mask" \
-                            -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
-                            -c "[3,0.0001]" \
-                            -m "[0.3,1x1x1]" \
-                            -i "Otsu[2]" \
-                            -k Gaussian >"$atropos_output3" 2>&1; then
-                            
-                            if [ -f "$tissue_labels" ]; then
-                                log_message "✓ Atropos Otsu segmentation successful"
-                                segmentation_successful=true
-                            fi
-                        else
-                            log_message "Atropos Otsu failed: $(tail -n 2 "$atropos_output3" 2>/dev/null | head -n 1)"
+                fi
+                
+                # Final Atropos fallback: Random initialization with more relaxed parameters
+                if [ "$segmentation_successful" = "false" ]; then
+                    log_message "Trying Atropos with Random initialization (final fallback)..."
+                    local atropos_output4="${temp_refinement_dir}/atropos_random.log"
+                    if Atropos -d 3 \
+                        -a "$brain_extracted" \
+                        -x "$brain_mask" \
+                        -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
+                        -c "[5,0.001]" \
+                        -m "[0.1,1x1x1]" \
+                        -i "Random[2]" \
+                        -k Gaussian >"$atropos_output4" 2>&1; then
+                        
+                        if [ -f "$tissue_labels" ]; then
+                            log_message "✓ Atropos Random segmentation successful"
+                            segmentation_successful=true
                         fi
+                    else
+                        log_message "Atropos Random failed: $(tail -n 2 "$atropos_output4" 2>/dev/null | head -n 1)"
                     fi
-                    
-                    # Final Atropos fallback: Random initialization with more relaxed parameters
-                    if [ "$segmentation_successful" = "false" ]; then
-                        log_message "Trying Atropos with Random initialization (final fallback)..."
-                        local atropos_output4="${temp_refinement_dir}/atropos_random.log"
-                        if Atropos -d 3 \
-                            -a "$brain_extracted" \
-                            -x "$brain_mask" \
-                            -o "[$tissue_labels,${temp_refinement_dir}/tissue_prob_%02d.nii.gz]" \
-                            -c "[5,0.001]" \
-                            -m "[0.1,1x1x1]" \
-                            -i "Random[2]" \
-                            -k Gaussian >"$atropos_output4" 2>&1; then
-                            
-                            if [ -f "$tissue_labels" ]; then
-                                log_message "✓ Atropos Random segmentation successful"
-                                segmentation_successful=true
-                            fi
-                        else
-                            log_message "Atropos Random failed: $(tail -n 2 "$atropos_output4" 2>/dev/null | head -n 1)"
-                        fi
-                    fi
-                else
-                    log_formatted "WARNING" "Brain extraction failed (only $brain_voxels voxels), skipping Atropos"
                 fi
             else
-                log_formatted "WARNING" "Brain extraction command failed, skipping Atropos"
+                log_formatted "WARNING" "Brain extraction has insufficient voxels ($brain_voxels), skipping Atropos"
             fi
         fi
         
@@ -828,18 +803,35 @@ except Exception as e:
                 fi
             fi
             
-            # Additional FAST fallback: use brain extracted image if available
-            if [ "$segmentation_successful" = "false" ] && [ -f "$brain_extracted" ]; then
-                log_message "Trying FAST on brain-extracted image..."
-                local fast_output3="${temp_refinement_dir}/fast_brain.log"
-                if fast -t 1 -n 2 -o "${temp_refinement_dir}/fast_brain_" "$brain_extracted" >"$fast_output3" 2>&1; then
-                    if [ -f "${temp_refinement_dir}/fast_brain_seg.nii.gz" ]; then
-                        cp "${temp_refinement_dir}/fast_brain_seg.nii.gz" "$tissue_labels"
-                        log_message "✓ FAST brain-extracted segmentation successful"
-                        segmentation_successful=true
+            # Additional FAST fallback: use brain extracted image if available from earlier pipeline step
+            if [ "$segmentation_successful" = "false" ]; then
+                local input_basename=$(basename "$input_image" .nii.gz)
+                local brain_extracted="${RESULTS_DIR}/brain_extraction/${input_basename}_brain.nii.gz"
+                
+                # If exact match not found, search for any brain extraction files
+                if [ ! -f "$brain_extracted" ]; then
+                    log_message "Exact basename match not found, searching for available brain extraction files..."
+                    local available_brain_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain.nii.gz" 2>/dev/null))
+                    if [ ${#available_brain_files[@]} -gt 0 ]; then
+                        brain_extracted="${available_brain_files[0]}"
+                        log_message "Using available brain extraction file: $(basename "$brain_extracted")"
+                    fi
+                fi
+                
+                if [ -f "$brain_extracted" ]; then
+                    log_message "Trying FAST on brain-extracted image from earlier pipeline step..."
+                    local fast_output3="${temp_refinement_dir}/fast_brain.log"
+                    if fast -t 1 -n 2 -o "${temp_refinement_dir}/fast_brain_" "$brain_extracted" >"$fast_output3" 2>&1; then
+                        if [ -f "${temp_refinement_dir}/fast_brain_seg.nii.gz" ]; then
+                            cp "${temp_refinement_dir}/fast_brain_seg.nii.gz" "$tissue_labels"
+                            log_message "✓ FAST brain-extracted segmentation successful"
+                            segmentation_successful=true
+                        fi
+                    else
+                        log_message "FAST brain-extracted failed: $(tail -n 2 "$fast_output3" 2>/dev/null | head -n 1)"
                     fi
                 else
-                    log_message "FAST brain-extracted failed: $(tail -n 2 "$fast_output3" 2>/dev/null | head -n 1)"
+                    log_formatted "WARNING" "Brain extracted file not found from earlier pipeline step: $brain_extracted"
                 fi
             fi
         else
@@ -925,12 +917,16 @@ except Exception as e:
         fi
         
         tissue_voxels=$(fslstats "$tissue_region" -V | awk '{print $1}')
-        if [ "$tissue_voxels" -lt 100 ]; then
+        if [ "$tissue_voxels" -lt 10 ]; then
             log_formatted "WARNING" "Selected tissue region very small ($tissue_voxels voxels), using original mask"
             cp "$initial_mask" "$output_refined_mask"
             return 0
         fi
+        cp "$initial_mask" "$output_refined_mask"
+        return 0
         
+        
+        #This function is unreiable and needs refactoring or replacement by an ants / fsl based approach
         log_message "Selected tissue region: $tissue_voxels voxels"
         
         # Step 3: Find inferior colliculi z-coordinate for seeding
@@ -948,7 +944,7 @@ except Exception as e:
         
         # Create seed mask in lower brainstem region
         fslmaths "$tissue_region" -roi 0 -1 0 -1 0 "$lower_z_threshold" 0 -1 "$seed_region"
-        
+        fslmaths "$seed_region" -mul  $output_refined_mask $seed_region
         local seed_voxels=$(fslstats "$seed_region" -V | awk '{print $1}')
         if [ "$seed_voxels" -lt 10 ]; then
             log_formatted "WARNING" "Insufficient seed region, using broader seeding"
@@ -956,38 +952,42 @@ except Exception as e:
             cp "$tissue_region" "$seed_region"
         fi
         
-        # Step 5: Morphological geodesic active contour (5 iterations)
-        # This is simplified - proper geodesic active contour requires specialized implementation
-        # We'll use morphological operations as approximation
+        # Step 5: Morphological geodesic active contour using proper Python implementation
+        log_message "Running 10-iteration morphological geodesic active contour evolution..."
         
-        log_message "Running 5-iteration morphological geodesic active contour approximation..."
-        local current_mask="$seed_region"
-        local iteration_mask="${temp_refinement_dir}/iteration_mask.nii.gz"
+        # Path to the Python script
+        local mgac_script="$(dirname "${BASH_SOURCE[0]}")/morphological_geodesic_active_contour.py"
         
-        for i in {1..5}; do
-            log_message "  Iteration $i/5..."
-            
-            # Dilate current mask
-            fslmaths "$current_mask" -dilM "$iteration_mask"
-            
-            # Constrain to tissue region (geodesic constraint)
-            fslmaths "$iteration_mask" -mas "$tissue_region" "$iteration_mask"
-            
-            # Constrain to initial anatomical bounds (safety constraint)
-            local expanded_initial="${temp_refinement_dir}/expanded_initial.nii.gz"
-            fslmaths "$initial_mask" -dilM -dilM "$expanded_initial"
-            fslmaths "$iteration_mask" -mas "$expanded_initial" "$iteration_mask"
-            
-            # Update current mask
-            cp "$iteration_mask" "$current_mask"
-            
-            # Check convergence
-            local current_voxels=$(fslstats "$current_mask" -V | awk '{print $1}')
-            log_message "    Voxels after iteration $i: $current_voxels"
-        done
+        # Check if Python script exists
+        # Use proper morphological geodesic active contour
+        log_message "Invoking ${mgac_script}..."
         
-        # Final refinement: smooth and threshold
-        fslmaths "$current_mask" -s 1 -thr 0.5 -bin "$output_refined_mask"
+        # Parameters for geodesic active contour
+        local iterations=20
+        local sigma=2.0      # Edge detection smoothing
+        local k=1          # Edge sensitivity
+        local alpha=0.05      # Constant speed term
+        local beta=0       # Curvature term weight
+        local dt=0.1         # Time step
+        
+        # Run the Python implementation
+        if python3 "$mgac_script" \
+            "$input_image" \
+            "$seed_region" \
+            "$tissue_region" \
+            "$output_refined_mask" \
+            --iterations "$iterations" \
+            --sigma "$sigma" \
+            --k "$k" \
+            --alpha "$alpha" \
+            --beta "$beta" \
+            --dt "$dt"; then
+            
+            log_formatted "SUCCESS" "Morphological geodesic active contour evolution completed"
+        else
+            log_formatted "ERROR" "Morphological geodesic active contour failed, using fallback"
+            return 1
+        fi
         
         # Validate refined mask
         local refined_voxels=$(fslstats "$output_refined_mask" -V | awk '{print $1}')
@@ -996,11 +996,12 @@ except Exception as e:
         if [ "$refined_voxels" -eq 0 ]; then
             log_formatted "WARNING" "Refinement produced empty mask, using original"
             cp "$initial_mask" "$output_refined_mask"
+            refined_voxels=$original_voxels
             return 0
         fi
         
         # Calculate Dice coefficient improvement expectation
-        local dice_numerator=$(fslstats "$output_refined_mask" -mas "$initial_mask" -V | awk '{print $1}')
+        local dice_numerator=$(fslstats "$output_refined_mask" -mul "$initial_mask" -V | awk '{print $1}')
         local dice_denominator=$(echo "$refined_voxels + $original_voxels" | bc -l)
         local dice_approx=0
         
@@ -1168,9 +1169,6 @@ except Exception as e:
     
     # Convert output path to absolute if relative
     local abs_output_file="$output_file"
-    if [[ "$output_file" != /* ]]; then
-        abs_output_file="$(pwd)/$output_file"
-    fi
     
     log_message "Output will be written to: $abs_output_file"
     
@@ -1181,7 +1179,7 @@ except Exception as e:
     fi
     
     # Apply mask using fslmaths directly (safe_fslmaths is checking output as input)
-    fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" \
+    fslmaths "$input_file" -mul "${temp_dir}/brainstem_mask_subject.nii.gz" \
              "$abs_output_file"
     
     # Check if output was created
@@ -1210,7 +1208,7 @@ except Exception as e:
     local t1_intensity_file="${output_dir_path}/${base_name}_t1_intensity.nii.gz"
     
     log_message "Creating T1 intensity version for QA module..."
-    if fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" "$t1_intensity_file"; then
+    if fslmaths "$input_file" -mul "${temp_dir}/brainstem_mask_subject.nii.gz" "$t1_intensity_file"; then
         log_message "✓ Created T1 intensity version: $(basename "$t1_intensity_file")"
     else
         log_formatted "WARNING" "Failed to create T1 intensity version (non-critical)"
@@ -1218,7 +1216,7 @@ except Exception as e:
     
     # Apply segmentation to FLAIR AND create FLAIR-space versions for analysis compatibility
     log_message "Checking for FLAIR to apply segmentation and create analysis-compatible versions..."
-    local flair_registered="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
+    local flair_registered="${RESULTS_DIR}/registered/*_std_to_t1Warped.nii.gz"
     local flair_files_found=()
     local original_flair_files=()
     
@@ -1226,19 +1224,23 @@ except Exception as e:
     if [ -f "$flair_registered" ]; then
         flair_files_found+=("$flair_registered")
     fi
+
+    log_message "Found registered FLAIR files: ${flair_files_found[@]}"
     
     # Also look for other FLAIR registration patterns
     if [ -d "${RESULTS_DIR}/registered" ]; then
         while IFS= read -r -d '' flair_file; do
             flair_files_found+=("$flair_file")
-        done < <(find "${RESULTS_DIR}/registered" -name "*flair*Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -print0 2>/dev/null)
+        done < <(find "${RESULTS_DIR}/registered" -name "flair*Warped.nii.gz" -o -name "*FLAIR*Warped.nii.gz" -print0 2>/dev/null)
     fi
+
+    log_message "Found registered FLAIR files: ${flair_files_found[@]}"
     
     # Look for original FLAIR files for FLAIR-space analysis
     if [ -d "${RESULTS_DIR}/standardized" ]; then
-        while IFS= read -r -d '' orig_flair; do
+    while IFS= read -r -d '' orig_flair; do
             original_flair_files+=("$orig_flair")
-        done < <(find "${RESULTS_DIR}/standardized" \( -name "*FLAIR*_std.nii.gz" -o -name "*flair*_std.nii.gz" \) ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" -print0 2>/dev/null)
+        done < <(find "${RESULTS_DIR}/standardized" \( -name "FLAIR*_std.nii.gz"  \) ! -name "*_intensity*" ! -name "*_t1_intensity*" ! -name "*_flair_intensity*" -print0 2>/dev/null)
     fi
     
     # Apply segmentation to each registered FLAIR file found (T1 space)
@@ -1253,7 +1255,7 @@ except Exception as e:
             
             if [ "$flair_dims" = "$mask_dims" ]; then
                 log_message "Creating FLAIR intensity version from: $(basename "$flair_file")"
-                if fslmaths "$flair_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" "$flair_intensity_file"; then
+                if fslmaths "$flair_file" -mul "${temp_dir}/brainstem_mask_subject.nii.gz" "$flair_intensity_file"; then
                     log_message "✓ Created FLAIR intensity version: $(basename "$flair_intensity_file")"
                 else
                     log_formatted "WARNING" "Failed to create FLAIR intensity version (non-critical)"
@@ -1288,7 +1290,7 @@ except Exception as e:
                     # standardize_dimensions creates output in standardized dir, so we need to find and move it
                     local std_output="${RESULTS_DIR}/standardized/$(basename "${temp_dir}/brainstem_mask_subject.nii.gz" .nii.gz)_std.nii.gz"
                     if [ -f "$std_output" ]; then
-                        mv "$std_output" "$flair_space_mask"
+                        cp "$std_output" "$flair_space_mask"
                         log_message "✓ Moved resampled mask to: $(basename "$flair_space_mask")"
                     else
                         log_formatted "WARNING" "Standardized output not found, using direct flirt approach"
@@ -1314,17 +1316,17 @@ except Exception as e:
             
             if [ -f "$flair_space_mask" ]; then
                 # Apply mask to original FLAIR to create intensity version
-                if fslmaths "$orig_flair" -mas "$flair_space_mask" "$flair_space_intensity"; then
-                    log_message "✓ Created FLAIR-space intensity version: $(basename "$flair_space_intensity")"
+                if fslmaths "$orig_flair" -mul "$flair_space_mask" "$flair_space_intensity"; then
+                    log_message "✓ Created FLAIR-space intensity version: $flair_space_intensity"
                 else
-                    log_formatted "WARNING" "Failed to create FLAIR-space intensity version"
+                    log_formatted "WARNING" "Failed to create FLAIR-space intensity version $flair_space_intensity"
                 fi
                 
                 # Create analysis-compatible binary mask with proper naming
                 # Analysis expects to find *brainstem*.nii.gz and use it as a binary mask
                 local analysis_brainstem_mask="${flair_analysis_dir}/${base_name}_brainstem.nii.gz"
                 if cp "$flair_space_mask" "$analysis_brainstem_mask"; then
-                    log_message "✓ Created analysis-compatible brainstem mask: $(basename "$analysis_brainstem_mask")"
+                    log_message "✓ Created analysis-compatible brainstem mask: $analysis_brainstem_mask"
                 else
                     log_formatted "WARNING" "Failed to create analysis-compatible brainstem mask"
                 fi
@@ -1332,19 +1334,18 @@ except Exception as e:
                 # Also create legacy naming for backward compatibility
                 local legacy_brainstem="${flair_analysis_dir}/brainstem_location_check_intensity.nii.gz"
                 if cp "$flair_space_mask" "$legacy_brainstem"; then
-                    log_message "✓ Created legacy-compatible file: $(basename "$legacy_brainstem")"
+                    log_message "✓ Created legacy-compatible file: $legacy_brainstem"
                 else
-                    log_formatted "WARNING" "Failed to create legacy-compatible file"
+                    log_formatted "WARNING" "Failed to create legacy-compatible file: $legacy_brainstem"
                 fi
             fi
-            
             # Only process the first FLAIR file
             break
         fi
     done
     
     if [ ${#flair_files_found[@]} -eq 0 ] && [ ${#original_flair_files[@]} -eq 0 ]; then
-        log_message "No FLAIR files found - T1 intensity only"
+        log_formatted "WARNING" "No FLAIR files found - T1 intensity only"
     fi
     
     # Create QA-compatible naming convention
@@ -1512,7 +1513,7 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    if ! fslmaths "$flair_in_t1" -mas "$t1_mask" "${temp_dir}/flair_brainstem.nii.gz"; then
+    if ! fslmaths "$flair_in_t1" -mul "$t1_mask" "${temp_dir}/flair_brainstem.nii.gz"; then
         cleanup_and_fail 1 "Failed to extract FLAIR intensities - fslmaths operation failed"
         return 1
     fi
@@ -1655,7 +1656,7 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    if ! fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
+    if ! fslmaths "$t1_file" -mul "${output_prefix}_brainstem_mask.nii.gz" \
                   "${output_prefix}_brainstem.nii.gz"; then
         cleanup_and_fail 1 "Failed to create final T1-masked segmentation output"
         return 1
@@ -1672,7 +1673,7 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    if ! fslmaths "$flair_in_t1" -mas "${output_prefix}_brainstem_mask.nii.gz" \
+    if ! fslmaths "$flair_in_t1" -mul "${output_prefix}_brainstem_mask.nii.gz" \
                   "${output_prefix}_brainstem_flair_intensity.nii.gz"; then
         cleanup_and_fail 1 "Failed to create FLAIR intensity segmentation output"
         return 1
@@ -1680,7 +1681,7 @@ extract_brainstem_with_flair() {
     
     # Create T1 intensity version for QA module compatibility
     log_message "Creating T1 intensity version for QA module..."
-    if ! fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
+    if ! fslmaths "$t1_file" -mul "${output_prefix}_brainstem_mask.nii.gz" \
                   "${output_prefix}_brainstem_t1_intensity.nii.gz"; then
         cleanup_and_fail 1 "Failed to create T1 intensity segmentation output"
         return 1
@@ -1869,7 +1870,7 @@ extract_brainstem_final() {
             if extract_brainstem_with_flair "$input_file" "$flair_file" "$enhanced_prefix"; then
                 # Use enhanced version as primary output
                 [ -f "${enhanced_prefix}_brainstem.nii.gz" ] && \
-                    mv "${enhanced_prefix}_brainstem.nii.gz" "$harvard_output"
+                    cp "${enhanced_prefix}_brainstem.nii.gz" "$harvard_output"
                 log_formatted "SUCCESS" "FLAIR-enhanced segmentation completed"
             else
                 log_formatted "ERROR" "FLAIR enhancement failed with critical data quality issues"
@@ -2055,23 +2056,11 @@ map_segmentation_files() {
             local clean_name=$(echo "$basename" | sed -E 's/_(harvard|juelich|t1based|enhanced)//g')
             if [ "$basename" != "$clean_name" ]; then
                 log_message "Renaming $basename to $clean_name"
-                mv "$file" "${brainstem_dir}/${clean_name}"
+                cp  "$file" "${brainstem_dir}/${clean_name}"
             fi
         fi
     done
-    
-    # Same for pons directory
-    for file in "${pons_dir}"/*_pons*.nii.gz; do
-        if [ -f "$file" ]; then
-            local basename=$(basename "$file")
-            local clean_name=$(echo "$basename" | sed -E 's/_(harvard|juelich|t1based|enhanced)//g')
-            if [ "$basename" != "$clean_name" ]; then
-                log_message "Renaming $basename to $clean_name"
-                mv "$file" "${pons_dir}/${clean_name}"
-            fi
-        fi
-    done
-    
+        
     return 0
 }
 
@@ -2102,15 +2091,6 @@ validate_segmentation_outputs() {
         log_formatted "ERROR" "Brainstem segmentation file not found: $brainstem_file"
         validation_passed=false
     fi
-    
-    # Check pons
-    if [ -f "$pons_file" ]; then
-        local pons_voxels=$(fslstats "$pons_file" -V | awk '{print $1}')
-        log_message "Pons: $pons_voxels voxels"
-    else
-        log_formatted "WARNING" "Pons segmentation file not found: $pons_file"
-    fi
-    
     # Create validation report
     local validation_dir="${RESULTS_DIR}/validation/segmentation"
     mkdir -p "$validation_dir"
@@ -2123,7 +2103,6 @@ validate_segmentation_outputs() {
         echo ""
         echo "Files created:"
         ls -la "${RESULTS_DIR}/segmentation/brainstem/${basename}"*.nii.gz 2>/dev/null || echo "No brainstem files"
-        ls -la "${RESULTS_DIR}/segmentation/pons/${basename}"*.nii.gz 2>/dev/null || echo "No pons files"
         echo ""
         echo "Validation: $([ "$validation_passed" = "true" ] && echo "PASSED" || echo "WARNINGS")"
     } > "${validation_dir}/segmentation_validation.txt"
@@ -2149,7 +2128,6 @@ create_combined_segmentation_map() {
     
     # Define label values
     local BRAINSTEM_LABEL=1
-    local PONS_LABEL=2
     
     # Get reference file for dimensions
     local ref_file="${brainstem_dir}/${input_basename}_brainstem_mask.nii.gz"
@@ -2168,35 +2146,16 @@ create_combined_segmentation_map() {
         fslmaths "$brainstem_mask" -mul $BRAINSTEM_LABEL -add "$combined_map" "$combined_map"
         log_message "Added brainstem to combined map (label=$BRAINSTEM_LABEL)"
     fi
-    
-    # Add pons (label 2) - overwrites brainstem voxels where pons exists
-    local pons_mask="${pons_dir}/${input_basename}_pons.nii.gz"
-    if [ -f "$pons_mask" ]; then
-        local pons_voxels=$(fslstats "$pons_mask" -V | awk '{print $1}')
-        if [ "$pons_voxels" -gt 0 ]; then
-            # Create binary mask first
-            fslmaths "$pons_mask" -bin -mul $PONS_LABEL "${combined_dir}/temp_pons.nii.gz"
-            # Use maximum to overwrite brainstem voxels
-            fslmaths "$combined_map" -max "${combined_dir}/temp_pons.nii.gz" "$combined_map"
-            rm "${combined_dir}/temp_pons.nii.gz"
-            log_message "Added pons to combined map (label=$PONS_LABEL)"
-        fi
-    fi
-    
-    # Note: Dorsal/ventral pons subdivisions not available - only combined pons segmentation
-    
+        
     # Create label description file
     {
         echo "# Brainstem Segmentation Label Map"
         echo "# Label values:"
         echo "0 = Background"
         echo "1 = Brainstem (Harvard-Oxford)"
-        echo "2 = Pons"
-        echo "3 = Dorsal Pons"
-        echo "4 = Ventral Pons"
     } > "${combined_dir}/${input_basename}_segmentation_labels.txt"
     
-    log_message "Combined segmentation map created: $combined_map"
+    log_message "Combined segmentation map created: $combined_map , labelled at ${combined_dir}/${input_basename}_segmentation_labels.txt"
     return 0
 }
 
@@ -2230,9 +2189,6 @@ generate_segmentation_report() {
     if [ -f "$brainstem_mask" ]; then
         brainstem_voxels=$(fslstats "$brainstem_mask" -V | awk '{print $1}')
     fi
-    if [ -f "$pons_file" ]; then
-        pons_voxels=$(fslstats "$pons_file" -V | awk '{print $1}')
-    fi
     
     # Generate report
     cat > "$report_file" <<EOF
@@ -2248,20 +2204,18 @@ Method: Harvard-Oxford (Gold Standard) + Talairach (Detailed Subdivision)
 Fallback: Juelich atlas (if Talairach unavailable)
 Space: T1 Native Space
 Brainstem voxels: $brainstem_voxels
-Pons voxels: $pons_voxels
 
 FILES GENERATED
 --------------
 1. Binary Masks (for ROI analysis):
    - Brainstem mask: ${brainstem_mask}
-   - Pons mask: ${pons_file}
 
 2. Intensity Maps (T1 values within masks):
    - Brainstem intensities: ${brainstem_intensity}
 
 3. Combined Label Map:
    - All structures: ${combined_labels}
-   - Labels: 0=Background, 1=Brainstem, 2=Pons, 3=Dorsal Pons, 4=Ventral Pons
+   - Labels: 0=Background, 1=Brainstem
 
 VISUALIZATION INSTRUCTIONS
 -------------------------
@@ -2269,17 +2223,11 @@ To visualize the segmentations overlaid on your images:
 
 1. View segmentations on T1:
    fsleyes ${t1_file} \\
-           ${brainstem_mask} -cm red -a 50 \\
-           ${pons_file} -cm yellow -a 50
+           ${brainstem_mask} -cm red -a 50
 
 2. View segmentations on registered FLAIR:
-EOF
-
-    if [ -f "$flair_registered" ]; then
-        cat >> "$report_file" <<EOF
    fsleyes ${flair_registered} \\
-           ${brainstem_mask} -cm red -a 50 \\
-           ${pons_file} -cm yellow -a 50
+           ${brainstem_mask} -cm red -a 50
 
 3. View combined label map:
    fsleyes ${t1_file} \\
@@ -2289,9 +2237,11 @@ EOF
    fsleyes ${t1_file} \\
            ${brainstem_intensity} -cm hot -a 70
 EOF
-    else
+    if [ -f "$flair_registered" ]; then
         cat >> "$report_file" <<EOF
-   [FLAIR not yet registered - run registration step first]
+5. View segmentations on original FLAIR:
+   freeview ${flair_file} \\
+           ${brainstem_mask} -cm red -a 50
 EOF
     fi
     
@@ -2311,7 +2261,6 @@ NOTES
 -----
 - Harvard-Oxford provides reliable brainstem boundaries
 - Talairach subdivisions are validated to be within brainstem boundaries
-- Juelich used as fallback if Talairach unavailable
 - Empty files (0 voxels) indicate structure not available from atlas
 - Use binary masks for ROI definition
 - Use intensity maps for signal analysis
@@ -2328,8 +2277,7 @@ EOF
     echo ""
     echo "  # View on T1:"
     echo "  fsleyes ${t1_file} \\"
-    echo "          ${brainstem_mask} -cm red -a 50 \\"
-    echo "          ${pons_file} -cm yellow -a 50"
+    echo "          ${brainstem_mask} -cm red -a 50
     echo ""
     
     if [ -f "$flair_registered" ]; then
@@ -2368,8 +2316,6 @@ extract_brainstem_ants() {
     log_formatted "WARNING" "extract_brainstem_ants is deprecated. Using Harvard-Oxford in T1 space."
     extract_brainstem_harvard_oxford "$@"
 }
-
-# Note: divide_pons function removed - dorsal/ventral pons subdivisions not available
 
 # Simple validation function that doesn't block pipeline
 validate_segmentation() {
@@ -2413,13 +2359,33 @@ segment_tissues() {
     # Get basename for output files
     basename=$(basename "$input_file" .nii.gz)
     
-    # Step 1: Brain extraction (if not already done)
+    # Step 1: Use existing brain extraction files (should have been done earlier in pipeline)
+    # Try exact basename match first
     local brain_mask="${RESULTS_DIR}/brain_extraction/${basename}_brain_mask.nii.gz"
     local brain_file="${RESULTS_DIR}/brain_extraction/${basename}_brain.nii.gz"
     
-    if [ ! -f "$brain_mask" ]; then
-        log_message "Brain mask not found, performing brain extraction..."
-        extract_brain "$input_file"
+    # If exact match not found, search for any brain extraction files
+    if [ ! -f "$brain_mask" ] || [ ! -f "$brain_file" ]; then
+        log_message "Exact basename match not found, searching for available brain extraction files..."
+        
+        # Find available brain extraction files
+        local available_brain_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain.nii.gz" 2>/dev/null))
+        local available_mask_files=($(find "${RESULTS_DIR}/brain_extraction" -name "*_brain_mask.nii.gz" 2>/dev/null))
+        
+        if [ ${#available_brain_files[@]} -gt 0 ] && [ ${#available_mask_files[@]} -gt 0 ]; then
+            # Use the first available brain extraction files
+            brain_file="${available_brain_files[0]}"
+            brain_mask="${available_mask_files[0]}"
+            log_message "Using available brain extraction files:"
+            log_message "  Brain: $(basename "$brain_file")"
+            log_message "  Mask: $(basename "$brain_mask")"
+        else
+            log_formatted "ERROR" "Brain extraction files not found - brain extraction should have been completed earlier in pipeline"
+            log_formatted "ERROR" "Searched in: ${RESULTS_DIR}/brain_extraction/"
+            log_formatted "ERROR" "Available files:"
+            ls -la "${RESULTS_DIR}/brain_extraction/" 2>/dev/null || echo "Directory not accessible"
+            return 1
+        fi
     fi
     
     # Step 2: Tissue segmentation using Atropos
@@ -2465,7 +2431,6 @@ export -f generate_segmentation_report
 export -f extract_brainstem_standardspace
 export -f extract_brainstem_talairach
 export -f extract_brainstem_ants
-# export -f divide_pons  # Removed - dorsal/ventral pons subdivisions not available
 export -f validate_segmentation
 export -f segment_tissues
 export -f discover_and_map_segmentation_files
