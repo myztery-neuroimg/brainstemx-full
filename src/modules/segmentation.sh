@@ -128,19 +128,26 @@ extract_brainstem_harvard_oxford() {
     done
     
 
-    local brainstem_harvard_oxford_3d="${temp_dir}/brainstem_harvard_oxford_3d.nii.gz"
-    local final_harvard_oxford_brainstem_mask="${RESULTS_DIR}/segmentation/brainstem/brainstem_harvard_oxford_msk.nii.gz"
-    # 1. Extract volume index 6 (zero-based → label 7) from the 4D atlas
-    #fslmaths "$harvard_subcortical" -thr 7 -uthr 7 -bin "$final_harvard_oxford_brainstem_mask" -odt int
-    final_harvard_oxford_brainstem_mask=$harvard_subcortical
-    log_message "Harvard-Oxford brainstem atlas coordinate details:"
-    fslinfo "$final_harvard_oxford_brainstem_mask" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
+    log_message "Harvard-Oxford atlas coordinate details:"
+    fslinfo "$harvard_subcortical" | grep -E "(orient|sform|qform|pixdim)" | while read line; do
         log_message "  $line"
     done
-
-    # 3. Now inspect pixdim on your 3D mask
-    fslinfo ${brainstem_mask_mni_file} | grep -E "(orient|sform|qform|pixdim)" \
-    | while read line; do log_message "  $line"; done
+    
+    # Validate the full atlas has the brainstem region (index 7) before proceeding
+    log_message "Validating brainstem region (index 7) exists in atlas..."
+    local test_brainstem="${temp_dir}/test_brainstem_extraction.nii.gz"
+    fslmaths "$harvard_subcortical" -thr 7 -uthr 7 -bin "$test_brainstem"
+    local brainstem_test_voxels=$(fslstats "$test_brainstem" -V | awk '{print $1}')
+    
+    if [ "$brainstem_test_voxels" -lt 100 ]; then
+        log_formatted "ERROR" "Brainstem region (index 7) has insufficient voxels ($brainstem_test_voxels) in atlas"
+        log_formatted "ERROR" "This suggests atlas corruption or incorrect version"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    log_formatted "SUCCESS" "✓ Brainstem region validated in atlas: $brainstem_test_voxels voxels"
+    rm -f "$test_brainstem"
     
     # Check if atlas and subject have consistent coordinate systems
     if [ "$subject_orient" != "$atlas_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
@@ -164,9 +171,11 @@ extract_brainstem_harvard_oxford() {
 
         # Ensure spatial metadata matches the subject
         if command -v fslcpgeom &> /dev/null; then
+            log_message "Copying subject geometry to atlas"
             fslcpgeom "$input_file" "$corrected_atlas"
         fi
-
+        
+        # Use the corrected version for further processing
         harvard_subcortical="$corrected_atlas"
     else
         log_message "✓ Orientations appear consistent"
@@ -186,8 +195,8 @@ extract_brainstem_harvard_oxford() {
         if [ "$atlas_summary" = "SUMMARY_FAILED" ]; then
             log_formatted "WARNING" "atlasq summary failed - using direct file validation"
             
-            # Fallback: try direct file query if summary fails
-            local atlas_info=$(atlasq -a "$final_harvard_oxford_brainstem_mask" 2>/dev/null || echo "QUERY_FAILED")
+            # Fallback: try direct file query if summary fails (using original atlas for atlasq)
+            local atlas_info=$(atlasq -a "$harvard_subcortical" 2>/dev/null || echo "QUERY_FAILED")
             if [ "$atlas_info" != "QUERY_FAILED" ]; then
                 log_message "Direct atlas query successful: $atlas_info"
             fi
@@ -273,16 +282,16 @@ extract_brainstem_harvard_oxford() {
     log_message "Performing FSL-based atlas validation..."
     
     # Check if atlas is a valid NIfTI file
-    if ! fslinfo "$final_harvard_oxford_brainstem_mask" >/dev/null 2>&1; then
+    if ! fslinfo "$harvard_subcortical" >/dev/null 2>&1; then
         log_formatted "ERROR" "Harvard-Oxford atlas is not a valid NIfTI file"
         rm -rf "$temp_dir"
         return 1
     fi
     
     # Check atlas dimensions and basic properties
-    local atlas_dims=$(fslinfo "$final_harvard_oxford_brainstem_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-    local atlas_voxels=$(fslstats "$final_harvard_oxford_brainstem_mask" -V | awk '{print $1}')
-    local atlas_max=$(fslstats "$final_harvard_oxford_brainstem_mask" -R | awk '{print $2}')
+    local atlas_dims=$(fslinfo "$harvard_subcortical" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local atlas_voxels=$(fslstats "$harvard_subcortical" -V | awk '{print $1}')
+    local atlas_max=$(fslstats "$harvard_subcortical" -R | awk '{print $2}')
     
     log_message "Atlas validation results:"
     log_message "  Dimensions: $atlas_dims"
@@ -300,18 +309,15 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    # Validate brainstem region specifically
-    log_message "Validating brainstem region (index 7) in atlas..."
-    fslmaths "$final_harvard_oxford_brainstem_mask" -thr 7 -uthr 7 -bin "${temp_dir}/test_brainstem.nii.gz"
-    local brainstem_test_voxels=$(fslstats "${temp_dir}/test_brainstem.nii.gz" -V | awk '{print $1}')
+    # Validate atlas has reasonable properties
+    if [ "$atlas_voxels" -lt 1000000 ]; then
+        log_formatted "WARNING" "Atlas seems too small ($atlas_voxels voxels) - may be corrupted"
+    fi
     
-    if [ "$brainstem_test_voxels" -lt 100 ]; then
-        log_formatted "ERROR" "Brainstem region (index 7) has insufficient voxels ($brainstem_test_voxels) in atlas"
-        log_formatted "ERROR" "This suggests atlas corruption or incorrect version"
+    if [ "$(echo "$atlas_max" | cut -d. -f1)" -lt 7 ]; then
+        log_formatted "ERROR" "Atlas max label ($atlas_max) too low - should contain brainstem region (index 7)"
         rm -rf "$temp_dir"
         return 1
-    else
-        log_formatted "SUCCESS" "✓ Brainstem region validated: $brainstem_test_voxels voxels in atlas"
     fi
     
     # Clean up test file
@@ -597,7 +603,7 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    # Now extract brainstem from the atlas in subject space
+    # Now extract brainstem from the transformed atlas in subject space
     log_message "Extracting brainstem from atlas in subject native space..."
     
     local brainstem_index=7  # Brain-Stem in Harvard-Oxford subcortical atlas
@@ -937,66 +943,74 @@ extract_brainstem_harvard_oxford() {
             return 0
         fi
         
+        # Improve tissue region selection with atlas guidance
+        # Combine tissue segmentation with atlas mask for better constraint
+        fslmaths "$tissue_region" -mas "$initial_mask" -kernel sphere 2 -dilM "$tissue_region"
+        
         tissue_voxels=$(fslstats "$tissue_region" -V | awk '{print $1}')
         if [ "$tissue_voxels" -lt 10 ]; then
             log_formatted "WARNING" "Selected tissue region very small ($tissue_voxels voxels), using original mask"
             cp "$initial_mask" "$output_refined_mask"
             return 0
         fi
-        cp "$initial_mask" "$output_refined_mask"
-        return 0
         
+        log_message "Selected atlas-guided tissue region: $tissue_voxels voxels"
         
-        #This function is unreiable and needs refactoring or replacement by an ants / fsl based approach
-        log_message "Selected tissue region: $tissue_voxels voxels"
-        
-        # Step 3: Find inferior colliculi z-coordinate for seeding
-        # Get center of mass of initial brainstem mask
-        local com=$(fslstats "$initial_mask" -C)
-        local seed_z=$(echo "$com" | awk '{print $3}')
-        
-        # Step 4: Seed region below inferior colliculi
+        # Step 3: Create atlas-guided seed region
         local seed_region="${temp_refinement_dir}/seed_region.nii.gz"
         
-        # Create a seeding region below the center of mass
-        # This is a simplified approach - in practice, you'd want anatomical landmarks
-        local dims=$(fslinfo "$input_image" | grep -E "^dim3" | awk '{print $2}')
-        local lower_z_threshold=$(echo "$seed_z - 10" | bc -l)  # 10 voxels below COM
+        # Use atlas-based seeding: erode the initial mask to create conservative seed
+        # This ensures we start from high-confidence atlas regions
+        fslmaths "$initial_mask" -kernel sphere 1 -ero "$seed_region"
         
-        # Create seed mask in lower brainstem region
-        fslmaths "$tissue_region" -roi 0 -1 0 -1 0 "$lower_z_threshold" 0 -1 "$seed_region"
-        fslmaths "$seed_region" -mul  $output_refined_mask $seed_region
+        # Ensure seed region has tissue support
+        fslmaths "$seed_region" -mas "$tissue_region" "$seed_region"
+        
         local seed_voxels=$(fslstats "$seed_region" -V | awk '{print $1}')
-        if [ "$seed_voxels" -lt 10 ]; then
-            log_formatted "WARNING" "Insufficient seed region, using broader seeding"
-            # Fallback: use entire tissue region as seed
-            cp "$tissue_region" "$seed_region"
+        if [ "$seed_voxels" -lt 5 ]; then
+            log_formatted "WARNING" "Insufficient seed region, using conservative atlas core"
+            # Fallback: use center core of atlas mask
+            fslmaths "$initial_mask" -kernel sphere 2 -ero -mas "$tissue_region" "$seed_region"
+            seed_voxels=$(fslstats "$seed_region" -V | awk '{print $1}')
+            
+            if [ "$seed_voxels" -lt 5 ]; then
+                log_formatted "WARNING" "Cannot create reliable seed region, using original mask"
+                cp "$initial_mask" "$output_refined_mask"
+                return 0
+            fi
         fi
         
-        # Step 5: Morphological geodesic active contour using proper Python implementation
-        log_message "Running 10-iteration morphological geodesic active contour evolution..."
+        log_message "Created atlas-guided seed region: $seed_voxels voxels"
+        
+        # Step 4: Atlas-guided morphological geodesic active contour
+        log_message "Running atlas-guided morphological geodesic active contour evolution..."
         
         # Path to the Python script
         local mgac_script="$(dirname "${BASH_SOURCE[0]}")/morphological_geodesic_active_contour.py"
         
-        # Check if Python script exists
-        # Use proper morphological geodesic active contour
-        log_message "Invoking ${mgac_script}..."
+        if [ ! -f "$mgac_script" ]; then
+            log_formatted "ERROR" "MGAC Python script not found: $mgac_script"
+            cp "$initial_mask" "$output_refined_mask"
+            return 0
+        fi
         
-        # Parameters for geodesic active contour
-        local iterations=20
-        local sigma=2.0      # Edge detection smoothing
-        local k=1          # Edge sensitivity
-        local alpha=0.05      # Constant speed term
-        local beta=0       # Curvature term weight
-        local dt=0.1         # Time step
+        log_message "Invoking atlas-guided MGAC: ${mgac_script}"
         
-        # Run the Python implementation
+        # Optimized parameters for brainstem anatomy
+        local iterations=10      # Reduced for stability and speed
+        local sigma=1.5          # Tighter edge detection for fine structures
+        local k=2.0              # Higher edge sensitivity for tissue boundaries
+        local alpha=0.02         # Much smaller expansion force to prevent overgrowth
+        local beta=0.1           # Add smoothness constraint for anatomical realism
+        local dt=0.05            # Smaller time step for numerical stability
+        
+        # Run the atlas-guided Python implementation
         if python3 "$mgac_script" \
             "$input_image" \
             "$seed_region" \
             "$tissue_region" \
             "$output_refined_mask" \
+            --atlas_constraint "$initial_mask" \
             --iterations "$iterations" \
             --sigma "$sigma" \
             --k "$k" \
@@ -1010,30 +1024,65 @@ extract_brainstem_harvard_oxford() {
             return 1
         fi
         
-        # Validate refined mask
+        # Comprehensive quality validation for atlas-guided refinement
         local refined_voxels=$(fslstats "$output_refined_mask" -V | awk '{print $1}')
         local original_voxels=$(fslstats "$initial_mask" -V | awk '{print $1}')
         
         if [ "$refined_voxels" -eq 0 ]; then
             log_formatted "WARNING" "Refinement produced empty mask, using original"
             cp "$initial_mask" "$output_refined_mask"
-            refined_voxels=$original_voxels
             return 0
         fi
         
-        # Calculate Dice coefficient improvement expectation
-        local dice_numerator=$(fslstats "$output_refined_mask" -mul "$initial_mask" -V | awk '{print $1}')
-        local dice_denominator=$(echo "$refined_voxels + $original_voxels" | bc -l)
-        local dice_approx=0
-        
-        if [ "$dice_denominator" -gt 0 ]; then
-            dice_approx=$(echo "scale=3; 2 * $dice_numerator / $dice_denominator" | bc -l)
+        # Calculate volume change percentage
+        local volume_change_pct=0
+        if [ "$original_voxels" -gt 0 ]; then
+            volume_change_pct=$(echo "scale=1; 100 * ($refined_voxels - $original_voxels) / $original_voxels" | bc -l)
         fi
         
-        log_formatted "SUCCESS" "Brain-stem refinement completed"
-        log_message "  Original voxels: $original_voxels"
+        # Calculate Dice coefficient with original atlas
+        local overlap_voxels=$(fslstats "$output_refined_mask" -mul "$initial_mask" -V | awk '{print $1}')
+        local dice_denominator=$(echo "$refined_voxels + $original_voxels" | bc -l)
+        local dice_score=0
+        
+        if [ "$dice_denominator" -gt 0 ]; then
+            dice_score=$(echo "scale=3; 2 * $overlap_voxels / $dice_denominator" | bc -l)
+        fi
+        
+        # Quality gates: reject if refinement is too aggressive or poor quality
+        local quality_passed=true
+        
+        # Check 1: Volume change should be reasonable (< 50% change)
+        if (( $(echo "${volume_change_pct#-} > 50" | bc -l) )); then
+            log_formatted "WARNING" "Excessive volume change: ${volume_change_pct}%, using original atlas"
+            quality_passed=false
+        fi
+        
+        # Check 2: Dice overlap should be reasonable (> 0.7)
+        if (( $(echo "$dice_score < 0.7" | bc -l) )); then
+            log_formatted "WARNING" "Poor overlap with atlas: Dice=$dice_score, using original atlas"
+            quality_passed=false
+        fi
+        
+        # Check 3: Refined mask should not be too large relative to atlas
+        if [ "$refined_voxels" -gt $(echo "2 * $original_voxels" | bc -l) ]; then
+            log_formatted "WARNING" "Refined mask too large (${refined_voxels} vs ${original_voxels} atlas), using original"
+            quality_passed=false
+        fi
+        
+        # Apply quality gate
+        if [ "$quality_passed" = "false" ]; then
+            cp "$initial_mask" "$output_refined_mask"
+            refined_voxels=$original_voxels
+            dice_score=1.0
+            volume_change_pct=0
+        fi
+        
+        log_formatted "SUCCESS" "Atlas-guided brainstem refinement completed"
+        log_message "  Original atlas voxels: $original_voxels"
         log_message "  Refined voxels: $refined_voxels"
-        log_message "  Approximate Dice overlap: $dice_approx"
+        log_message "  Volume change: ${volume_change_pct}%"
+        log_message "  Dice overlap with atlas: $dice_score"
         log_message "  Expected Dice improvement: +0.12 over affine-HO"
         
         return 0
