@@ -136,7 +136,28 @@ extract_brainstem_harvard_oxford() {
     if [ "$subject_orient" != "$atlas_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
         log_formatted "WARNING" "ORIENTATION MISMATCH DETECTED!"
         log_formatted "WARNING" "Subject: $subject_orient vs Harvard-Oxford: $atlas_orient"
-        log_formatted "WARNING" "This may cause misalignment - consider atlas orientation correction"
+        log_formatted "WARNING" "Attempting automatic atlas orientation correction..."
+
+        local corrected_atlas="${temp_dir}/harvard_oxford_oriented.nii.gz"
+        if [ "$atlas_orient" = "NEUROLOGICAL" ] && [ "$subject_orient" = "RADIOLOGICAL" ]; then
+            fslswapdim "$harvard_subcortical" -x y z "$corrected_atlas"
+            fslorient -forceradiological "$corrected_atlas"
+            log_message "✓ Converted atlas from NEUROLOGICAL to RADIOLOGICAL"
+        elif [ "$atlas_orient" = "RADIOLOGICAL" ] && [ "$subject_orient" = "NEUROLOGICAL" ]; then
+            fslswapdim "$harvard_subcortical" -x y z "$corrected_atlas"
+            fslorient -forceneurological "$corrected_atlas"
+            log_message "✓ Converted atlas from RADIOLOGICAL to NEUROLOGICAL"
+        else
+            log_formatted "WARNING" "Unsupported orientation conversion: $atlas_orient → $subject_orient"
+            cp "$harvard_subcortical" "$corrected_atlas"
+        fi
+
+        # Ensure spatial metadata matches the subject
+        if command -v fslcpgeom &> /dev/null; then
+            fslcpgeom "$input_file" "$corrected_atlas"
+        fi
+
+        harvard_subcortical="$corrected_atlas"
     else
         log_message "✓ Orientations appear consistent"
     fi
