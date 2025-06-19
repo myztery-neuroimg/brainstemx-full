@@ -2298,7 +2298,7 @@ EOF
     echo ""
     echo "  # View on T1:"
     echo "  fsleyes ${t1_file} \\"
-    echo "          ${brainstem_mask} -cm red -a 50
+    echo "          ${brainstem_mask} -cm red -a 50"
     echo ""
     
     if [ -f "$flair_registered" ]; then
