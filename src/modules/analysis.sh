@@ -631,7 +631,7 @@ apply_gaussian_mixture_thresholding() {
     local binary_mask_orient=$(fslorient -getorient "$binary_mask" 2>/dev/null || echo "UNKNOWN")
     log_message "ZScore image orientation: $zscore_image_orient"
     log_message "Binary mask orientation: $binary_mask_orient"
-    fslmaths "$zscore_final" -mul "$binary_mask" "$temp_masked"
+    fslmaths "$zscore_image" -mul "$binary_mask" "$temp_masked"
     
     # ENHANCED DEBUGGING: Check intermediate files before Python extraction
     local temp_stats=$(fslstats "$temp_masked" -V)
@@ -664,6 +664,7 @@ apply_gaussian_mixture_thresholding() {
                     log_message "PYTHON: $line"
                 done < "${temp_dir}/python_debug.log"
             fi
+        fi
     fi
     rm -f "$temp_masked"
     
@@ -680,17 +681,17 @@ apply_gaussian_mixture_thresholding() {
         log_message "GMM requires minimum 25 voxels, using enhanced statistical threshold instead"
         
         # Use enhanced statistical threshold based on region statistics
-        local region_stats=$(fslstats "$zscore_final" -k "$binary_mask" -M -S)
+        local region_stats=$(fslstats "$zscore_image" -k "$binary_mask" -M -S)
         local region_mean=$(echo "$region_stats" | awk '{print $1}')
         local region_std=$(echo "$region_stats" | awk '{print $2}')
         local enhanced_threshold=$(echo "$region_mean + 1.5 * $region_std" | bc -l)
         
         log_message "Using enhanced statistical threshold: $enhanced_threshold"
-        fslmaths "$zscore_final" -mas "$binary_mask" -thr "$enhanced_threshold" -bin "$output_mask"
+        fslmaths "$zscore_image" -mas "$binary_mask" -thr "$enhanced_threshold" -bin "$output_mask"
         rm -rf "$temp_dir"
         return 0
     fi
-    zscore_image="$zscore_final"
+    # zscore_image is already correctly set as the function parameter
     log_message "Analyzing $num_voxels $region_name voxels with GMM..."
     
     # Adjust GMM components based on available data
