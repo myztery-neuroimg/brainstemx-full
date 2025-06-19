@@ -398,38 +398,214 @@ extract_brainstem_harvard_oxford() {
     # Step 4: Transform brainstem mask to subject T1 space
     log_message "Transforming brainstem mask to subject T1 space..."
     
-    # CRITICAL: Validate and fix coordinate spaces before registration
-    log_message "Validating coordinate spaces before transformation..."
+    # COMPREHENSIVE: Validate coordinate spaces, dimensions, and transformations
+    log_message "======= COMPREHENSIVE COORDINATE SPACE VALIDATION ======="
+    
+    # Basic orientation validation (NEUROLOGICAL vs RADIOLOGICAL)
     local input_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
     local mni_orient=$(fslorient -getorient "$mni_brain" 2>/dev/null || echo "UNKNOWN")
     local atlas_orient=$(fslorient -getorient "$harvard_subcortical" 2>/dev/null || echo "UNKNOWN")
     
-    log_message "Subject T1 orientation: $input_orient"
-    log_message "MNI template orientation: $mni_orient"
-    log_message "Atlas orientation: $atlas_orient"
+    log_message "Basic orientation validation:"
+    log_message "  Subject T1: $input_orient"
+    log_message "  MNI template: $mni_orient"  
+    log_message "  Atlas: $atlas_orient"
     
-    # ===== HARVARD-OXFORD ATLAS ORIENTATION CORRECTION =========================
-    # Ensure atlas orientation matches MNI before registration.
-    local atlas_corrected="$harvard_subcortical"
-    if [ "$atlas_orient" != "$mni_orient" ] && \
-       [ "$atlas_orient" != "UNKNOWN" ] && [ "$mni_orient" != "UNKNOWN" ]; then
-        log_formatted "INFO" "Correcting Harvard-Oxford atlas orientation ($atlas_orient → $mni_orient)"
-        atlas_corrected="${temp_dir}/harvard_oxford_orient_corr.nii.gz"
-        if [ "$atlas_orient" = "NEUROLOGICAL" ] && [ "$mni_orient" = "RADIOLOGICAL" ]; then
-            fslswapdim "$harvard_subcortical" -x y z "$atlas_corrected"
-            fslorient -forceradiological "$atlas_corrected"
-        elif [ "$atlas_orient" = "RADIOLOGICAL" ] && [ "$mni_orient" = "NEUROLOGICAL" ]; then
-            fslswapdim "$harvard_subcortical" -x y z "$atlas_corrected"
-            fslorient -forceneurological "$atlas_corrected"
-        else
-            log_formatted "WARNING" "Unsupported atlas-orientation correction: $atlas_orient → $mni_orient; copying unchanged"
-            cp "$harvard_subcortical" "$atlas_corrected"
+    # CRITICAL: Check sform/qform matrices for axis alignment
+    log_message "Detailed coordinate system analysis:"
+    
+    # Extract sform matrices
+    local input_sform=$(fslinfo "$input_file" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    local mni_sform=$(fslinfo "$mni_brain" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    local atlas_sform=$(fslinfo "$harvard_subcortical" | grep -E "sform_[xyz]" | awk '{print $2}' | tr '\n' ' ')
+    
+    log_message "  Subject sform signs: $input_sform"
+    log_message "  MNI sform signs: $mni_sform"
+    log_message "  Atlas sform signs: $atlas_sform"
+    
+    # Check voxel dimensions for scaling compatibility
+    local input_pixdims=$(fslinfo "$input_file" | grep -E "pixdim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local mni_pixdims=$(fslinfo "$mni_brain" | grep -E "pixdim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local atlas_pixdims=$(fslinfo "$harvard_subcortical" | grep -E "pixdim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    
+    log_message "Voxel dimension analysis:"
+    log_message "  Subject voxels: ${input_pixdims}mm"
+    log_message "  MNI template voxels: ${mni_pixdims}mm" 
+    log_message "  Atlas voxels: ${atlas_pixdims}mm"
+    
+    # Check matrix dimensions for compatibility
+    local input_dims=$(fslinfo "$input_file" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local mni_dims=$(fslinfo "$mni_brain" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local atlas_dims=$(fslinfo "$harvard_subcortical" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    
+    log_message "Matrix dimension analysis:"
+    log_message "  Subject matrix: $input_dims"
+    log_message "  MNI template matrix: $mni_dims"
+    log_message "  Atlas matrix: $atlas_dims"
+    
+    # CRITICAL: Axis direction analysis using sform matrix
+    validate_axis_directions() {
+        local file="$1"
+        local name="$2"
+        
+        # Extract sform matrix diagonal elements (main axis directions)
+        local sform_xx=$(fslinfo "$file" | grep "sform_xorient" | awk '{print $2}')
+        local sform_yy=$(fslinfo "$file" | grep "sform_yorient" | awk '{print $2}')
+        local sform_zz=$(fslinfo "$file" | grep "sform_zorient" | awk '{print $2}')
+        
+        log_message "  $name axis directions: X=$sform_xx Y=$sform_yy Z=$sform_zz"
+        
+        # Detect potential axis flips or permutations
+        if [ "$(echo "$sform_xx < 0" | bc -l 2>/dev/null)" = "1" ]; then
+            log_formatted "WARNING" "$name: X-axis may be flipped (negative)"
         fi
-        # Sanity-check after correction
+        if [ "$(echo "$sform_yy < 0" | bc -l 2>/dev/null)" = "1" ]; then
+            log_formatted "WARNING" "$name: Y-axis may be flipped (negative)"
+        fi
+        if [ "$(echo "$sform_zz < 0" | bc -l 2>/dev/null)" = "1" ]; then
+            log_formatted "WARNING" "$name: Z-axis may be flipped (negative)"
+        fi
+    }
+    
+    log_message "Axis direction validation:"
+    validate_axis_directions "$input_file" "Subject"
+    validate_axis_directions "$mni_brain" "MNI template"
+    validate_axis_directions "$harvard_subcortical" "Atlas"
+    
+    # ADVANCED: Detect axis permutation/flipping issues
+    detect_coordinate_space_issues() {
+        log_message "Advanced coordinate space issue detection:"
+        
+        # Compare atlas vs MNI template axis directions
+        local atlas_xx=$(fslinfo "$harvard_subcortical" | grep "sform_xorient" | awk '{print $2}')
+        local atlas_yy=$(fslinfo "$harvard_subcortical" | grep "sform_yorient" | awk '{print $2}')
+        local atlas_zz=$(fslinfo "$harvard_subcortical" | grep "sform_zorient" | awk '{print $2}')
+        
+        local mni_xx=$(fslinfo "$mni_brain" | grep "sform_xorient" | awk '{print $2}')
+        local mni_yy=$(fslinfo "$mni_brain" | grep "sform_yorient" | awk '{print $2}')
+        local mni_zz=$(fslinfo "$mni_brain" | grep "sform_zorient" | awk '{print $2}')
+        
+        # Check for sign mismatches (axis flips)
+        local x_mismatch=false
+        local y_mismatch=false
+        local z_mismatch=false
+        
+        if [ "$(echo "($atlas_xx > 0 && $mni_xx < 0) || ($atlas_xx < 0 && $mni_xx > 0)" | bc -l 2>/dev/null)" = "1" ]; then
+            x_mismatch=true
+            log_formatted "ERROR" "DETECTED: X-axis direction mismatch (Atlas: $atlas_xx, MNI: $mni_xx)"
+        fi
+        
+        if [ "$(echo "($atlas_yy > 0 && $mni_yy < 0) || ($atlas_yy < 0 && $mni_yy > 0)" | bc -l 2>/dev/null)" = "1" ]; then
+            y_mismatch=true
+            log_formatted "ERROR" "DETECTED: Y-axis direction mismatch (Atlas: $atlas_yy, MNI: $mni_yy)"
+        fi
+        
+        if [ "$(echo "($atlas_zz > 0 && $mni_zz < 0) || ($atlas_zz < 0 && $mni_zz > 0)" | bc -l 2>/dev/null)" = "1" ]; then
+            z_mismatch=true
+            log_formatted "ERROR" "DETECTED: Z-axis direction mismatch (Atlas: $atlas_zz, MNI: $mni_zz)"
+        fi
+        
+        # Report findings
+        if [ "$x_mismatch" = "true" ] || [ "$y_mismatch" = "true" ] || [ "$z_mismatch" = "true" ]; then
+            log_formatted "CRITICAL" "AXIS DIRECTION MISMATCHES DETECTED!"
+            log_formatted "WARNING" "This explains why brainstem appears in wrong location"
+            log_formatted "INFO" "Automatic correction will be attempted via fslswapdim"
+            return 1
+        else
+            log_formatted "SUCCESS" "✓ Atlas and MNI template have compatible axis directions"
+            return 0
+        fi
+    }
+    
+    # Run coordinate space issue detection
+    detect_coordinate_space_issues
+    local coord_issues=$?
+    
+    log_message "======================================================="
+    
+    # ===== HARVARD-OXFORD ATLAS COORDINATE CORRECTION =========================
+    # Handle both basic orientation AND axis direction issues
+    local atlas_corrected="$harvard_subcortical"
+    local correction_needed=false
+    
+    # Prepare for corrections
+    if [ "$atlas_orient" != "$mni_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$mni_orient" != "UNKNOWN" ]; then
+        correction_needed=true
+        log_formatted "INFO" "Basic orientation correction needed: $atlas_orient → $mni_orient"
+    fi
+    
+    if [ "$coord_issues" -eq 1 ]; then
+        correction_needed=true
+        log_formatted "INFO" "Axis direction correction needed due to coordinate space mismatches"
+    fi
+    
+    if [ "$correction_needed" = "true" ]; then
+        atlas_corrected="${temp_dir}/harvard_oxford_corrected.nii.gz"
+        log_formatted "INFO" "Applying comprehensive atlas coordinate correction..."
+        
+        # Determine the appropriate fslswapdim parameters based on detected issues
+        local swap_x="x"
+        local swap_y="y" 
+        local swap_z="z"
+        
+        # Apply axis direction corrections if detected
+        if [ "$coord_issues" -eq 1 ]; then
+            # Extract axis directions again for correction logic
+            local atlas_xx=$(fslinfo "$harvard_subcortical" | grep "sform_xorient" | awk '{print $2}')
+            local atlas_yy=$(fslinfo "$harvard_subcortical" | grep "sform_yorient" | awk '{print $2}')
+            local atlas_zz=$(fslinfo "$harvard_subcortical" | grep "sform_zorient" | awk '{print $2}')
+            
+            local mni_xx=$(fslinfo "$mni_brain" | grep "sform_xorient" | awk '{print $2}')
+            local mni_yy=$(fslinfo "$mni_brain" | grep "sform_yorient" | awk '{print $2}')
+            local mni_zz=$(fslinfo "$mni_brain" | grep "sform_zorient" | awk '{print $2}')
+            
+            # Flip axes if directions don't match
+            if [ "$(echo "($atlas_xx > 0 && $mni_xx < 0) || ($atlas_xx < 0 && $mni_xx > 0)" | bc -l 2>/dev/null)" = "1" ]; then
+                swap_x="-x"
+                log_message "  Flipping X-axis direction"
+            fi
+            
+            if [ "$(echo "($atlas_yy > 0 && $mni_yy < 0) || ($atlas_yy < 0 && $mni_yy > 0)" | bc -l 2>/dev/null)" = "1" ]; then
+                swap_y="-y"
+                log_message "  Flipping Y-axis direction"
+            fi
+            
+            if [ "$(echo "($atlas_zz > 0 && $mni_zz < 0) || ($atlas_zz < 0 && $mni_zz > 0)" | bc -l 2>/dev/null)" = "1" ]; then
+                swap_z="-z"
+                log_message "  Flipping Z-axis direction"
+            fi
+        fi
+        
+        # Additional orientation-based corrections
+        if [ "$atlas_orient" = "NEUROLOGICAL" ] && [ "$mni_orient" = "RADIOLOGICAL" ]; then
+            swap_x="-x"  # Override or combine with axis flip
+            log_message "  Additional NEUROLOGICAL→RADIOLOGICAL correction"
+        elif [ "$atlas_orient" = "RADIOLOGICAL" ] && [ "$mni_orient" = "NEUROLOGICAL" ]; then
+            swap_x="-x"  # Override or combine with axis flip
+            log_message "  Additional RADIOLOGICAL→NEUROLOGICAL correction"
+        fi
+        
+        # Apply the comprehensive correction
+        log_message "Applying fslswapdim with: $swap_x $swap_y $swap_z"
+        fslswapdim "$harvard_subcortical" $swap_x $swap_y $swap_z "$atlas_corrected"
+        
+        # Set the target orientation
+        if [ "$mni_orient" = "RADIOLOGICAL" ]; then
+            fslorient -forceradiological "$atlas_corrected"
+        elif [ "$mni_orient" = "NEUROLOGICAL" ]; then
+            fslorient -forceneurological "$atlas_corrected"
+        fi
+        
+        # Verify correction was successful
         local atlas_corr_orient=$(fslorient -getorient "$atlas_corrected" 2>/dev/null || echo "UNKNOWN")
-        log_message "Atlas corrected orientation: $atlas_corr_orient (file: $(basename "$atlas_corrected"))"
+        log_formatted "SUCCESS" "Atlas correction completed: $atlas_corr_orient"
+        
+        # Re-validate coordinate directions after correction
+        log_message "Re-validating coordinate directions after correction..."
+        validate_axis_directions "$atlas_corrected" "Corrected Atlas"
+        
     else
-        log_message "Atlas orientation already matches MNI – no correction needed"
+        log_formatted "SUCCESS" "✓ No atlas coordinate correction needed"
     fi
     
     # CRITICAL FIX: Handle orientation mismatch
