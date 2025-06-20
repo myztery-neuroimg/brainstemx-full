@@ -73,7 +73,7 @@ generate_qc_visualizations() {
     # Create hyperintensity overlays at different thresholds - using pons region
     # Include the configured threshold alongside defaults
     local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
-    local thresholds=(1.5 2.0 2.5 3.0)
+    local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
     
     # Add configured threshold if not already present
     local configured_included=false
@@ -211,7 +211,7 @@ generate_qc_visualizations() {
         
         # Include the configured threshold alongside defaults
         local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
-        local thresholds=(1.5 2.0 2.5 3.0)
+        local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
         local colors=("red" "orange" "yellow" "green")
         
         # Add configured threshold if not already present
@@ -255,9 +255,9 @@ generate_qc_visualizations() {
         chmod +x "${output_dir}/view_all_thresholds.sh"
         
         # Create a composite image showing all thresholds
-        if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.5.nii.gz" ]; then
+        if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.25.nii.gz" ]; then
             # Start with lowest threshold
-            fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.5.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
+            fslmaths "${subject_dir}/hyperintensities/${subject_id}_pons_thresh1.25.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
             
             # Add higher thresholds with increasing values
             if [ -f "${subject_dir}/hyperintensities/${subject_id}_pons_thresh2.0.nii.gz" ]; then
@@ -307,7 +307,7 @@ create_multi_threshold_overlays() {
     
     # Define thresholds and colors - include configured threshold
     local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
-    local thresholds=(1.5 2.0 2.5 3.0)
+    local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
     local colors=("red" "orange" "yellow" "green")
     
     # Add configured threshold if not already present
@@ -334,8 +334,8 @@ create_multi_threshold_overlays() {
         local mult="${thresholds[$i]}"
         local color="${colors[$i]}"
         # Use intensity version for proper heat colormap visualization
-        local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}_intensity.nii.gz"
-        local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
+        local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_brainstem_thresh${mult}_intensity.nii.gz"
+        local hyper="${subject_dir}/hyperintensities/${subject_id}_brainstem_thresh${mult}.nii.gz"
         
         # Prefer intensity version if it exists
         if [ -f "$hyper_intensity" ]; then
@@ -532,7 +532,7 @@ generate_html_report() {
         
         # Include the configured threshold alongside defaults
         local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
-        local thresholds=(1.5 2.0 2.5 3.0)
+        local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
         
         # Add configured threshold if not already present
         local configured_included=false

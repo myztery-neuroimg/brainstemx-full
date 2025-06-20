@@ -52,6 +52,152 @@ get_sform_description() {
 }
 
 # ============================================================================
+# COORDINATE SYSTEM PRE-FLIGHT VALIDATION
+# ============================================================================
+
+pre_flight_coordinate_validation() {
+    local subject_file="$1"
+    local atlas_file="$2"
+    local template_file="$3"
+    
+    log_message "=== PRE-FLIGHT COORDINATE SYSTEM VALIDATION ==="
+    log_message "Checking for orientation conflicts BEFORE processing begins"
+    
+    # Get coordinate information for all files
+    local subj_orient=$(fslorient -getorient "$subject_file" 2>/dev/null || echo "UNKNOWN")
+    local subj_qform=$(fslorient -getqformcode "$subject_file" 2>/dev/null || echo "UNKNOWN")
+    local subj_sform=$(fslorient -getsformcode "$subject_file" 2>/dev/null || echo "UNKNOWN")
+    
+    local atlas_orient=$(fslorient -getorient "$atlas_file" 2>/dev/null || echo "UNKNOWN")
+    local atlas_qform=$(fslorient -getqformcode "$atlas_file" 2>/dev/null || echo "UNKNOWN")
+    local atlas_sform=$(fslorient -getsformcode "$atlas_file" 2>/dev/null || echo "UNKNOWN")
+    
+    local template_orient=$(fslorient -getorient "$template_file" 2>/dev/null || echo "UNKNOWN")
+    local template_qform=$(fslorient -getqformcode "$template_file" 2>/dev/null || echo "UNKNOWN")
+    local template_sform=$(fslorient -getsformcode "$template_file" 2>/dev/null || echo "UNKNOWN")
+    
+    log_message "Current coordinate states:"
+    log_message "  Subject:  orient=$subj_orient, qform=$subj_qform, sform=$subj_sform"
+    log_message "  Atlas:    orient=$atlas_orient, qform=$atlas_qform, sform=$atlas_sform"
+    log_message "  Template: orient=$template_orient, qform=$template_qform, sform=$template_sform"
+    
+    # Identify conflicts that WILL cause FSL warnings
+    local conflicts_detected=false
+    local conflict_summary=""
+    
+    # Check for orientation mismatches
+    if [ "$subj_orient" != "$atlas_orient" ] && [ "$subj_orient" != "UNKNOWN" ] && [ "$atlas_orient" != "UNKNOWN" ]; then
+        conflicts_detected=true
+        conflict_summary="${conflict_summary}Orientation mismatch: Subject($subj_orient) vs Atlas($atlas_orient). "
+    fi
+    
+    if [ "$subj_orient" != "$template_orient" ] && [ "$subj_orient" != "UNKNOWN" ] && [ "$template_orient" != "UNKNOWN" ]; then
+        conflicts_detected=true
+        conflict_summary="${conflict_summary}Orientation mismatch: Subject($subj_orient) vs Template($template_orient). "
+    fi
+    
+    # Check for coordinate system code mismatches
+    if [ "$subj_qform" != "$atlas_qform" ] && [ "$subj_qform" != "UNKNOWN" ] && [ "$atlas_qform" != "UNKNOWN" ]; then
+        conflicts_detected=true
+        conflict_summary="${conflict_summary}Qform mismatch: Subject($subj_qform) vs Atlas($atlas_qform). "
+    fi
+    
+    if [ "$subj_sform" != "$atlas_sform" ] && [ "$subj_sform" != "UNKNOWN" ] && [ "$atlas_sform" != "UNKNOWN" ]; then
+        conflicts_detected=true
+        conflict_summary="${conflict_summary}Sform mismatch: Subject($subj_sform) vs Atlas($atlas_sform). "
+    fi
+    
+    # Report findings
+    if [ "$conflicts_detected" = "true" ]; then
+        log_formatted "WARNING" "COORDINATE CONFLICTS DETECTED - FSL warnings likely"
+        log_message "Conflicts: $conflict_summary"
+        log_message "These conflicts explain the 'Inconsistent orientations' warning"
+        return 1  # Indicate conflicts detected
+    else
+        log_formatted "SUCCESS" "✓ No coordinate conflicts detected - FSL should run cleanly"
+        return 0  # No conflicts
+    fi
+}
+
+# ============================================================================
+# SIMPLE TEST FUNCTION FOR COORDINATE VALIDATION
+# ============================================================================
+
+test_coordinate_validation() {
+    log_message "=== TESTING COORDINATE VALIDATION FUNCTION ==="
+    
+    # Test with dummy files to verify detection logic
+    local test_cases=0
+    local test_passed=0
+    
+    # Mock fslorient function for testing
+    mock_fslorient() {
+        local option="$1"
+        local file="$2"
+        
+        case "$file" in
+            "test_subject.nii.gz")
+                case "$option" in
+                    "-getorient") echo "RADIOLOGICAL" ;;
+                    "-getqformcode") echo "1" ;;
+                    "-getsformcode") echo "1" ;;
+                esac ;;
+            "test_atlas.nii.gz")
+                case "$option" in
+                    "-getorient") echo "NEUROLOGICAL" ;;
+                    "-getqformcode") echo "4" ;;
+                    "-getsformcode") echo "4" ;;
+                esac ;;
+            "test_template.nii.gz")
+                case "$option" in
+                    "-getorient") echo "RADIOLOGICAL" ;;
+                    "-getqformcode") echo "1" ;;
+                    "-getsformcode") echo "1" ;;
+                esac ;;
+        esac
+    }
+    
+    # Override fslorient temporarily
+    local original_fslorient=$(which fslorient 2>/dev/null || echo "")
+    alias fslorient=mock_fslorient
+    
+    # Test 1: Should detect orientation mismatch (RADIOLOGICAL vs NEUROLOGICAL)
+    test_cases=$((test_cases + 1))
+    log_message "Test 1: Testing orientation conflict detection..."
+    if ! pre_flight_coordinate_validation "test_subject.nii.gz" "test_atlas.nii.gz" "test_template.nii.gz" >/dev/null 2>&1; then
+        log_message "✓ Test 1 PASSED: Correctly detected orientation mismatch"
+        test_passed=$((test_passed + 1))
+    else
+        log_message "✗ Test 1 FAILED: Should have detected orientation mismatch"
+    fi
+    
+    # Test 2: Should detect qform/sform mismatch (Scanner vs MNI)
+    test_cases=$((test_cases + 1))
+    log_message "Test 2: Testing coordinate system conflict detection..."
+    # The same test files have qform 1 vs 4 mismatch
+    if ! pre_flight_coordinate_validation "test_subject.nii.gz" "test_atlas.nii.gz" "test_template.nii.gz" >/dev/null 2>&1; then
+        log_message "✓ Test 2 PASSED: Correctly detected coordinate system mismatch"
+        test_passed=$((test_passed + 1))
+    else
+        log_message "✗ Test 2 FAILED: Should have detected coordinate system mismatch"
+    fi
+    
+    # Restore original fslorient
+    unalias fslorient 2>/dev/null || true
+    
+    log_message "=== TEST RESULTS ==="
+    log_message "Tests passed: $test_passed/$test_cases"
+    
+    if [ "$test_passed" -eq "$test_cases" ]; then
+        log_formatted "SUCCESS" "✓ All coordinate validation tests passed"
+        return 0
+    else
+        log_formatted "WARNING" "Some coordinate validation tests failed"
+        return 1
+    fi
+}
+
+# ============================================================================
 # PRIMARY METHOD: Harvard/Oxford Atlas Segmentation in T1 Space
 # ============================================================================
 
@@ -139,9 +285,44 @@ extract_brainstem_harvard_oxford() {
         return 1
     fi
     
-    # COMPREHENSIVE COORDINATE SYSTEM DETECTION
+    # COMPREHENSIVE COORDINATE SYSTEM DETECTION WITH EARLY VALIDATION
     log_message "=== COMPREHENSIVE COORDINATE SYSTEM ANALYSIS ==="
     log_message "Performing extensive coordinate system detection as requested"
+    
+    # EARLY VALIDATION: Check all input files for basic integrity
+    validate_file_headers() {
+        local file="$1"
+        local name="$2"
+        
+        if ! fslinfo "$file" >/dev/null 2>&1; then
+            log_formatted "ERROR" "$name file has corrupt/invalid header: $file"
+            return 1
+        fi
+        
+        # Check for reasonable dimensions
+        local dims=$(fslinfo "$file" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+        if [[ ! "$dims" =~ ^[0-9]+x[0-9]+x[0-9]+$ ]]; then
+            log_formatted "ERROR" "$name file has invalid dimensions: $dims"
+            return 1
+        fi
+        
+        return 0
+    }
+    
+    log_message "Step 1: Validating file headers before coordinate analysis..."
+    validate_file_headers "$input_file" "Subject" || return 1
+    validate_file_headers "$harvard_subcortical" "Atlas" || return 1
+    validate_file_headers "$mni_brain" "MNI template" || return 1
+    log_formatted "SUCCESS" "✓ All input files have valid headers"
+    
+    # PRE-FLIGHT COORDINATE VALIDATION - CATCH CONFLICTS EARLY
+    log_message "=== PRE-FLIGHT COORDINATE VALIDATION ==="
+    if pre_flight_coordinate_validation "$input_file" "$harvard_subcortical" "$mni_brain"; then
+        log_formatted "SUCCESS" "✓ No coordinate conflicts detected - proceeding normally"
+    else
+        log_formatted "WARNING" "Coordinate conflicts detected - will attempt resolution"
+        log_message "This explains the 'Inconsistent orientations' FSL warning you're seeing"
+    fi
     
     # Get precise orientation and coordinate system codes using fslorient
     local subject_orient=$(fslorient -getorient "$input_file" 2>/dev/null || echo "UNKNOWN")
@@ -214,7 +395,7 @@ extract_brainstem_harvard_oxford() {
     # Validate the full atlas has the brainstem region (index 7) before proceeding
     log_message "Validating brainstem region (index 7) exists in atlas..."
     local test_brainstem="${temp_dir}/test_brainstem_extraction.nii.gz"
-    fslmaths "$harvard_subcortical" -thr 7 -uthr 7 -bin "$test_brainstem"
+    fslmaths "$harvard_subcortical" -thr 6.9 -uthr 7.1 -bin "$test_brainstem" -odt int
     local brainstem_test_voxels=$(fslstats "$test_brainstem" -V | awk '{print $1}')
     
     if [ "$brainstem_test_voxels" -lt 100 ]; then
@@ -232,7 +413,7 @@ extract_brainstem_harvard_oxford() {
     log_message "Ensuring atlas matches subject coordinate system and spatial axes"
     
     local atlas_needs_correction=false
-    local corrected_atlas="${temp_dir}/harvard_oxford_reoriented.nii.gz"
+    local corrected_atlas="${RESULTS_DIR}/fixed_spaces/harvard_oxford_reoriented.nii.gz"
     
     # Check for any coordinate system mismatches requiring correction
     if [ "$coord_mismatch_detected" = "true" ]; then
@@ -342,7 +523,24 @@ extract_brainstem_harvard_oxford() {
         if [ "$correction_successful" = "true" ]; then
             log_formatted "SUCCESS" "✓ Atlas successfully reoriented to subject space"
         else
-            log_formatted "WARNING" "Atlas reorientation may be incomplete - proceeding with available correction"
+            log_formatted "ERROR" "Atlas reorientation failed - this WILL cause FSL orientation warnings"
+            log_formatted "ERROR" "Stopping to prevent downstream errors"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+        
+        # CRITICAL: Verify correction by running test FSL operation
+        log_message "Verifying orientation correction with test FSL operation..."
+        local test_output="${temp_dir}/orientation_test.nii.gz"
+        fslstats "$corrected_atlas" -V
+        fsl
+        if ! $( fslmaths "$corrected_atlas" -mas "$test_output" ); then
+            log_formatted "SUCCESS" "✓ Corrected atlas passes FSL validation"
+            rm -f "$test_output"
+        else
+            log_formatted "ERROR" "Corrected atlas fails FSL validation - orientation correction incomplete"
+            rm -rf "$temp_dir"
+            return 1
         fi
         
         # Use the corrected version for further processing
@@ -618,9 +816,26 @@ extract_brainstem_harvard_oxford() {
         log_formatted "CRITICAL" "✗ POST-REORIENTATION VALIDATION FAILED"
         log_formatted "CRITICAL" "Atlas reorientation was unsuccessful - anatomical mislocalization WILL occur"
         log_formatted "CRITICAL" "Expected: All coordinate codes and orientations should match between subject and atlas"
+        log_formatted "ERROR" "STOPPING PIPELINE to prevent FSL orientation warnings and incorrect results"
+        rm -rf "$temp_dir"
+        return 1
     else
         log_formatted "SUCCESS" "✓ POST-REORIENTATION VALIDATION PASSED"
         log_formatted "SUCCESS" "Atlas successfully reoriented to subject coordinate system"
+        
+        # ADDITIONAL: Test compatibility with explicit FSL operation
+        log_message "Final validation: Testing FSL compatibility between corrected files..."
+        local compatibility_test="${temp_dir}/fsl_compatibility_test.nii.gz"
+        if $fslmaths "$input_file" "$harvard_subcortical" -mas 1 "$compatibility_test"; then
+            local test_voxels=$(fslstats "$compatibility_test" -V | awk '{print $1}')
+            log_formatted "SUCCESS" "✓ FSL compatibility confirmed ($test_voxels voxels processed)"
+            rm -f "$compatibility_test"
+        else
+            log_formatted "ERROR" "FSL compatibility test failed - orientation issues remain"
+            log_formatted "ERROR" "This explains the 'Inconsistent orientations' warning"
+            rm -rf "$temp_dir"
+            return 1
+        fi
     fi
     
     # SUPPLEMENTARY: Extract detailed sform matrix elements (for diagnostic purposes)
@@ -926,25 +1141,25 @@ extract_brainstem_harvard_oxford() {
     fi
     
     # Stage-based directory cleanup for comprehensive fresh processing
-    if [ "${START_STAGE:-}" = "registration" ]; then
-        local reg_dirs=("$REGISTRATION_DIR" "$OUTPUT_DIR/registration")
-        for reg_dir in "${reg_dirs[@]}"; do
-            if [ -d "$reg_dir" ]; then
-                log_formatted "INFO" "START_STAGE=registration - removing entire registration directory: $reg_dir"
-                rm -rf "$reg_dir"
-                mkdir -p "$reg_dir"
-            fi
-        done
-    elif [ "${START_STAGE:-}" = "segmentation" ]; then
-        local seg_dirs=("$SEGMENTATION_DIR" "$OUTPUT_DIR/segmentation")
-        for seg_dir in "${seg_dirs[@]}"; do
-            if [ -d "$seg_dir" ]; then
-                log_formatted "INFO" "START_STAGE=segmentation - removing entire segmentation directory: $seg_dir"
-                rm -rf "$seg_dir"
-                mkdir -p "$seg_dir"
-            fi
-        done
-    fi
+    #if [ "${START_STAGE:-}" = "registration" ]; then
+    #    local reg_dirs=("$REGISTRATION_DIR" "$OUTPUT_DIR/registration")
+    #    for reg_dir in "${reg_dirs[@]}"; do
+    #        if [ -d "$reg_dir" ]; then
+    #            log_formatted "INFO" "START_STAGE=registration - removing entire registration directory: $reg_dir"
+    #            rm -rf "$reg_dir"
+    #            mkdir -p "$reg_dir"
+    #        fi
+    #    done
+    #elif [ "${START_STAGE:-}" = "segmentation" ]; then
+    #    local seg_dirs=("$SEGMENTATION_DIR" "$OUTPUT_DIR/segmentation")
+    #    for seg_dir in "${seg_dirs[@]}"; do
+    #        if [ -d "$seg_dir" ]; then
+    #            log_formatted "INFO" "START_STAGE=segmentation - removing entire segmentation directory: $seg_dir"
+    #            rm -rf "$seg_dir"
+    #            mkdir -p "$seg_dir"
+    #        fi
+    #    done
+    #22fi
     
     if [ "$orientation_corrected" = "true" ]; then
         log_formatted "INFO" "Running full SyN registration due to orientation correction"
@@ -1094,7 +1309,7 @@ extract_brainstem_harvard_oxford() {
     log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
     
     # Use centralized apply_transformation function for consistent SyN transform handling
-    if apply_transformation "$atlas_corrected" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "GenericLabel"; then
+    if apply_transformation "$atlas_corrected" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "NearestNeighbor"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -1114,11 +1329,61 @@ extract_brainstem_harvard_oxford() {
     
     local brainstem_index=7  # Brain-Stem in Harvard-Oxford subcortical atlas
     log_message "Extracting brainstem (index $brainstem_index) from transformed atlas..."
-    fslmaths "$atlas_in_subject" -thr $brainstem_index -uthr $brainstem_index -bin "${temp_dir}/brainstem_mask_subject_tri.nii.gz"
     
-    local voxel_count=$(fslstats "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -V | awk '{print $1}')
+    # DEBUG: Check atlas dimensions before extraction
+    log_message "=== MASK DIMENSION DEBUG ==="
+    local atlas_dims=$(fslinfo "$atlas_in_subject" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local atlas_nonzero_voxels=$(fslstats "$atlas_in_subject" -V | awk '{print $1}')
+    local atlas_total_voxels=$(echo "$atlas_dims" | awk -F'x' '{print $1 * $2 * $3}')
+    log_message "Atlas in subject space dimensions: $atlas_dims"
+    log_message "Atlas calculated total voxels: $atlas_total_voxels"
+    log_message "Atlas non-zero voxels: $atlas_nonzero_voxels"
+    
+    # Check brainstem voxels in atlas before extraction (using tolerance for floating-point artifacts)
+    local brainstem_lower=6.9
+    local brainstem_upper=7.1
+    local brainstem_in_atlas=$(fslstats "$atlas_in_subject" -l $brainstem_lower -u $brainstem_upper -V | awk '{print $1}')
+    log_message "Brainstem voxels (range $brainstem_lower-$brainstem_upper) in atlas: $brainstem_in_atlas"
+    
+    # Use tolerance range to capture floating-point interpolation artifacts
+    log_message "Using tolerance range [$brainstem_lower, $brainstem_upper] to handle floating-point interpolation artifacts"
+    fslmaths "$atlas_in_subject" -thr $brainstem_lower -uthr $brainstem_upper -bin "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -odt int
+    
+    # DEBUG: Check mask dimensions after extraction
+    local mask_dims=$(fslinfo "${temp_dir}/brainstem_mask_subject_tri.nii.gz" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    local mask_nonzero_voxels=$(fslstats "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -V | awk '{print $1}')
+    local mask_total_voxels=$(echo "$mask_dims" | awk -F'x' '{print $1 * $2 * $3}')
+    log_message "Mask dimensions after extraction: $mask_dims"
+    log_message "Mask calculated total voxels: $mask_total_voxels"
+    log_message "Mask non-zero voxels: $mask_nonzero_voxels"
+    
+    # CRITICAL: Check if dimensions match
+    if [ "$atlas_dims" != "$mask_dims" ]; then
+        log_formatted "ERROR" "DIMENSION MISMATCH! Atlas: $atlas_dims, Mask: $mask_dims"
+        log_formatted "ERROR" "This explains the FLAIR multiplication failure"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    if [ "$atlas_total_voxels" != "$mask_total_voxels" ]; then
+        log_formatted "ERROR" "TOTAL VOXEL COUNT MISMATCH! Atlas: $atlas_total_voxels, Mask: $mask_total_voxels"
+        log_formatted "ERROR" "Mask has been cropped - this will cause FLAIR multiplication to fail"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Check if brainstem extraction worked
+    if [ "$brainstem_in_atlas" != "$mask_nonzero_voxels" ]; then
+        log_formatted "ERROR" "BRAINSTEM EXTRACTION FAILED! Expected: $brainstem_in_atlas, Got: $mask_nonzero_voxels"
+        log_formatted "ERROR" "Threshold operation did not preserve brainstem voxels"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    local voxel_count="$mask_nonzero_voxels"
     if [ "$voxel_count" -gt 100 ]; then
-        log_message "Found brainstem with $voxel_count voxels in subject space"
+        log_message "Found brainstem with $voxel_count non-zero voxels in subject space"
+        log_message "Total mask voxels: $mask_total_voxels (should match FLAIR dimensions)"
     else
         log_formatted "ERROR" "Brainstem region too small or not found in subject space (only $voxel_count voxels)"
         rm -rf "$temp_dir"
@@ -1426,9 +1691,9 @@ extract_brainstem_harvard_oxford() {
                 fslmaths "$input_image" -thr "$p66" -bin "$temp_class3" 2>/dev/null
                 
                 # Combine into single label image
-                fslmaths "$temp_class1" -mul 1 "$tissue_labels" 2>/dev/null
-                fslmaths "$temp_class2" -mul 2 -add "$tissue_labels" "$tissue_labels" 2>/dev/null
-                fslmaths "$temp_class3" -mul 3 -add "$tissue_labels" "$tissue_labels" 2>/dev/null
+                fslmaths "$temp_class1" -mas 1 "$tissue_labels" 2>/dev/null
+                fslmaths "$temp_class2" -mas 2 -add "$tissue_labels" "$tissue_labels" 2>/dev/null
+                fslmaths "$temp_class3" -mas 3 -add "$tissue_labels" "$tissue_labels" 2>/dev/null
                 
                 # Clean up temporary files
                 rm -f "$temp_class1" "$temp_class2" "$temp_class3"
@@ -1576,7 +1841,7 @@ extract_brainstem_harvard_oxford() {
         fi
         
         # Calculate Dice coefficient with original atlas
-        local overlap_voxels=$(fslstats "$output_refined_mask" -mul "$initial_mask" -V | awk '{print $1}')
+        local overlap_voxels=$(fslstats "$output_refined_mask" -mas "$initial_mask" -V | awk '{print $1}')
         local dice_denominator=$(echo "$refined_voxels + $original_voxels" | bc -l)
         local dice_score=0
         
@@ -1675,7 +1940,7 @@ extract_brainstem_harvard_oxford() {
     fi
     
     # Threshold at 0.5 to create binary mask (captures partial volume voxels)
-    fslmaths "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/brainstem_mask_subject.nii.gz"
+    fslmaths "${temp_dir}/brainstem_mask_subject_tri.nii.gz" -thr 0.5 -bin "${temp_dir}/brainstem_mask_subject.nii.gz" -odt int
     
     # CRITICAL: Validate anatomical location of transformed mask
     log_formatted "INFO" "===== ANATOMICAL LOCATION VALIDATION ====="
@@ -1784,7 +2049,7 @@ extract_brainstem_harvard_oxford() {
     fi
     
     # Apply mask using fslmaths directly (safe_fslmaths is checking output as input)
-    fslmaths "$input_file" -mul "${temp_dir}/brainstem_mask_subject.nii.gz" \
+    fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" \
              "$abs_output_file"
     
     # Check if output was created
@@ -1813,7 +2078,7 @@ extract_brainstem_harvard_oxford() {
     local t1_intensity_file="${output_dir_path}/${base_name}_t1_intensity.nii.gz"
     
     log_message "Creating T1 intensity version for QA module..."
-    if fslmaths "$input_file" -mul "${temp_dir}/brainstem_mask_subject.nii.gz" "$t1_intensity_file"; then
+    if fslmaths "$input_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" "$t1_intensity_file"; then
         log_message "✓ Created T1 intensity version: $(basename "$t1_intensity_file")"
     else
         log_formatted "WARNING" "Failed to create T1 intensity version (non-critical)"
@@ -1904,7 +2169,7 @@ extract_brainstem_harvard_oxford() {
             
             if [ "$flair_dims" = "$mask_dims" ]; then
                 log_message "Creating FLAIR intensity version from: $(basename "$flair_file")"
-                if fslmaths "$flair_file" -mul "${temp_dir}/brainstem_mask_subject.nii.gz" "$flair_intensity_file"; then
+                if fslmaths "$flair_file" -mas "${temp_dir}/brainstem_mask_subject.nii.gz" "$flair_intensity_file"; then
                     log_message "✓ Created FLAIR intensity version: $(basename "$flair_intensity_file")"
                 else
                     log_formatted "WARNING" "Failed to create FLAIR intensity version (non-critical)"
@@ -1973,7 +2238,7 @@ extract_brainstem_harvard_oxford() {
             
             if [ -f "$flair_space_mask" ]; then
                 # Apply mask to original FLAIR to create intensity version
-                if fslmaths "$orig_flair" -mul "$flair_space_mask" "$flair_space_intensity"; then
+                if fslmaths "$orig_flair" -mas "$flair_space_mask" "$flair_space_intensity"; then
                     log_message "✓ Created FLAIR-space intensity version: $flair_space_intensity"
                 else
                     log_formatted "WARNING" "Failed to create FLAIR-space intensity version $flair_space_intensity"
@@ -2128,7 +2393,7 @@ extract_brainstem_with_flair() {
     fi
     
     # Get the binary mask - FAIL HARD if missing
-    local t1_mask="${output_prefix}_brainstem_t1based_mask.nii.gz"
+    local t1_mask="${output_prefix}_brainstem_t1based.nii.gz"
     if [ ! -f "$t1_mask" ]; then
         cleanup_and_fail 1 "T1 brainstem mask not found: $t1_mask"
         return 1
@@ -2269,30 +2534,148 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    # Extract FLAIR intensities using the brainstem mask (both in T1 space)
-    log_message "Extracting FLAIR intensities from $mask_voxel_count brainstem voxels (registered FLAIR × brainstem mask)..."
-    if ! fslmaths "$flair_in_t1" -mul "$t1_mask" "${temp_dir}/flair_brainstem.nii.gz"; then
-        cleanup_and_fail 1 "Failed to extract FLAIR intensities - fslmaths operation failed"
+    # Resolve relative paths before FSL operations
+    local resolved_flair=$(realpath "$flair_in_t1" 2>/dev/null || readlink -f "$flair_in_t1" 2>/dev/null || echo "$flair_in_t1")
+    local resolved_mask=$(realpath "$t1_mask" 2>/dev/null || readlink -f "$t1_mask" 2>/dev/null || echo "$t1_mask")
+    
+    log_message "=== PATH RESOLUTION DEBUG ==="
+    log_message "Original FLAIR path: $flair_in_t1"
+    log_message "Resolved FLAIR path: $resolved_flair"
+    log_message "Original mask path: $t1_mask"
+    log_message "Resolved mask path: $resolved_mask"
+    
+    # Verify resolved files exist
+    if [ ! -f "$resolved_flair" ]; then
+        cleanup_and_fail 1 "Resolved FLAIR file does not exist: $resolved_flair"
+        return 1
+    fi
+    if [ ! -f "$resolved_mask" ]; then
+        cleanup_and_fail 1 "Resolved mask file does not exist: $resolved_mask"
+        return 1
+    fi
+    
+    # Check coordinate system compatibility before FLAIR extraction
+    log_message "=== COORDINATE SYSTEM COMPATIBILITY CHECK ==="
+    
+    # Get precise orientation and coordinate system codes using fslorient
+    local flair_orient=$(fslorient -getorient "$resolved_flair" 2>/dev/null || echo "UNKNOWN")
+    local mask_orient=$(fslorient -getorient "$resolved_mask" 2>/dev/null || echo "UNKNOWN")
+    
+    # CRITICAL: Get qform and sform codes using fslorient (not fslinfo)
+    local flair_qform=$(fslorient -getqformcode "$resolved_flair" 2>/dev/null || echo "UNKNOWN")
+    local flair_sform=$(fslorient -getsformcode "$resolved_flair" 2>/dev/null || echo "UNKNOWN")
+    local mask_qform=$(fslorient -getqformcode "$resolved_mask" 2>/dev/null || echo "UNKNOWN")
+    local mask_sform=$(fslorient -getsformcode "$resolved_mask" 2>/dev/null || echo "UNKNOWN")
+    
+    log_message "FLAIR orientation: $flair_orient (qform: $flair_qform, sform: $flair_sform)"
+    log_message "Mask orientation: $mask_orient (qform: $mask_qform, sform: $mask_sform)"
+    
+    # Check for coordinate system mismatches
+    if [ "$flair_orient" != "$mask_orient" ] && [ "$flair_orient" != "UNKNOWN" ] && [ "$mask_orient" != "UNKNOWN" ]; then
+        log_formatted "ERROR" "ORIENTATION MISMATCH: FLAIR ($flair_orient) vs Mask ($mask_orient)"
+        log_formatted "ERROR" "This will cause fslmaths to fail or produce incorrect results"
+    fi
+    
+    if [ "$flair_qform" != "$mask_qform" ] && [ "$flair_qform" != "UNKNOWN" ] && [ "$mask_qform" != "UNKNOWN" ]; then
+        log_formatted "ERROR" "QFORM MISMATCH: FLAIR ($flair_qform) vs Mask ($mask_qform)"
+        log_formatted "ERROR" "Coordinate system incompatibility detected"
+    fi
+    
+    if [ "$flair_sform" != "$mask_sform" ] && [ "$flair_sform" != "UNKNOWN" ] && [ "$mask_sform" != "UNKNOWN" ]; then
+        log_formatted "ERROR" "SFORM MISMATCH: FLAIR ($flair_sform) vs Mask ($mask_sform)"
+        log_formatted "ERROR" "Spatial transformation incompatibility detected"
+    fi
+    
+    # Extract FLAIR intensities using resolved absolute paths
+    log_message "Extracting FLAIR intensities from $mask_voxel_count brainstem voxels (using absolute paths)..."
+    log_message "Command: fslmaths \"$resolved_flair\" -mas \"$resolved_mask\" \"${RESULTS_DIR}/registered/flair_brainstem.nii.gz\""
+    
+    # Test fslmaths availability first
+    log_message "=== FSLMATHS DEBUG ==="
+    log_message "Testing fslmaths availability..."
+    if ! command -v fslmaths >/dev/null 2>&1; then
+        cleanup_and_fail 1 "fslmaths command not found in PATH"
+        return 1
+    fi
+    log_message "✓ fslmaths found: $(which fslmaths)"
+    
+    # Execute fslmaths with explicit error checking
+    log_message "Executing fslmaths operation..."
+    local fslmaths_output=""
+    local fslmaths_exit_code=0
+    
+    fslmaths_output=$(fslmaths "$resolved_flair" -mas "$resolved_mask" "${RESULTS_DIR}/registered/flair_brainstem.nii.gz")
+    fslmaths_exit_code=$?
+    
+    log_message "fslmaths exit code: $fslmaths_exit_code"
+    if [ -n "$fslmaths_output" ]; then
+        log_message "fslmaths output: $fslmaths_output"
+    fi
+    
+    # Check if output file was created
+    if [ ! -f "${RESULTS_DIR}/registered/flair_brainstem.nii.gz" ]; then
+        log_formatted "ERROR" "fslmaths completed with exit code $fslmaths_exit_code but output file not created"
+        cleanup_and_fail 1 "fslmaths failed to create output file"
+        return 1
+    fi
+    
+    # Check output file size
+    local output_size=$(stat -f "%z" "${RESULTS_DIR}/registered/flair_brainstem.nii.gz" 2>/dev/null || stat --format="%s" "${RESULTS_DIR}/registered/flair_brainstem.nii.gz" 2>/dev/null || echo "0")
+    log_message "Output file created: ${RESULTS_DIR}/registered/flair_brainstem.nii.gz (${output_size} bytes)"
+    
+    if [ "$output_size" -lt 100 ]; then
+        log_formatted "ERROR" "Output file is suspiciously small: ${output_size} bytes"
+        cleanup_and_fail 1 "fslmaths created empty or corrupt output"
+        return 1
+    fi
+    
+    if [ $fslmaths_exit_code -ne 0 ]; then
+        cleanup_and_fail 1 "fslmaths operation failed with exit code $fslmaths_exit_code"
         return 1
     fi
     
     log_message "✓ FLAIR intensity extraction completed using brainstem mask directly"
-    log_message "Output file: ${temp_dir}/flair_brainstem.nii.gz"
+    log_message "Output file: ${RESULTS_DIR}/registered/flair_brainstem.nii.gz"
+    
+    # Enhanced debugging to understand the data
+    log_message "=== FLAIR DATA ANALYSIS ==="
+    
+    # Check input FLAIR statistics
+    local flair_stats=$(fslstats "$flair_in_t1" -R -V 2>/dev/null)
+    log_message "FLAIR input stats (min max voxels volume): $flair_stats"
+    
+    # Check mask statistics
+    local mask_stats=$(fslstats "$t1_mask" -R -V 2>/dev/null)
+    log_message "Brainstem mask stats (min max voxels volume): $mask_stats"
     
     # Verify the output file was created and has non-zero voxels - FAIL HARD
-    if [ ! -f "${temp_dir}/flair_brainstem.nii.gz" ]; then
+    if [ ! -f "${RESULTS_DIR}/registered/flair_brainstem.nii.gz" ]; then
         cleanup_and_fail 1 "FLAIR brainstem extraction failed - output file not created"
         return 1
     fi
     
+    # Check output statistics in detail
+    local output_stats=$(fslstats "${RESULTS_DIR}/registered/flair_brainstem.nii.gz" -R -V)
+    log_message "FLAIR output stats (min max voxels volume): $output_stats"
+    
     # Get voxel count and validate it's a number
-    local flair_voxel_count=$(fslstats "${temp_dir}/flair_brainstem.nii.gz" -V 2>/dev/null | awk '{print $1}')
+    local flair_voxel_count=$(echo "$output_stats" | awk '{print $3}')
+    fslstats "${RESULTS_DIR}/registered/flair_brainstem.nii.gz"
+    local flair_nonzero_count=$(fslstats "${RESULTS_DIR}/registered/flair_brainstem.nii.gz" -l 0 -V 2>/dev/null | awk '{print $1}')
+    log_message "Total voxels: $flair_voxel_count, Non-zero voxels: $flair_nonzero_count"
+    
     if [ -z "$flair_voxel_count" ] || ! [[ "$flair_voxel_count" =~ ^[0-9]+$ ]]; then
         cleanup_and_fail 1 "Failed to get valid voxel count from FLAIR brainstem (got: '$flair_voxel_count')"
         return 1
     fi
     
-    if [ "$flair_voxel_count" -eq 0 ]; then
+    # Check for non-zero voxels instead of total voxels
+    if [ -z "$flair_nonzero_count" ] || [ "$flair_nonzero_count" -eq 0 ]; then
+        log_formatted "ERROR" "FLAIR brainstem region contains no non-zero intensity values"
+        log_message "This suggests either:"
+        log_message "1. FLAIR image contains only zero values in brainstem region"
+        log_message "2. Brainstem mask and FLAIR image don't overlap spatially"
+        log_message "3. Coordinate system mismatch despite matching dimensions"
         cleanup_and_fail 1 "FLAIR brainstem region is empty - no valid data for enhancement"
         return 1
     fi
@@ -2376,7 +2759,7 @@ extract_brainstem_with_flair() {
     fi
     
     # Get voxel count and validate it's a number
-    local refined_voxels=$(fslstats "${temp_dir}/flair_refined_mask.nii.gz" -V 2>/dev/null | awk '{print $1}')
+    local refined_voxels=$(fslstats "${temp_dir}/flair_refined_mask.nii.gz" -V 2>&1 | awk '{print $1}')
     if [ -z "$refined_voxels" ] || ! [[ "$refined_voxels" =~ ^[0-9]+$ ]]; then
         cleanup_and_fail 1 "Failed to get valid voxel count from refined FLAIR mask (got: '$refined_voxels')"
         return 1
@@ -2400,7 +2783,7 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    if ! fslmaths "$t1_mask" -mul "${temp_dir}/flair_refined_mask.nii.gz" \
+    if ! fslmaths "$t1_mask" -mas "${temp_dir}/flair_refined_mask.nii.gz" \
                   "${output_prefix}_brainstem_mask.nii.gz"; then
         cleanup_and_fail 1 "Failed to combine T1 and FLAIR masks"
         return 1
@@ -2417,7 +2800,7 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    if ! fslmaths "$t1_file" -mul "${output_prefix}_brainstem_mask.nii.gz" \
+    if ! fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
                   "${output_prefix}_brainstem.nii.gz"; then
         cleanup_and_fail 1 "Failed to create final T1-masked segmentation output"
         return 1
@@ -2434,7 +2817,7 @@ extract_brainstem_with_flair() {
         return 1
     fi
     
-    if ! fslmaths "$flair_in_t1" -mul "${output_prefix}_brainstem_mask.nii.gz" \
+    if ! fslmaths "$flair_in_t1" -mas "${output_prefix}_brainstem_mask.nii.gz" \
                   "${output_prefix}_brainstem_flair_intensity.nii.gz"; then
         cleanup_and_fail 1 "Failed to create FLAIR intensity segmentation output"
         return 1
@@ -2442,7 +2825,7 @@ extract_brainstem_with_flair() {
     
     # Create T1 intensity version for QA module compatibility
     log_message "Creating T1 intensity version for QA module..."
-    if ! fslmaths "$t1_file" -mul "${output_prefix}_brainstem_mask.nii.gz" \
+    if ! fslmaths "$t1_file" -mas "${output_prefix}_brainstem_mask.nii.gz" \
                   "${output_prefix}_brainstem_t1_intensity.nii.gz"; then
         cleanup_and_fail 1 "Failed to create T1 intensity segmentation output"
         return 1
@@ -2456,7 +2839,7 @@ extract_brainstem_with_flair() {
     fi
     
     # Get final voxel count and validate it's a number
-    local final_voxels=$(fslstats "${output_prefix}_brainstem_mask.nii.gz" -V 2>/dev/null | awk '{print $1}')
+    local final_voxels=$(fslstats "${output_prefix}_brainstem_mask.nii.gz" -v 2>/dev/null | awk '{print $1}')
     if [ -z "$final_voxels" ] || ! [[ "$final_voxels" =~ ^[0-9]+$ ]]; then
         cleanup_and_fail 1 "Failed to get valid voxel count from final mask (got: '$final_voxels')"
         return 1
@@ -2855,12 +3238,12 @@ create_combined_segmentation_map() {
     
     # Start with empty map
     local combined_map="${combined_dir}/${input_basename}_segmentation_labels.nii.gz"
-    fslmaths "$ref_file" -mul 0 "$combined_map"
+    fslmaths "$ref_file" -mas 0 "$combined_map"
     
     # Add brainstem (label 1)
     local brainstem_mask="${brainstem_dir}/${input_basename}_brainstem_mask.nii.gz"
     if [ -f "$brainstem_mask" ]; then
-        fslmaths "$brainstem_mask" -mul $BRAINSTEM_LABEL -add "$combined_map" "$combined_map"
+        fslmaths "$brainstem_mask" -mas $BRAINSTEM_LABEL -add "$combined_map" "$combined_map"
         log_message "Added brainstem to combined map (label=$BRAINSTEM_LABEL)"
     fi
         

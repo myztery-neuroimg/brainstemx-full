@@ -422,7 +422,7 @@ create_supratentorial_mask() {
                         -interp nearestneighbour -dof 12 > /dev/null 2>&1; then
                     
                     # Create mask excluding brainstem (label 7) and cerebellum regions
-                    fslmaths "$ho_sub_reg" -thr 7 -uthr 7 -bin "${temp_dir}/brainstem_mask.nii.gz"
+                    fslmaths "$ho_sub_reg" -thr 6.9 -uthr 7.1 -bin "${temp_dir}/brainstem_mask.nii.gz" -odt int
                     
                     # Create supratentorial mask (brain - brainstem - cerebellum)
                     fslmaths "$atlas_registered" -sub "${temp_dir}/brainstem_mask.nii.gz" \

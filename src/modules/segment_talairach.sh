@@ -333,7 +333,7 @@ extract_brainstem_talairach_with_transform() {
     
     # Use centralized apply_transformation function for consistent SyN transform handling
     local transform_prefix="${ants_prefix}"
-    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$transform_prefix" "GenericLabel"; then
+    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$transform_prefix" "NearestNeighbor"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -499,7 +499,7 @@ extract_brainstem_talairach_with_transform() {
                     return
                 fi
                 
-                fslmaths "$region_file" -mul "$validation_harvard_mask" "$validated_file"
+                fslmaths "$region_file" -mas "$validation_harvard_mask" "$validated_file"
                 
                 # Count voxels before and after validation
                 local orig_voxels=$(fslstats "$region_file" -V | awk '{print $1}')
@@ -560,7 +560,7 @@ extract_brainstem_talairach_with_transform() {
             
             # Create intensity version
             local intensity_file="${region_file%.nii.gz}_intensity.nii.gz"
-            if fslmaths "$input_file" -mul "$region_file" "$intensity_file"; then
+            if fslmaths "$input_file" -mas "$region_file" "$intensity_file"; then
                 log_message "✓ Intensity file: $(basename "$intensity_file")"
             else
                 log_formatted "WARNING" "Failed to create intensity file for $base_region_name"
@@ -568,7 +568,7 @@ extract_brainstem_talairach_with_transform() {
             
             # Also create T1 intensity version
             local t1_intensity_file="${region_file%.nii.gz}_t1_intensity.nii.gz"
-            if fslmaths "$input_file" -mul "$region_file" "$t1_intensity_file"; then
+            if fslmaths "$input_file" -mas "$region_file" "$t1_intensity_file"; then
                 log_message "✓ T1 intensity file: $(basename "$t1_intensity_file")"
             else
                 log_formatted "WARNING" "Failed to create T1 intensity file for $base_region_name"
@@ -653,7 +653,7 @@ extract_brainstem_talairach_with_transform() {
                         local flair_space_intensity="${flair_analysis_dir}/${region_basename}_flair_intensity.nii.gz"
                         
                         # Apply mask to original FLAIR to create intensity version
-                        if fslmaths "$orig_flair" -mul "$flair_space_mask" "$flair_space_intensity"; then
+                        if fslmaths "$orig_flair" -mas "$flair_space_mask" "$flair_space_intensity"; then
                             log_message "✓ Created FLAIR-space ${region_name} intensity version"
                         else
                             log_formatted "WARNING" "Failed to create FLAIR-space ${region_name} intensity version"
@@ -723,7 +723,7 @@ extract_brainstem_talairach_with_transform() {
             # Create intensity version of combined brainstem with validation
             if [ -f "$combined_brainstem_mask" ] && [ "$regions_found" -gt 0 ]; then
                 log_message "Creating brainstem intensity mask from combined brainstem..."
-                if fslmaths "$orig_flair" -mul "$combined_brainstem_mask" "$brainstem_intensity" 2>/dev/null; then
+                if fslmaths "$orig_flair" -mas "$combined_brainstem_mask" "$brainstem_intensity" 2>/dev/null; then
                     # Validate the created file
                     if [ -f "$brainstem_intensity" ]; then
                         local intensity_voxels=$(fslstats "$brainstem_intensity" -V | awk '{print $1}' 2>/dev/null || echo "0")
@@ -742,7 +742,7 @@ extract_brainstem_talairach_with_transform() {
                 log_formatted "WARNING" "No combined brainstem mask created (found $regions_found regions), creating empty placeholder"
                 # Create empty placeholder to prevent analysis from crashing
                 if [ -f "$orig_flair" ]; then
-                    fslmaths "$orig_flair" -mul 0 "$brainstem_intensity" 2>/dev/null || {
+                    fslmaths "$orig_flair" -mas 0 "$brainstem_intensity" 2>/dev/null || {
                         log_formatted "ERROR" "Failed to create empty brainstem_location_check_intensity.nii.gz placeholder"
                     }
                 fi
@@ -1161,7 +1161,7 @@ extract_brainstem_talairach() {
     log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
     
     # Use centralized apply_transformation function for consistent SyN transform handling
-    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "GenericLabel"; then
+    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "NearestNeighbor"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -1280,7 +1280,7 @@ extract_brainstem_talairach() {
                     return
                 fi
                 
-                fslmaths "$region_file" -mul "$validation_harvard_mask" "$validated_file"
+                fslmaths "$region_file" -mas "$validation_harvard_mask" "$validated_file"
                 
                 # Count voxels before and after validation
                 local orig_voxels=$(fslstats "$region_file" -V | awk '{print $1}')
@@ -1341,7 +1341,7 @@ extract_brainstem_talairach() {
             
             # Create intensity version
             local intensity_file="${region_file%.nii.gz}_intensity.nii.gz"
-            if fslmaths "$input_file" -mul "$region_file" "$intensity_file"; then
+            if fslmaths "$input_file" -mas "$region_file" "$intensity_file"; then
                 log_message "✓ Intensity file: $(basename "$intensity_file")"
             else
                 log_formatted "WARNING" "Failed to create intensity file for $base_region_name"
@@ -1349,7 +1349,7 @@ extract_brainstem_talairach() {
             
             # Also create T1 intensity version
             local t1_intensity_file="${region_file%.nii.gz}_t1_intensity.nii.gz"
-            if fslmaths "$input_file" -mul "$region_file" "$t1_intensity_file"; then
+            if fslmaths "$input_file" -mas "$region_file" "$t1_intensity_file"; then
                 log_message "✓ T1 intensity file: $(basename "$t1_intensity_file")"
             else
                 log_formatted "WARNING" "Failed to create T1 intensity file for $base_region_name"
