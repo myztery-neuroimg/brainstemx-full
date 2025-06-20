@@ -5,7 +5,6 @@ description = "Anomaly detection within the human brainstem - a research project
 readme = "README.md"
 requires-python = "==3.12.8" 
 dependencies = [
-    "altair==5.5.0",
     "antspyx>=0.5.4",
     "astroid==3.3.9",
     "attrs==25.3.0",
@@ -44,7 +43,6 @@ dependencies = [
     "plotly==6.1.2",
     "protobuf==5.29.5",
     "pyarrow==19.0.1",
-    "pydeck==0.9.1",
     "pydicom==3.0.1",
     "pylint==3.3.6",
     "pyparsing==3.2.3",
@@ -69,7 +67,8 @@ dependencies = [
     "tornado==6.5.1",
     "typing-extensions==4.13.1",
     "tzdata==2025.2",
-    "urllib3==2.4.0",
+    "urllib3==2.5.0",
     "watchdog==6.0.0 ; sys_platform != 'darwin'",
     "webcolors==24.11.1",
+    "seaborn",
 ]

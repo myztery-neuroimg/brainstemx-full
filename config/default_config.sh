@@ -85,7 +85,7 @@ export REG_PRECISION=3                 # Registration precision (higher = more a
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
 
 # Hyperintensity detection
-export THRESHOLD_WM_SD_MULTIPLIER=1.5 #Standard deviations from local norm
+export THRESHOLD_WM_SD_MULTIPLIER=1.25  #Standard deviations from local norm
 export MIN_HYPERINTENSITY_SIZE=4
 
 # Tissue segmentation parameters
