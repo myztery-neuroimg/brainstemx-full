@@ -34,6 +34,8 @@ source src/modules/preprocess.sh
 source src/modules/brain_extraction.sh
 source src/modules/registration.sh
 source src/modules/segmentation.sh
+source src/modules/segmentation_transformation_extraction.sh
+source src/modules/segment_talairach.sh
 source src/modules/analysis.sh
 source src/modules/visualization.sh
 source src/modules/qa.sh

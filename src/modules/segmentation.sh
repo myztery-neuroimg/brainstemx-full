@@ -23,10 +23,6 @@ if [ -n "${RESULTS_DIR}" ] && [[ "$RESULTS_DIR" != /* ]]; then
     log_message "Converted RESULTS_DIR to absolute path: $RESULTS_DIR"
 fi
 
-# ============================================================================
-# COORDINATE SYSTEM HELPER FUNCTIONS
-# ============================================================================
-
 get_qform_description() {
     local code="$1"
     case "$code" in
@@ -35,7 +31,7 @@ get_qform_description() {
         2) echo "Aligned Anatomical coordinates" ;;
         3) echo "Talairach coordinates" ;;
         4) echo "MNI 152 coordinates" ;;
-        *) echo "Invalid/Unknown code ($code)" ;;
+        *) echo "Invalid code ($code)" ;;
     esac
 }
 
@@ -47,7 +43,7 @@ get_sform_description() {
         2) echo "Aligned Anatomical coordinates" ;;
         3) echo "Talairach coordinates" ;;
         4) echo "MNI 152 coordinates" ;;
-        *) echo "Invalid/Unknown code ($code)" ;;
+        *) echo "Invalid code ($code)" ;;
     esac
 }
 
