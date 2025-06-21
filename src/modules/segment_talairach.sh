@@ -500,7 +500,7 @@ extract_brainstem_talairach_with_transform() {
                 fi
                 
                 fslmaths "$region_file" -mas "$validation_harvard_mask" "$validated_file"
-                
+                #cp "$region_file" "$validated_file"
                 # Count voxels before and after validation
                 local orig_voxels=$(fslstats "$region_file" -V | awk '{print $1}')
                 local valid_voxels=$(fslstats "$validated_file" -V | awk '{print $1}')
@@ -546,7 +546,7 @@ extract_brainstem_talairach_with_transform() {
         if [ -f "$region_file" ]; then
             # Skip files that are already intensity derivatives to prevent recursive processing
             local region_basename=$(basename "$region_file" .nii.gz)
-            if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_flair_"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
+            if [[ "$region_basename" == *"_intensity"* ]] || [[ "$region_basename" == *"_clustered"* ]] || [[ "$region_basename" == *"_validated"* ]]; then
                 continue
             fi
             
