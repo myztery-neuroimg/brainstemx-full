@@ -25,6 +25,19 @@ export RESULTS_DIR="../mri_results"
 export PROCESSING_DATATYPE="float"  # internal float
 export OUTPUT_DATATYPE="int"        # final int16
 
+# Atlas and template configuration
+export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-2mm}"
+
+# Joint fusion specific parameters
+export JOINT_FUSION_ALPHA="${JOINT_FUSION_ALPHA:-0.1}"      # Label smoothing
+export JOINT_FUSION_BETA="${JOINT_FUSION_BETA:-2.0}"        # Spatial regularization
+export JOINT_FUSION_PATCH_RADIUS="${JOINT_FUSION_PATCH_RADIUS:-2}"
+export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
+
+# ANTs registration parameters (existing)
+export ANTS_THREADS="${ANTS_THREADS:-8}"
+export REG_TRANSFORM_TYPE="${REG_TRANSFORM_TYPE:-2}"  # SyN registration
+
 # Quality settings (LOW, MEDIUM, HIGH)
 export MAX_CPU_INTENSIVE_JOBS=1
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
