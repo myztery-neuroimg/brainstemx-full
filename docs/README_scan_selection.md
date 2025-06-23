@@ -1,6 +1,6 @@
 # Enhanced Scan Selection with Multiple Modes
 
-This document describes the intelligent scan selection system that has been implemented in the pipeline. The system can now operate in multiple modes, each optimized for different use cases.
+This document describes the scan selection system that has been implemented in the pipeline. The system can now operate in multiple modes, each optimized for different use cases.
 
 ## Scan Selection Modes
 
