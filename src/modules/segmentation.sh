@@ -1147,17 +1147,25 @@ extract_brainstem_harvard_oxford() {
     
     log_formatted "SUCCESS" "Atlas validation completed - Harvard-Oxford atlas is valid"
     
-    # NOTE: Registration will be performed after orientation correction
-    # Create transforms directory if it doesn't exist
+    # Check if T1 is already in MNI space (from pipeline normalization)
     mkdir -p "${RESULTS_DIR}/registered/transforms"
-        
-    # Set up ANTs registration parameters using existing configuration
-    local ants_prefix="${RESULTS_DIR}/registered/transforms/ants_to_mni_"
-    local ants_warped="${RESULTS_DIR}/registered/transforms/ants_to_mni_warped.nii.gz"
-    local brainstem_mask_mni_file="${RESULTS_DIR}/registered/transforms/brainstem_mask_mni_file.nii.gz"
+    local mni_space_info="${RESULTS_DIR}/registered/transforms/mni_space_info.txt"
     
-    # Step 4: Transform brainstem mask to subject T1 space
-    log_message "Transforming brainstem mask to subject T1 space..."
+    local t1_already_in_mni=false
+    if [ -f "$mni_space_info" ] && grep -q "SPACE=MNI152" "$mni_space_info"; then
+        t1_already_in_mni=true
+        log_formatted "INFO" "T1 is already normalized to MNI space - using atlases directly"
+        log_message "No additional registration needed since data is in standardized space"
+    else
+        log_formatted "INFO" "T1 in native space - will register to MNI for atlas alignment"
+    fi
+    
+    # Step 4: Handle atlas usage based on coordinate space
+    if [ "$t1_already_in_mni" = "true" ]; then
+        log_message "Using Harvard-Oxford atlas directly (T1 already in MNI space)..."
+    else
+        log_message "Transforming brainstem mask to subject T1 space..."
+    fi
     
     # COMPREHENSIVE: Validate coordinate spaces, dimensions, and transformations (ENHANCED)
     log_message "======= COMPREHENSIVE COORDINATE SPACE VALIDATION (ENHANCED) ======="
@@ -1393,17 +1401,32 @@ extract_brainstem_harvard_oxford() {
         orientation_corrected_input="${temp_dir}/input_orientation_corrected.nii.gz"
     fi
     
-    # Step 1: Register orientation-corrected input to MNI space using ANTs
-    log_message "Registering $orientation_corrected_input to MNI space using ANTs..."
-    
-    # CRITICAL: Use full SyN registration (affine + warp) for proper composite transforms
-    # Single-file transform = full deformation is false for ANTs; SyN always emits two (affine + warp)
-    log_formatted "INFO" "Using composite SyN registration (affine + nonlinear warp)"
-    
-    # DEBUG: Check if transform files already exist
-    log_message "=== TRANSFORM FILE EXISTENCE CHECK ==="
-    local affine_transform="${ants_prefix}0GenericAffine.mat"
-    local warp_transform="${ants_prefix}1Warp.nii.gz"
+    # Handle atlas processing based on coordinate space
+    if [ "$t1_already_in_mni" = "true" ]; then
+        log_formatted "INFO" "===== DIRECT ATLAS USAGE (MNI SPACE) ====="
+        log_message "T1 is already in MNI152 space - using Harvard-Oxford atlas directly"
+        
+        # Use atlas directly since T1 is already in MNI space
+        local atlas_in_subject="$atlas_corrected"
+        
+        # Skip registration - data is already aligned
+        log_message "Skipping registration - T1 and atlas are both in MNI152 space"
+        
+    else
+        log_formatted "INFO" "===== REGISTRATION TO MNI (NATIVE SPACE) ====="
+        log_message "Registering $orientation_corrected_input to MNI space using ANTs..."
+        
+        # Set up ANTs registration parameters
+        local ants_prefix="${RESULTS_DIR}/registered/transforms/ants_to_mni_"
+        local ants_warped="${RESULTS_DIR}/registered/transforms/ants_to_mni_warped.nii.gz"
+        
+        # CRITICAL: Use full SyN registration (affine + warp) for proper composite transforms
+        log_formatted "INFO" "Using composite SyN registration (affine + nonlinear warp)"
+        
+        # DEBUG: Check if transform files already exist
+        log_message "=== TRANSFORM FILE EXISTENCE CHECK ==="
+        local affine_transform="${ants_prefix}0GenericAffine.mat"
+        local warp_transform="${ants_prefix}1Warp.nii.gz"
     
     if [ -f "$affine_transform" ]; then
         local affine_age=$(find "$affine_transform" -mtime -1 2>/dev/null | wc -l)
@@ -1577,34 +1600,49 @@ extract_brainstem_harvard_oxford() {
     # Validate registration quality with True MI
     validate_registration_quality "$mni_brain" "$orientation_corrected_input" "$ants_prefix"
     
-    # Step 3: Transform Harvard-Oxford atlas to subject space (preserving native resolution)
-    log_message "Transforming Harvard-Oxford atlas to subject native space..."
+        # Complete the registration workflow for native space
+        # [Previous registration code continues here - the existing logic from lines 1408-1579]
+        
+        # Step 3: Transform Harvard-Oxford atlas to subject space (preserving native resolution)
+        log_message "Transforming Harvard-Oxford atlas to subject native space..."
+        
+        # Transform the ENTIRE atlas to subject space first, then extract regions
+        local atlas_in_subject="${RESULTS_DIR}/registered/harvard_oxford_in_subject.nii.gz"
+        
+        # CRITICAL FIX: Use centralized apply_transformation function for consistent SyN handling
+        log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
+        
+        # Use centralized apply_transformation function for consistent SyN transform handling
+        if apply_transformation "$atlas_corrected" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "NearestNeighbor"; then
+            log_message "✓ Successfully applied transform using centralized function"
+        else
+            log_formatted "ERROR" "Failed to apply transform using centralized function"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+        
+        # Check if atlas transformation was successful
+        if [ ! -f "$atlas_in_subject" ]; then
+            log_formatted "ERROR" "Failed to transform atlas to subject space"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+    fi
     
-    # Transform the ENTIRE atlas to subject space first, then extract regions
-    # This preserves subject resolution and is more efficient
-    local atlas_in_subject="${RESULTS_DIR}/registered/harvard_oxford_in_subject.nii.gz"
-    
-    # CRITICAL FIX: Use centralized apply_transformation function for consistent SyN handling
-    log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
-    
-    # Use centralized apply_transformation function for consistent SyN transform handling
-    if apply_transformation "$atlas_corrected" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "NearestNeighbor"; then
-        log_message "✓ Successfully applied transform using centralized function"
+    # Continue with common atlas processing (works for both MNI and native space)
+    # Set atlas_in_subject variable based on the processing path taken
+    local atlas_in_subject
+    if [ "$t1_already_in_mni" = "true" ]; then
+        # T1 is in MNI space - use atlas directly
+        atlas_in_subject="$atlas_corrected"
     else
-        log_formatted "ERROR" "Failed to apply transform using centralized function"
-        rm -rf "$temp_dir"
-        return 1
+        # T1 is in native space - use transformed atlas
+        atlas_in_subject="${RESULTS_DIR}/registered/harvard_oxford_in_subject.nii.gz"
     fi
     
-    # Check if atlas transformation was successful
-    if [ ! -f "$atlas_in_subject" ]; then
-        log_formatted "ERROR" "Failed to transform atlas to subject space"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-    
-    # Now extract brainstem from the transformed atlas in subject space
-    log_message "Extracting brainstem from atlas in subject native space..."
+    # Now extract brainstem from the atlas in subject space
+    log_message "Extracting brainstem from atlas in subject space..."
+    log_message "Using atlas file: $atlas_in_subject"
     
     local brainstem_index=7  # Brain-Stem in Harvard-Oxford subcortical atlas
     log_message "Extracting brainstem (index $brainstem_index) from transformed atlas..."

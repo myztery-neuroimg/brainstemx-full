@@ -62,17 +62,19 @@ show_help() {
   echo "Usage: ./pipeline.sh [options]"
   echo ""
   echo "Options:"
-  echo "  -c, --config FILE    Configuration file (default: config/default_config.sh)"
-  echo "  -i, --input DIR      Input directory (default: ../DiCOM)"
-  echo "  -o, --output DIR     Output directory (default: ../mri_results)"
-  echo "  -s, --subject ID     Subject ID (default: derived from input directory)"
-  echo "  -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)"
-  echo "  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)"
-  echo "  -t, --start-stage STAGE  Start pipeline from STAGE (default: import)"
-  echo "  --quiet              Minimal output (errors and completion only)"
-  echo "  --verbose            Detailed output with technical parameters"
-  echo "  --debug              Full output including all ANTs technical details"
-  echo "  -h, --help           Show this help message and exit"
+  echo "  -c, --config FILE              Configuration file (default: config/default_config.sh)"
+  echo "  -i, --input DIR                Input directory (default: ../DiCOM)"
+  echo "  -o, --output DIR               Output directory (default: ../mri_results)"
+  echo "  -s, --subject ID               Subject ID (default: derived from input directory)"
+  echo "  -q, --quality LEVEL            Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)"
+  echo "  -p, --pipeline TYPE            Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)"
+  echo "  -t, --start-stage STAGE        Start pipeline from STAGE (default: import)"
+  echo "  --compare-import-options       Compare different dcm2niix import strategies and exit"
+  echo "  -f, --filter PATTERN          Filter files by regex pattern for import comparison"
+  echo "  --quiet                        Minimal output (errors and completion only)"
+  echo "  --verbose                      Detailed output with technical parameters"
+  echo "  --debug                        Full output including all ANTs technical details"
+  echo "  -h, --help                     Show this help message and exit"
   echo ""
   echo "Pipeline Stages:"
   echo "  import: Import and convert DICOM data"
@@ -83,6 +85,14 @@ show_help() {
   echo "  analysis: Detect and analyze hyperintensities"
   echo "  visualization: Generate visualizations and reports"
   echo "  tracking: Track pipeline progress"
+  echo ""
+  echo "Import Strategy Comparison:"
+  echo "  --compare-import-options tests 4 different dcm2niix flag combinations:"
+  echo "    PRESERVE_ALL_SLICES: Maximum data retention (-m n -i n)"
+  echo "    VENDOR_OPTIMIZED: Vendor-specific optimizations"
+  echo "    CROP_TO_BRAIN: Speed optimized (-m y -i y)"
+  echo "    CUSTOM_NO_ANATOMICAL: Test anatomical preservation impact"
+  echo "  Generates detailed statistics and comparison report then exits."
   echo ""
   echo "Verbosity Levels:"
   echo "  normal (default): Balanced output with stage progression and key information"
@@ -188,6 +198,22 @@ parse_arguments() {
         START_STAGE_NAME="$2"
         shift 2
         ;;
+      --compare-import-options)
+        export COMPARE_IMPORT_OPTIONS="true"
+        export PIPELINE_MODE="IMPORT_COMPARISON"
+        shift
+        ;;
+      -f|--filter)
+        shift
+        if [ -n "$1" ]; then
+          export COMPARISON_FILE_FILTER="$1"
+          log_message "File filter pattern set: $1"
+        else
+          log_error "Filter pattern cannot be empty"
+          exit 1
+        fi
+        shift
+        ;;
       --quiet)
         export PIPELINE_VERBOSITY="quiet"
         shift
@@ -271,6 +297,15 @@ run_pipeline() {
   # Check for GNU parallel
   #check_parallel
   load_config "config/default_config.sh"
+  
+  # Check for import comparison mode
+  if [ "${COMPARE_IMPORT_OPTIONS:-false}" = "true" ]; then
+    log_formatted "INFO" "Running import strategy comparison mode"
+    source src/modules/import_comparison.sh
+    compare_import_strategies "$input_dir"
+    # Function will exit pipeline after completion
+  fi
+  
   log_message "Running pipeline for subject $subject_id"
   log_message "Input directory: $input_dir"
   log_message "Output directory: $output_dir"
@@ -699,67 +734,53 @@ run_pipeline() {
         standardize_image_format "$flair_std" "" "$flair_fmt" "FLOAT32"
       fi
       
-      # STEP 1: Register FLAIR to T1 in native high resolution space
-      # This maintains the high resolution of FLAIR & T1 data
-      log_formatted "INFO" "===== REGISTERING FLAIR TO T1 IN NATIVE SPACE ====="
-      log_message "This preserves the original resolution of both scans"
+      # STEP 1: Normalize T1 to MNI space for standardized analysis
+      log_formatted "INFO" "===== NORMALIZING T1 TO MNI SPACE ====="
+      log_message "This enables proper cross-subject comparisons and standardized analysis"
       
-      local reg_prefix="${reg_dir}/t1_to_flair"
-      log_message "Running registration with standardized datatypes..."
-      register_t2_flair_to_t1mprage "$t1_fmt" "$flair_fmt" "$reg_prefix"
+      local t1_mni_prefix="${reg_dir}/t1_to_mni"
+      log_message "Registering T1 to MNI space for normalization..."
+      register_t1_to_mni "$t1_fmt" "$t1_mni_prefix"
+      local t1_mni_status=$?
+      
+      if [ $t1_mni_status -eq 0 ] && [ -f "${t1_mni_prefix}Warped.nii.gz" ]; then
+        log_formatted "SUCCESS" "T1 normalization to MNI space completed"
+        # Update t1_std to point to MNI-normalized version
+        t1_std="${t1_mni_prefix}Warped.nii.gz"
+        log_message "Updated T1 reference to MNI-normalized: $t1_std"
+      else
+        log_formatted "ERROR" "T1 to MNI normalization failed, falling back to native space"
+        t1_std="$t1_fmt"
+      fi
+      
+      # STEP 2: Register FLAIR to MNI-normalized T1
+      log_formatted "INFO" "===== REGISTERING FLAIR TO MNI-NORMALIZED T1 ====="
+      log_message "This ensures all data is in standardized MNI space"
+      
+      local reg_prefix="${reg_dir}/flair_to_t1_mni"
+      log_message "Running FLAIR registration to MNI-normalized T1..."
+      register_modality_to_t1 "$t1_std" "$flair_fmt" "FLAIR" "$reg_prefix"
       flair_registered="${reg_prefix}Warped.nii.gz"
       
-      # STEP 2: Calculate and store transforms between spaces but don't apply them yet
-      log_formatted "INFO" "===== CALCULATING TRANSFORMS BETWEEN SPACES ====="
+      # STEP 3: Create transform functions for atlas usage (now in MNI space)
+      log_formatted "INFO" "===== PREPARING ATLAS FUNCTIONS FOR MNI SPACE ====="
       local transform_dir="${reg_dir}/transforms"
       mkdir -p "$transform_dir"
       
-      # Calculate T1 to MNI transform (but don't actually resample the high-res data)
-      log_message "Calculating bidirectional transforms between native and MNI space..."
-      local t1_mni_transform="${transform_dir}/t1_to_mni.mat"
-      local mni_to_t1_transform="${transform_dir}/mni_to_t1.mat"
+      # Store transform information for reference
+      log_message "All processing is now in MNI space - no additional transforms needed for atlases"
+      log_message "T1 (MNI space): $t1_std"
+      log_message "FLAIR (MNI space): $flair_registered"
       
-      # Create transforms in both directions
-      flirt -in "$t1_fmt" -ref "$MNI_TEMPLATE" -omat "$t1_mni_transform" -dof 12
-      convert_xfm -omat "$mni_to_t1_transform" -inverse "$t1_mni_transform"
+      # Store reference paths for downstream processing
+      echo "T1_MNI_NORMALIZED=${t1_std}" > "${transform_dir}/mni_space_info.txt"
+      echo "FLAIR_MNI_REGISTERED=${flair_registered}" >> "${transform_dir}/mni_space_info.txt"
+      echo "SPACE=MNI152" >> "${transform_dir}/mni_space_info.txt"
+      echo "COORDINATE_SYSTEM=MNI152_2mm" >> "${transform_dir}/mni_space_info.txt"
       
-      log_message "Transforms created for bidirectional conversion between spaces"
-      log_message "Native → MNI: $t1_mni_transform"
-      log_message "MNI → Native: $mni_to_t1_transform"
-      
-      # For QA/validation, optionally create MNI space version of T1
-      local mni_dir="${reg_dir}/mni_space"
-      mkdir -p "$mni_dir"
-      local t1_mni="${mni_dir}/t1_to_mni.nii.gz"
-      apply_transform "$t1_fmt" "$MNI_TEMPLATE" "$t1_mni_transform" "$t1_mni"
-      
-      # STEP 3: Create functions for applying standard masks
-      log_formatted "INFO" "===== PREPARING FOR STANDARD ATLAS USAGE ====="
-      
-      # Create function to transform standard masks to subject space
-      transform_standard_mask_to_subject() {
-        local standard_mask="$1"    # Mask in MNI space
-        local output="$2"           # Output in subject space
-        
-        log_message "Transforming standard mask to subject space: $standard_mask"
-        apply_transform "$standard_mask" "$t1_fmt" "$mni_to_t1_transform" "$output" "nearestneighbour"
-      }
-      
-      # Export the function for use downstream
-      export -f transform_standard_mask_to_subject
-      
-      # Transform key Harvard masks as an example
-      local harvard_dir="${reg_dir}/harvard_masks"
-      mkdir -p "$harvard_dir"
-      
-      if [ -f "$FSLDIR/data/atlases/HarvardOxford/HarvardOxford-Cortical-Maxprob-thr25-1mm.nii.gz" ]; then
-        transform_standard_mask_to_subject \
-          "$FSLDIR/data/atlases/HarvardOxford/HarvardOxford-Cortical-Maxprob-thr25-1mm.nii.gz" \
-          "${harvard_dir}/harvard_cortical_native.nii.gz"
-        log_message "Harvard cortical atlas transformed to subject space"
-      else
-        log_formatted "WARNING" "Harvard cortical atlas not found"
-      fi
+      log_message "All data is now in standardized MNI space"
+      log_message "Atlases can be used directly without transformation"
+      log_message "Space information saved: ${transform_dir}/mni_space_info.txt"
     fi
     
     # Validate registration step
