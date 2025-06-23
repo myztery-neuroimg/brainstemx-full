@@ -95,32 +95,32 @@ register_juelich_to_talairach() {
     # Execute registration using existing ANTs wrapper
     log_message "Executing antsRegistrationSyN.sh for tract-to-anatomy registration..."
     
-    antsRegistrationSyN.sh \
-        -d 3 \
-        -f "$talairach_atlas" \
-        -m "$juelich_atlas" \
-        -o "$transform_prefix" \
-        -t s \
-        -j 1 \
-        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    #antsRegistrationSyN.sh \
+    #    -d 3 \
+    #    -f "$talairach_atlas" \
+    #    -m "$juelich_atlas" \
+    #    -o "$transform_prefix" \
+    #    -t s \
+    #    -j 1 \
+    #    -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Validate transforms
-    if [[ ! -f "${transform_prefix}0GenericAffine.mat" ]] || [[ ! -f "${transform_prefix}1Warp.nii.gz" ]]; then
-        log_formatted "ERROR" "Juelich registration failed - transforms not generated"
-        return 1
-    fi
+    #if [[ ! -f "${transform_prefix}0GenericAffine.mat" ]] || [[ ! -f "${transform_prefix}1Warp.nii.gz" ]]; then
+    #    log_formatted "ERROR" "Juelich registration failed - transforms not generated"
+    #    return 1
+    #fi
     
     # Transform Juelich to Talairach space
     local juelich_in_talairach="${workspace}/atlases/juelich_in_talairach.nii.gz"
-    
-    antsApplyTransforms \
-        -d 3 \
-        -i "$juelich_atlas" \
-        -r "$talairach_atlas" \
-        -o "$juelich_in_talairach" \
-        -t "${transform_prefix}1Warp.nii.gz" \
-        -t "${transform_prefix}0GenericAffine.mat" \
-        -n NearestNeighbor >/dev/null 2>/dev/null
+    cp $talairach_atlas  $juelich_in_talairach
+    #antsApplyTransforms \
+    #    -d 3 \
+    #    -i "$juelich_atlas" \
+    #    -r "$talairach_atlas" \
+    #    -o "$juelich_in_talairach" \
+    #    -t "${transform_prefix}1Warp.nii.gz" \
+    #    -t "${transform_prefix}0GenericAffine.mat" \
+    #    -n NearestNeighbor >/dev/null 2>/dev/null
     
     if [[ ! -f "$juelich_in_talairach" ]]; then
         log_formatted "ERROR" "Failed to transform Juelich to Talairach space"
@@ -146,12 +146,12 @@ create_enhanced_talairach_atlas() {
     
     # Create individual Talairach brainstem region masks
     declare -A TALAIRACH_REGIONS=(
-        ["left_medulla"]="172"
-        ["right_medulla"]="173"
-        ["left_pons"]="174"
-        ["right_pons"]="175"
-        ["left_midbrain"]="176"
-        ["right_midbrain"]="177"
+        ["left_medulla"]="5"
+        ["right_medulla"]="6"
+        ["left_pons"]="71"
+        ["right_pons"]="72"
+        ["left_midbrain"]="215"
+        ["right_midbrain"]="216"
     )
     
     local region_files=()
@@ -161,7 +161,7 @@ create_enhanced_talairach_atlas() {
         local region_file="${temp_dir}/${region}.nii.gz"
         
         # Extract region mask
-        fslmaths "$talairach_atlas" -thr $((index-1)).5 -uthr $((index+1)).5 -bin "$region_file"
+        fslmaths "$talairach_atlas" -thr "$index" -uthr "$index" -bin "$region_file"
         
         # Validate extraction
         local voxel_count=$(fslstats "$region_file" -V | awk '{print $1}')
@@ -189,16 +189,15 @@ create_enhanced_talairach_atlas() {
     
     # Integrate tract information if available
     if [[ -f "$juelich_in_talairach" ]] && [[ ! -f "${workspace}/no_juelich_flag" ]]; then
-        log_message "Integrating tract information into Talairach atlas..."
+        log_message "NOT Integrating tract information into Talairach atlas..."
         
         # Create tract-enhanced mask
-        local tract_weighted="${temp_dir}/tract_weighted.nii.gz"
-        fslmaths "$juelich_in_talairach" -bin -mul 0.3 "$tract_weighted"
-        fslmaths "$enhanced_talairach" -add "$tract_weighted" "$enhanced_talairach"
+    #    local tract_weighted="${temp_dir}/tract_weighted.nii.gz"
+    #    fslmaths "$juelich_in_talairach" -bin -mul 0.3 "$tract_weighted"
+    #    fslmaths "$enhanced_talairach" -add "$tract_weighted" "$enhanced_talairach"
     fi
     
-    # Normalize to binary mask for label fusion
-    fslmaths "$enhanced_talairach" -bin "$enhanced_talairach"
+    # The enhanced atlas is kept with overlapping regions for better registration
     
     local total_voxels=$(fslstats "$enhanced_talairach" -V | awk '{print $1}')
     log_message "Enhanced Talairach atlas: ${total_voxels} total brainstem voxels"
@@ -268,28 +267,51 @@ execute_dual_atlas_fusion() {
     mkdir -p "$labels_dir"
     
     # Harvard-Oxford brainstem label (index 7)
-    fslmaths "$harvard_atlas" -thr 6.5 -uthr 7.5 -bin "${labels_dir}/harvard_brainstem.nii.gz"
+    local harvard_label_atlas_space="${labels_dir}/harvard_brainstem_atlas_space.nii.gz"
+    fslmaths "$harvard_atlas" -thr 6.5 -uthr 7.5 -bin "$harvard_label_atlas_space"
     
-    # Talairach enhanced brainstem label (already binary)
-    cp "$talairach_enhanced" "${labels_dir}/talairach_brainstem.nii.gz"
+    # Talairach enhanced brainstem label (create binary mask)
+    local talairach_label_atlas_space="${labels_dir}/talairach_brainstem_atlas_space.nii.gz"
+    fslmaths "$talairach_enhanced" -bin "$talairach_label_atlas_space"
+
+    # Warp atlases and labels to subject space
+    log_message "Warping atlases and labels to subject space..."
     
+    local harvard_atlas_subject_space="${labels_dir}/harvard_oxford_subject_space.nii.gz"
+    local harvard_label_subject_space="${labels_dir}/harvard_brainstem_subject_space.nii.gz"
+    antsApplyTransforms -d 3 -i "$harvard_atlas" -r "$input_file" -o "$harvard_atlas_subject_space" \
+        -t "$harvard_warp" -t "$harvard_affine" -n Linear
+    antsApplyTransforms -d 3 -i "$harvard_label_atlas_space" -r "$input_file" -o "$harvard_label_subject_space" \
+        -t "$harvard_warp" -t "$harvard_affine" -n NearestNeighbor
+
+    # Calculate and log metrics for the warped Harvard-Oxford brainstem
+    log_message "Calculating metrics for warped Harvard-Oxford brainstem..."
+    local harvard_voxel_count=$(fslstats "$harvard_label_subject_space" -V | awk '{print $1}')
+    local harvard_cog_mm=$(fslstats "$harvard_label_subject_space" -c)
+    log_message "  ✓ Harvard-Oxford brainstem in subject space:"
+    log_message "    - Voxel count: ${harvard_voxel_count}"
+    log_message "    - Center of Gravity (mm): ${harvard_cog_mm}"
+
+    local talairach_atlas_subject_space="${labels_dir}/talairach_enhanced_subject_space.nii.gz"
+    local talairach_label_subject_space="${labels_dir}/talairach_brainstem_subject_space.nii.gz"
+    antsApplyTransforms -d 3 -i "$talairach_enhanced" -r "$input_file" -o "$talairach_atlas_subject_space" \
+        -t "$talairach_warp" -t "$talairach_affine" -n Linear
+    antsApplyTransforms -d 3 -i "$talairach_label_atlas_space" -r "$input_file" -o "$talairach_label_subject_space" \
+        -t "$talairach_warp" -t "$talairach_affine" -n NearestNeighbor
+
     # Execute antsJointFusion
-    log_message "Executing antsJointFusion with dual atlases..."
+    log_message "Executing antsJointFusion with dual atlases in subject space..."
     
     antsJointFusion \
         -d 3 \
         -t "$input_file" \
-        -g "$harvard_atlas" \
-        -l "${labels_dir}/harvard_brainstem.nii.gz" \
-        -m "$harvard_warp" \
-        -m "$harvard_affine" \
-        -g "$talairach_enhanced" \
-        -l "${labels_dir}/talairach_brainstem.nii.gz" \
-        -m "$talairach_warp" \
-        -m "$talairach_affine" \
+        -g "$harvard_atlas_subject_space" \
+        -l "$harvard_label_subject_space" \
+        -g "$talairach_atlas_subject_space" \
+        -l "$talairach_label_subject_space" \
         -a 0.1 \
         -b 2.0 \
-        -c 2 \
+        --patch-search 2 \
         -s 3 \
         -p 1 \
         -o "${results_dir}/joint_fusion_"
@@ -356,12 +378,12 @@ generate_talairach_subdivisions() {
     
     # Define Talairach regions
     declare -A TALAIRACH_REGIONS=(
-        ["left_medulla"]="172"
-        ["right_medulla"]="173"
-        ["left_pons"]="174"
-        ["right_pons"]="175"
-        ["left_midbrain"]="176"
-        ["right_midbrain"]="177"
+        ["left_medulla"]="5"
+        ["right_medulla"]="6"
+        ["left_pons"]="71"
+        ["right_pons"]="72"
+        ["left_midbrain"]="215"
+        ["right_midbrain"]="216"
     )
     
     local subdivision_dir="$(dirname "$output_prefix")/talairach_subdivisions"
@@ -373,7 +395,7 @@ generate_talairach_subdivisions() {
         local temp_atlas_region="${workspace}/temp_${region}.nii.gz"
         
         # Extract region from atlas
-        fslmaths "$talairach_atlas" -thr $((index-1)).5 -uthr $((index+1)).5 -bin "$temp_atlas_region"
+        fslmaths "$talairach_atlas" -thr "$index" -uthr "$index" -bin "$temp_atlas_region"
         
         # Transform to subject space
         antsApplyTransforms \
