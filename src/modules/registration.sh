@@ -1736,8 +1736,73 @@ validate_registration_output() {
     return 0
 }
 
+# Function to register T1 to MNI space (proper normalization)
+register_t1_to_mni() {
+    local t1_input="$1"
+    local output_prefix="$2"
+    local template="${3:-${MNI_TEMPLATE}}"
+    
+    log_message "=== Registering T1 to MNI Space (Normalization) ==="
+    log_message "Input T1: $t1_input"
+    log_message "Output prefix: $output_prefix"
+    log_message "Template: $template"
+    
+    # Validate inputs
+    if [ ! -f "$t1_input" ]; then
+        log_formatted "ERROR" "T1 input file not found: $t1_input"
+        return 1
+    fi
+    
+    if [ ! -f "$template" ]; then
+        log_formatted "ERROR" "MNI template not found: $template"
+        return 1
+    fi
+    
+    # Create output directory
+    mkdir -p "$(dirname "$output_prefix")"
+    
+    # Detect optimal resolution for registration
+    local detected_res=$(detect_image_resolution "$t1_input")
+    set_template_resolution "$detected_res"
+    
+    log_message "Using template resolution: $detected_res"
+    log_message "Registration template: $EXTRACTION_TEMPLATE"
+    
+    # Use multi-stage registration for robust T1 to MNI normalization
+    log_message "Performing multi-stage T1 to MNI registration (rigid→affine→SyN)"
+    
+    # Use the actual template for registration
+    local reg_template="$template"
+    if [ -n "$EXTRACTION_TEMPLATE" ] && [ -f "$EXTRACTION_TEMPLATE" ]; then
+        reg_template="$EXTRACTION_TEMPLATE"
+        log_message "Using resolution-matched template: $reg_template"
+    fi
+    
+    # Perform the multi-stage registration
+    perform_multistage_registration "$reg_template" "$t1_input" "$output_prefix"
+    local reg_status=$?
+    
+    if [ $reg_status -eq 0 ] && [ -f "${output_prefix}Warped.nii.gz" ]; then
+        log_formatted "SUCCESS" "T1 to MNI normalization completed successfully"
+        log_message "Normalized T1: ${output_prefix}Warped.nii.gz"
+        
+        # Validate the normalized output
+        if validate_nifti "${output_prefix}Warped.nii.gz" "Normalized T1"; then
+            log_formatted "SUCCESS" "Normalized T1 passed validation"
+        else
+            log_formatted "WARNING" "Normalized T1 failed validation but proceeding"
+        fi
+        
+        return 0
+    else
+        log_formatted "ERROR" "T1 to MNI normalization failed (status: $reg_status)"
+        return 1
+    fi
+}
+
 # Export helper function
 export -f validate_registration_output
 export -f perform_registration_comparison
+export -f register_t1_to_mni
 
 log_message "Registration module loaded"
