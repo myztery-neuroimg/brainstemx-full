@@ -389,7 +389,7 @@ validate_atlas_in_subject_space() {
         
     } > "${validation_output_dir}/overall_validation_report.txt"
     
-    log_message "Atlas-in-subject-space for $atlas_in_subject" - report: ${validation_output_dir}/atlas_subject_space_validation_report_{atlas_in_subject}.txt"
+    log_message "Atlas-in-subject-space for $atlas_in_subject - report: ${validation_output_dir}/atlas_subject_space_validation_report_{atlas_in_subject}.txt"
 
     
     return $([ "$passed_validations" -ge $((total_validations * 2 / 3)) ] && echo 0 || echo 1)
