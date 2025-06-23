@@ -83,7 +83,7 @@ execute_with_logging() {
   # - Stderr is sent to both the diagnostic log AND stderr
   # Remove quotes to avoid passing them directly to the command
   cmd=$(echo "$cmd" | sed -e 's/\\"/"/g')
-  eval "$cmd" > >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$LOG_FILE") 2> >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$diagnostic_log" >&2)
+  eval "$cmd" #> >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$LOG_FILE") 2> >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$diagnostic_log" >&2)
   
   # Return the exit code of the command (not of the tee/grep pipeline)
   return ${PIPESTATUS[0]}
