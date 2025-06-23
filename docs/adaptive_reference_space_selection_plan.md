@@ -113,7 +113,6 @@ select_optimal_reference_space() {
     
     # Phase 4: Interactive decision support
     present_decision_interface
-    
     # Phase 5: Return selected reference info
     echo "${selected_reference_modality}|${selected_reference_file}|${decision_rationale}"
 }
@@ -121,24 +120,24 @@ select_optimal_reference_space() {
 
 ### **2. Decision Criteria (Priority-Ordered)**
 
-1. **ORIGINAL Acquisition** (Weight: +1000)
+1. **ORIGINAL Acquisition** 
    - Massive preference for original vs derived/reconstructed
    - DICOM header analysis for acquisition type
    
-2. **3D Isotropic vs 2D Multi-slice** (Weight: +300)
+2. **3D Isotropic vs 2D Multi-slice** 
    - 3D sequences preferred for registration accuracy
    - Isotropic voxels for optimal resampling
    
-3. **Spatial Resolution** (Weight: +200)
+3. **Spatial Resolution** 
    - Sub-millimeter resolution strongly preferred
    - In-plane resolution prioritized for 2D sequences
    
-4. **Image Quality Metrics** (Weight: +150)
+4. **Image Quality Metrics** 
    - SNR calculation and assessment
    - Contrast evaluation
    - File integrity and completeness
    
-5. **Modality-Specific Suitability** (Weight: +100)
+5. **Modality-Specific Suitability** 
    - T1: Structural detail, tissue boundaries
    - FLAIR: Pathology visibility, CSF suppression
 
@@ -175,62 +174,6 @@ ORIGINAL T2-SPACE-FLAIR Sequences Available:
 ✅ ORIENTATION: Alignment check will be performed automatically
 
 Decision: [1] Accept FLAIR  [2] Override to T1  [3] Show detailed comparison
-```
-
-### **4. Pipeline Modifications Required**
-
-#### **A. Reference-Agnostic Registration System**
-- **Generalize**: `register_modality_to_t1()` → `register_modality_to_reference()`
-- **Update**: All function signatures throughout codebase
-- **Maintain**: Backward compatibility with T1-centric workflows
-
-#### **B. Segmentation Workflow Updates**  
-- **Modify**: `segmentation.sh` to work in chosen reference space
-- **Update**: Atlas registration logic for different reference modalities
-- **Ensure**: Juelich atlas compatibility with both T1 and FLAIR spaces
-
-#### **C. Enhanced Scan Selection Integration**
-- **Extend**: `select_best_scan()` with cross-modal comparison logic
-- **Add**: Reference space decision capabilities
-- **Implement**: Composite scoring for reference space selection
-
-## Comprehensive Test Framework
-
-### **Test Structure**
-```
-tests/
-├── test_reference_space_selection.sh          # Main test runner
-├── lib/
-│   ├── sequence_analysis.sh                   # DICOM analysis functions
-│   ├── decision_validation.sh                 # Decision logic validation
-│   ├── quality_comparison.sh                  # Registration quality testing
-│   └── orientation_testing.sh                 # Alignment validation
-├── data/
-│   ├── ../DICOM/          → High-res FLAIR test case
-│   └── ../DICOM2/         → Clinical grade test case
-└── results/
-    ├── decision_matrices/                      # Decision analysis outputs
-    ├── registration_comparisons/               # Quality comparisons
-    └── test_reports/                          # Comprehensive reports
-```
-
-### **Test Execution Workflow**
-
-```bash
-# Comprehensive dual-dataset test
-./tests/test_reference_space_selection.sh \
-    --dataset1 ../DICOM \
-    --dataset2 ../DICOM2 \
-    --expected1 FLAIR \
-    --expected2 T1 \
-    --interactive
-
-# Expected Test Flow:
-# 1. Analyze ../DICOM → Should recommend FLAIR
-# 2. Analyze ../DICOM2 → Should recommend T1  
-# 3. Validate decision logic in both scenarios
-# 4. Compare registration quality outcomes
-# 5. Generate comprehensive validation report
 ```
 
 ### **Validation Test Cases**
@@ -308,41 +251,6 @@ test_decision_algorithm() {
 - ✅ **Resolution Analysis**: ±0.01mm precision
 - ✅ **Quality Scoring**: Objective and reproducible
 - ✅ **Registration Quality**: Quantitative improvement measurement
-
-## Implementation Timeline
-
-### **Phase 1: Core Infrastructure (2-3 days)**
-1. **Enhanced Reference Space Selector**
-   - Extend `scan_selection.sh` with cross-modal logic
-   - Implement decision criteria scoring
-   - Add interactive decision interface
-
-2. **Reference-Agnostic Registration**
-   - Generalize registration functions
-   - Update function signatures
-   - Maintain backward compatibility
-
-### **Phase 2: Test Framework (1-2 days)**
-3. **Dual Dataset Test Implementation**
-   - Create test structure and runners
-   - Implement validation functions
-   - Add automated decision verification
-
-4. **Registration Quality Comparison**
-   - Quantitative metric comparison
-   - Orientation alignment testing
-   - Performance benchmarking
-
-### **Phase 3: Integration & Validation (1-2 days)**
-5. **Pipeline Integration**
-   - Update main pipeline workflow
-   - Add configuration options
-   - Implement logging and audit trails
-
-6. **Comprehensive Testing**
-   - Run full dual-dataset validation
-   - Performance and accuracy testing
-   - Documentation and reporting
 
 ## Configuration Options
 
