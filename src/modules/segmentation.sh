@@ -923,16 +923,17 @@ extract_brainstem_harvard_oxford() {
     # Check for any coordinate system mismatches requiring correction
     if [ "$coord_mismatch_detected" = "true" ]; then
         atlas_needs_correction=true
-        log_formatted "ERROR" "Coordinate system mismatch requires atlas reorientation"
+        log_formatted "WARNING" "Coordinate system mismatch requires atlas reorientation"
     fi
     
     if [ "$subject_orient" != "$atlas_orient" ] && [ "$atlas_orient" != "UNKNOWN" ] && [ "$subject_orient" != "UNKNOWN" ]; then
         atlas_needs_correction=true
         log_formatted "WARNING" "Basic orientation mismatch: Subject ($subject_orient) vs Atlas ($atlas_orient)"
     fi
-    
+        
     local intermediate_atlas="$harvard_subcortical"
-
+    cp $intermediate_atlas $corrected_atlas
+    
     if [ "$atlas_needs_correction" = "true" ]; then
         
         # Step 1: Handle coordinate system code mismatches first       
@@ -955,6 +956,7 @@ extract_brainstem_harvard_oxford() {
             fi
                             
             intermediate_atlas="$coord_corrected"
+            corrected_atlas="$coord_corrected"
             log_message "✓ Coordinate system correction applied"
         fi
         
