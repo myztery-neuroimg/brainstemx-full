@@ -720,17 +720,23 @@ register_atlas_to_subject() {
     log_message "Registering ${atlas_name} atlas to subject space..."
     
     local transform_prefix="${output_dir}/${atlas_name}_to_subject_"
-    
-    # Execute optimized registration with quality monitoring
-    antsRegistrationSyN.sh \
-        -d 3 \
-        -f "$subject_file" \
-        -m "$atlas_file" \
-        -o "$transform_prefix" \
-        -t s \
-        -j 1 \
-        -p f \
-        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    local warp_file="${transform_prefix}1Warp.nii.gz"
+    local affine_file="${transform_prefix}0GenericAffine.mat"
+
+    if [[ -f "$warp_file" ]] && [[ -f "$affine_file" ]]; then
+        log_message "Registration for ${atlas_name} already exists. Skipping."
+    else
+        # Execute optimized registration with quality monitoring
+        antsRegistrationSyN.sh \
+            -d 3 \
+            -f "$subject_file" \
+            -m "$atlas_file" \
+            -o "$transform_prefix" \
+            -t s \
+            -j 1 \
+            -p f \
+            -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    fi
     
     # Validate registration outputs
     if [ ! -f "${transform_prefix}0GenericAffine.mat" ] || [ ! -f "${transform_prefix}1Warp.nii.gz" ]; then
@@ -817,7 +823,7 @@ perform_optimized_joint_fusion() {
         -l "$talairach_labels_subject_space" \
         -a 0.1 \
         -b 2.0 \
-        --patch-search 2 \
+        -c 1 \
         -s 3 \
         -p 1 \
         -o "$joint_fusion_output"

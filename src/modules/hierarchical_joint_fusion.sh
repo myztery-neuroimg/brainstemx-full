@@ -224,33 +224,39 @@ execute_dual_atlas_fusion() {
     
     # Register Harvard-Oxford to subject
     log_message "Registering Harvard-Oxford atlas to subject space..."
-    
-    antsRegistrationSyN.sh \
-        -d 3 \
-        -f "$input_file" \
-        -m "$harvard_atlas" \
-        -o "${registration_dir}/harvard/harvard_to_subject_" \
-        -t s \
-        -j 1 \
-        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    local harvard_affine="${registration_dir}/harvard/harvard_to_subject_0GenericAffine.mat"
+    local harvard_warp="${registration_dir}/harvard/harvard_to_subject_1Warp.nii.gz"
+    if [[ -f "$harvard_warp" ]] && [[ -f "$harvard_affine" ]]; then
+        log_message "Harvard-Oxford registration to subject space already exists. Skipping."
+    else
+        antsRegistrationSyN.sh \
+            -d 3 \
+            -f "$input_file" \
+            -m "$harvard_atlas" \
+            -o "${registration_dir}/harvard/harvard_to_subject_" \
+            -t s \
+            -j 1 \
+            -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    fi
     
     # Register enhanced Talairach to subject
     log_message "Registering enhanced Talairach atlas to subject space..."
-    
-    antsRegistrationSyN.sh \
-        -d 3 \
-        -f "$input_file" \
-        -m "$talairach_enhanced" \
-        -o "${registration_dir}/talairach/talairach_to_subject_" \
-        -t s \
-        -j 1 \
-        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
-    
-    # Validate registrations
-    local harvard_affine="${registration_dir}/harvard/harvard_to_subject_0GenericAffine.mat"
-    local harvard_warp="${registration_dir}/harvard/harvard_to_subject_1Warp.nii.gz"
     local talairach_affine="${registration_dir}/talairach/talairach_to_subject_0GenericAffine.mat"
     local talairach_warp="${registration_dir}/talairach/talairach_to_subject_1Warp.nii.gz"
+    if [[ -f "$talairach_warp" ]] && [[ -f "$talairach_affine" ]]; then
+        log_message "Enhanced Talairach registration to subject space already exists. Skipping."
+    else
+        antsRegistrationSyN.sh \
+            -d 3 \
+            -f "$input_file" \
+            -m "$talairach_enhanced" \
+            -o "${registration_dir}/talairach/talairach_to_subject_" \
+            -t s \
+            -j 1 \
+            -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    fi
+    
+    # Validate registrations
     
     if [[ ! -f "$harvard_affine" ]] || [[ ! -f "$harvard_warp" ]]; then
         log_formatted "ERROR" "Harvard-Oxford registration failed"
@@ -311,7 +317,7 @@ execute_dual_atlas_fusion() {
         -l "$talairach_label_subject_space" \
         -a 0.1 \
         -b 2.0 \
-        --patch-search 2 \
+        -c 1 \
         -s 3 \
         -p 1 \
         -o "${results_dir}/joint_fusion_"

@@ -645,7 +645,7 @@ run_pipeline() {
       log_message "Cleaning up previous registration outputs for fresh start..."
       local reg_dir="$RESULTS_DIR/registered"
       if [ -d "$reg_dir" ]; then
-        rm -rf "$reg_dir"
+        # The directory is no longer removed to allow for restartability.
         log_message "Removed previous registration directory: $reg_dir"
       fi
     else
