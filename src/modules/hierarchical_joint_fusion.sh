@@ -102,7 +102,7 @@ register_juelich_to_talairach() {
         -o "$transform_prefix" \
         -t s \
         -j 1 \
-        -n "${ANTS_THREADS}"
+        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Validate transforms
     if [[ ! -f "${transform_prefix}0GenericAffine.mat" ]] || [[ ! -f "${transform_prefix}1Warp.nii.gz" ]]; then
@@ -120,7 +120,7 @@ register_juelich_to_talairach() {
         -o "$juelich_in_talairach" \
         -t "${transform_prefix}1Warp.nii.gz" \
         -t "${transform_prefix}0GenericAffine.mat" \
-        -n NearestNeighbor
+        -n NearestNeighbor >/dev/null 2>/dev/null
     
     if [[ ! -f "$juelich_in_talairach" ]]; then
         log_formatted "ERROR" "Failed to transform Juelich to Talairach space"
@@ -233,7 +233,7 @@ execute_dual_atlas_fusion() {
         -o "${registration_dir}/harvard/harvard_to_subject_" \
         -t s \
         -j 1 \
-        -n "${ANTS_THREADS}"
+        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Register enhanced Talairach to subject
     log_message "Registering enhanced Talairach atlas to subject space..."
@@ -245,7 +245,7 @@ execute_dual_atlas_fusion() {
         -o "${registration_dir}/talairach/talairach_to_subject_" \
         -t s \
         -j 1 \
-        -n "${ANTS_THREADS}"
+        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Validate registrations
     local harvard_affine="${registration_dir}/harvard/harvard_to_subject_0GenericAffine.mat"

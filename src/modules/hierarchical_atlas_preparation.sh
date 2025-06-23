@@ -363,7 +363,7 @@ transform_tracts_to_anatomy_space() {
         -o "$output_tracts" \
         -t "${transform_prefix}1Warp.nii.gz" \
         -t "${transform_prefix}0GenericAffine.mat" \
-        -n NearestNeighbor
+        -n NearestNeighbor >/dev/null 2>/dev/null
     
     if [ ! -f "$output_tracts" ]; then
         log_formatted "ERROR" "Failed to transform Juelich tracts to Talairach space"
@@ -728,7 +728,7 @@ register_atlas_to_subject() {
         -t s \
         -j 1 \
         -p f \
-        -n "${ANTS_THREADS}"
+        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Validate registration outputs
     if [ ! -f "${transform_prefix}0GenericAffine.mat" ] || [ ! -f "${transform_prefix}1Warp.nii.gz" ]; then
@@ -903,12 +903,12 @@ assess_dice_coefficients() {
     antsApplyTransforms -d 3 -i "$harvard_labels" -r "$joint_fusion_labels" \
         -t "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_1Warp.nii.gz" \
         -t "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_0GenericAffine.mat" \
-        -o "$harvard_in_subject" -n NearestNeighbor
+        -o "$harvard_in_subject" -n NearestNeighbor >/dev/null 2>/dev/null
     
     antsApplyTransforms -d 3 -i "$talairach_labels" -r "$joint_fusion_labels" \
         -t "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_1Warp.nii.gz" \
         -t "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_0GenericAffine.mat" \
-        -o "$talairach_in_subject" -n NearestNeighbor
+        -o "$talairach_in_subject" -n NearestNeighbor >/dev/null 2>/dev/null
     
     # Calculate DICE coefficients
     local dice_harvard=$(calculate_dice_coefficient "$joint_fusion_labels" "$harvard_in_subject")
