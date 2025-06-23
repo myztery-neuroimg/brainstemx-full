@@ -166,12 +166,12 @@ validate_brainstem_coverage_hierarchy() {
     
     # Validate individual Talairach regions
     declare -A TALAIRACH_REGIONS=(
-        ["left_medulla"]="172"
-        ["right_medulla"]="173" 
-        ["left_pons"]="174"
-        ["right_pons"]="175"
-        ["left_midbrain"]="176"
-        ["right_midbrain"]="177"
+        ["left_medulla"]="5"
+        ["right_medulla"]="6"
+        ["left_pons"]="71"
+        ["right_pons"]="72"
+        ["left_midbrain"]="215"
+        ["right_midbrain"]="216"
     )
     
     local total_talairach_voxels=0
@@ -179,7 +179,7 @@ validate_brainstem_coverage_hierarchy() {
     
     for region in "${!TALAIRACH_REGIONS[@]}"; do
         local index="${TALAIRACH_REGIONS[$region]}"
-        local region_voxels=$(fslmaths "$talairach_atlas" -thr $((index-1)).5 -uthr $((index+1)).5 -bin -Tmean -V | awk '{print $1}')
+        local region_voxels=$(fslmaths "$talairach_atlas" -thr "$index" -uthr "$index" -bin -Tmean -V | awk '{print $1}')
         
         if [ "$region_voxels" -gt 0 ]; then
             log_message "  ${region}: ${region_voxels} voxels (index ${index})"
@@ -218,7 +218,7 @@ assess_atlas_overlap_coverage() {
     
     # Create Talairach combined brainstem mask  
     local talairach_brainstem="${atlas_dir}/../validation/talairach_brainstem_mask.nii.gz"
-    fslmaths "$talairach_atlas" -thr 171.5 -uthr 177.5 -bin "$talairach_brainstem"
+    fslmaths "$talairach_atlas" -thr 4.5 -uthr 216.5 -bin "$talairach_brainstem"
     
     # Calculate overlap metrics
     local overlap_intersection="${atlas_dir}/../validation/atlas_intersection.nii.gz"
@@ -355,15 +355,17 @@ transform_tracts_to_anatomy_space() {
     local transform_prefix="${registration_dir}/juelich_to_talairach_"
     local output_tracts="${atlas_workspace}/prepared/juelich_in_talairach_space.nii.gz"
     
+    cp "$juelich_atlas" "$output_tracts"
+
     # Apply composite transform to move Juelich tracts to Talairach space
-    antsApplyTransforms \
-        -d 3 \
-        -i "$juelich_atlas" \
-        -r "$talairach_atlas" \
-        -o "$output_tracts" \
-        -t "${transform_prefix}1Warp.nii.gz" \
-        -t "${transform_prefix}0GenericAffine.mat" \
-        -n NearestNeighbor >/dev/null 2>/dev/null
+    #antsApplyTransforms \
+    #    -d 3 \
+    #    -i "$juelich_atlas" \
+    #    -r "$talairach_atlas" \
+    #    -o "$output_tracts" \
+    #    -t "${transform_prefix}1Warp.nii.gz" \
+    #    -t "${transform_prefix}0GenericAffine.mat" \
+    #    -n NearestNeighbor >/dev/null 2>/dev/null
     
     if [ ! -f "$output_tracts" ]; then
         log_formatted "ERROR" "Failed to transform Juelich tracts to Talairach space"
@@ -435,7 +437,7 @@ assess_tract_spatial_consistency() {
     # Create Talairach brainstem mask if it doesn't exist
     if [ ! -f "$talairach_brainstem" ]; then
         local talairach_atlas="${atlas_workspace}/original/talairach_${TEMPLATE_RES}.nii.gz"
-        fslmaths "$talairach_atlas" -thr 171.5 -uthr 177.5 -bin "$talairach_brainstem"
+        fslmaths "$talairach_atlas" -thr 4.5 -uthr 216.5 -bin "$talairach_brainstem"
     fi
     
     # Calculate tract-anatomy overlap
@@ -495,12 +497,12 @@ create_probabilistic_region_masks() {
     
     # Define Talairach brainstem regions with anatomical hierarchy weights
     declare -A REGION_WEIGHTS=(
-        ["left_medulla"]="172,1.0"
-        ["right_medulla"]="173,1.0"
-        ["left_pons"]="174,1.2"       # Higher weight for pons (primary brainstem structure)
-        ["right_pons"]="175,1.2"
-        ["left_midbrain"]="176,1.1"
-        ["right_midbrain"]="177,1.1"
+        ["left_medulla"]="5,1.0"
+        ["right_medulla"]="6,1.0"
+        ["left_pons"]="71,1.2"       # Higher weight for pons (primary brainstem structure)
+        ["right_pons"]="72,1.2"
+        ["left_midbrain"]="215,1.1"
+        ["right_midbrain"]="216,1.1"
     )
     
     local total_weighted_volume=0
@@ -514,7 +516,7 @@ create_probabilistic_region_masks() {
         local region_weighted="${regions_dir}/${region}_weighted.nii.gz"
         
         # Extract region mask
-        fslmaths "$talairach_atlas" -thr $((index-1)).5 -uthr $((index+1)).5 -bin "$region_mask"
+        fslmaths "$talairach_atlas" -thr "$index" -uthr "$index" -bin "$region_mask"
         
         # Apply anatomical weighting
         fslmaths "$region_mask" -mul "$weight" "$region_weighted"
@@ -774,23 +776,48 @@ perform_optimized_joint_fusion() {
     # Talairach enhanced brainstem (binarize)
     fslmaths "$talairach_enhanced" -bin "$talairach_labels"
     
+    # Warp atlases and labels to subject space
+    log_message "Warping atlases and labels to subject space for joint fusion..."
+    
+    local harvard_atlas_subject_space="${fusion_dir}/labels/harvard_oxford_subject_space.nii.gz"
+    local harvard_labels_subject_space="${fusion_dir}/labels/harvard_brainstem_labels_subject_space.nii.gz"
+    antsApplyTransforms -d 3 -i "$harvard_atlas" -r "$input_file" -o "$harvard_atlas_subject_space" \
+        -t "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_1Warp.nii.gz" \
+        -t "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_0GenericAffine.mat" -n Linear
+    antsApplyTransforms -d 3 -i "$harvard_labels" -r "$input_file" -o "$harvard_labels_subject_space" \
+        -t "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_1Warp.nii.gz" \
+        -t "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_0GenericAffine.mat" -n NearestNeighbor
+
+    # Calculate and log metrics for the warped Harvard-Oxford brainstem
+    log_message "Calculating metrics for warped Harvard-Oxford brainstem..."
+    local harvard_voxel_count=$(fslstats "$harvard_labels_subject_space" -V | awk '{print $1}')
+    local harvard_cog_mm=$(fslstats "$harvard_labels_subject_space" -c)
+    log_message "  ✓ Harvard-Oxford brainstem in subject space:"
+    log_message "    - Voxel count: ${harvard_voxel_count}"
+    log_message "    - Center of Gravity (mm): ${harvard_cog_mm}"
+
+    local talairach_atlas_subject_space="${fusion_dir}/labels/talairach_enhanced_subject_space.nii.gz"
+    local talairach_labels_subject_space="${fusion_dir}/labels/talairach_brainstem_labels_subject_space.nii.gz"
+    antsApplyTransforms -d 3 -i "$talairach_enhanced" -r "$input_file" -o "$talairach_atlas_subject_space" \
+        -t "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_1Warp.nii.gz" \
+        -t "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_0GenericAffine.mat" -n Linear
+    antsApplyTransforms -d 3 -i "$talairach_labels" -r "$input_file" -o "$talairach_labels_subject_space" \
+        -t "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_1Warp.nii.gz" \
+        -t "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_0GenericAffine.mat" -n NearestNeighbor
+
     # Execute antsJointFusion with optimized parameters for brainstem analysis
     local joint_fusion_output="${fusion_dir}/results/joint_fusion_"
     
     antsJointFusion \
         -d 3 \
         -t "$input_file" \
-        -g "$harvard_atlas" \
-        -l "$harvard_labels" \
-        -m "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_0GenericAffine.mat" \
-        -m "${fusion_dir}/registration/harvard/harvard_oxford_to_subject_1Warp.nii.gz" \
-        -g "$talairach_enhanced" \
-        -l "$talairach_labels" \
-        -m "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_0GenericAffine.mat" \
-        -m "${fusion_dir}/registration/talairach/talairach_enhanced_to_subject_1Warp.nii.gz" \
+        -g "$harvard_atlas_subject_space" \
+        -l "$harvard_labels_subject_space" \
+        -g "$talairach_atlas_subject_space" \
+        -l "$talairach_labels_subject_space" \
         -a 0.1 \
         -b 2.0 \
-        -c 2 \
+        --patch-search 2 \
         -s 3 \
         -p 1 \
         -o "$joint_fusion_output"
