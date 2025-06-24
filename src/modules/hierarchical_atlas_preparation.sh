@@ -146,10 +146,10 @@ validate_brainstem_coverage_hierarchy() {
     # Harvard-Oxford brainstem validation (index 7)
     local harvard_atlas="${atlas_dir}/harvard_oxford_${TEMPLATE_RES}.nii.gz"
     local harvard_max=$(fslstats "$harvard_atlas" -R | awk '{print $2}' | cut -d'.' -f1)
-    local harvard_brainstem_voxels=$(fslmaths "$harvard_atlas" -thr 6.5 -uthr 7.5 -bin -Tmean -V | awk '{print $1}')
+    local harvard_brainstem_voxels=$(fslmaths "$harvard_atlas" -thr 7.5 -uthr 8.5 -bin -Tmean -V | awk '{print $1}')
     
-    if [ "$harvard_max" -lt 7 ] || [ "$harvard_brainstem_voxels" -eq 0 ]; then
-        log_formatted "ERROR" "Harvard-Oxford atlas missing or empty brainstem region (index 7)"
+    if [ "$harvard_max" -lt 8 ] || [ "$harvard_brainstem_voxels" -eq 0 ]; then
+        log_formatted "ERROR" "Harvard-Oxford atlas missing or empty brainstem region (index 8)"
         return 1
     fi
     
@@ -214,7 +214,7 @@ assess_atlas_overlap_coverage() {
     
     # Create Harvard-Oxford brainstem mask
     local harvard_brainstem="${atlas_dir}/../validation/harvard_brainstem_mask.nii.gz"
-    fslmaths "$harvard_atlas" -thr 6.5 -uthr 7.5 -bin "$harvard_brainstem"
+    fslmaths "$harvard_atlas" -thr 7.5 -uthr 8.5 -bin "$harvard_brainstem"
     
     # Create Talairach combined brainstem mask  
     local talairach_brainstem="${atlas_dir}/../validation/talairach_brainstem_mask.nii.gz"
@@ -499,10 +499,26 @@ create_probabilistic_region_masks() {
     declare -A REGION_WEIGHTS=(
         ["left_medulla"]="5,1.0"
         ["right_medulla"]="6,1.0"
-        ["left_pons"]="71,1.2"       # Higher weight for pons (primary brainstem structure)
+        ["left_pons"]="71,1.2"
         ["right_pons"]="72,1.2"
         ["left_midbrain"]="215,1.1"
         ["right_midbrain"]="216,1.1"
+        ["left_substantia_nigra"]="341,0.8"
+        ["right_substantia_nigra"]="342,0.8"
+        ["left_red_nucleus"]="343,0.9"
+        ["right_red_nucleus"]="344,0.9"
+        ["left_mammillary_body"]="354,0.7"
+        ["right_mammillary_body"]="355,0.7"
+        ["left_medial_geniculate_1"]="437,0.6"
+        ["right_medial_geniculate_1"]="438,0.6"
+        ["left_subthalamic_nucleus"]="453,0.8"
+        ["right_subthalamic_nucleus"]="454,0.8"
+        ["right_midbrain_wm_1"]="459,0.5"
+        ["left_medial_geniculate_2"]="498,0.6"
+        ["right_medial_geniculate_2"]="499,0.6"
+        ["left_midbrain_wm_2"]="503,0.5"
+        ["right_brainstem_other"]="574,0.4"
+        ["left_midbrain_wm_3"]="576,0.5"
     )
     
     local total_weighted_volume=0
@@ -772,15 +788,30 @@ perform_optimized_joint_fusion() {
     local harvard_atlas="${atlas_workspace}/original/harvard_oxford_${TEMPLATE_RES}.nii.gz"
     local talairach_enhanced="${atlas_workspace}/prepared/talairach_enhanced_brainstem.nii.gz"
     
+    # --- Pre-Fusion Input Validation and Logging ---
+    log_message "--- Verifying inputs for dual-atlas fusion ---"
+    log_message "Harvard-Oxford Atlas: $harvard_atlas"
+    log_message "  - Dimensions: $(fslinfo "$harvard_atlas" | grep -E "^dim[1-3]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')"
+    log_message "Enhanced Talairach Atlas: $talairach_enhanced"
+    log_message "  - Dimensions: $(fslinfo "$talairach_enhanced" | grep -E "^dim[1-3]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')"
+    log_message "  - Voxel Stats (min/max intensity): $(fslstats "$talairach_enhanced" -R)"
+
     # Create binary label masks from atlases
     local harvard_labels="${fusion_dir}/labels/harvard_brainstem_labels.nii.gz"
     local talairach_labels="${fusion_dir}/labels/talairach_brainstem_labels.nii.gz"
     
     # Harvard-Oxford brainstem (index 7)
-    fslmaths "$harvard_atlas" -thr 6.5 -uthr 7.5 -bin "$harvard_labels"
+    log_message "Extracting Harvard-Oxford brainstem (label 7)..."
+    fslmaths "$harvard_atlas" -thr 7.5 -uthr 8.5 -bin "$harvard_labels"
+    log_message "  - Output label mask: $harvard_labels"
+    log_message "  - Voxel count: $(fslstats "$harvard_labels" -V | awk '{print $1}')"
     
     # Talairach enhanced brainstem (binarize)
+    log_message "Creating binary mask for enhanced Talairach atlas..."
     fslmaths "$talairach_enhanced" -bin "$talairach_labels"
+    log_message "  - Output label mask: $talairach_labels"
+    log_message "  - Voxel count: $(fslstats "$talairach_labels" -V | awk '{print $1}')"
+    log_message "------------------------------------------------"
     
     # Warp atlases and labels to subject space
     log_message "Warping atlases and labels to subject space for joint fusion..."
@@ -826,10 +857,10 @@ perform_optimized_joint_fusion() {
         -c 1 \
         -s 3 \
         -p 1 \
-        -o "$joint_fusion_output"
+        -o "${joint_fusion_output}"
     
     # Validate joint fusion outputs
-    if [ ! -f "${joint_fusion_output}Labels.nii.gz" ]; then
+    if [ ! -f "${joint_fusion_output}" ]; then
         log_formatted "ERROR" "Joint fusion failed - no output labels generated"
         return 1
     fi
@@ -845,7 +876,7 @@ perform_comprehensive_quality_assessment() {
     
     log_message "Performing comprehensive quality assessment..."
     
-    local joint_fusion_labels="${fusion_dir}/results/joint_fusion_Labels.nii.gz"
+    local joint_fusion_labels="${fusion_dir}/results/joint_fusion.nii.gz"
     local quality_dir="${fusion_dir}/validation"
     local quality_report="${output_prefix}_joint_fusion_quality_assessment.txt"
     
@@ -925,7 +956,7 @@ assess_dice_coefficients() {
     
     log_message "Calculating DICE coefficients for atlas overlap assessment..."
     
-    local joint_fusion_labels="${fusion_dir}/results/joint_fusion_Labels.nii.gz"
+    local joint_fusion_labels="${fusion_dir}/results/joint_fusion_labels.nii.gz"
     local harvard_labels="${fusion_dir}/labels/harvard_brainstem_labels.nii.gz"
     local talairach_labels="${fusion_dir}/labels/talairach_brainstem_labels.nii.gz"
     
@@ -989,7 +1020,7 @@ generate_asymmetry_ready_outputs() {
     
     log_message "Generating asymmetry-analysis-ready outputs..."
     
-    local joint_fusion_labels="${fusion_dir}/results/joint_fusion_Labels.nii.gz"
+    local joint_fusion_labels="${fusion_dir}/results/joint_fusion_labels.nii.gz"
     local joint_fusion_posteriors="${fusion_dir}/results/joint_fusion_Posteriors*.nii.gz"
     
     # Primary brainstem mask for asymmetry analysis

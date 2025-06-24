@@ -850,16 +850,26 @@ calculate_extended_registration_metrics() {
     # 1. Calculate Dice coefficient between T1 brain and FLAIR brain
     log_message "Calculating Dice coefficient between brains"
     if [ -f "$fixed" ] && [ -f "$warped" ]; then
-        # Create binary masks
+        # Create tissue-specific masks for more accurate Dice calculation
         local temp_dir=$(mktemp -d)
-        fslmaths "$fixed" -bin "${temp_dir}/fixed_bin.nii.gz"
-        fslmaths "$warped" -bin "${temp_dir}/warped_bin.nii.gz"
         
-        # Calculate intersection and union volumes
-        fslmaths "${temp_dir}/fixed_bin.nii.gz" -mul "${temp_dir}/warped_bin.nii.gz" "${temp_dir}/intersection.nii.gz"
+        # Segment fixed image (T1)
+        log_message "Segmenting fixed image for Dice calculation..."
+        fast -t 1 -n 3 -o "${temp_dir}/fixed_seg" "$fixed"
+        # Combine GM and WM for a brain tissue mask
+        fslmaths "${temp_dir}/fixed_seg_pve_1.nii.gz" -add "${temp_dir}/fixed_seg_pve_2.nii.gz" -thr 0.5 -bin "${temp_dir}/fixed_tissue_mask.nii.gz"
+
+        # Segment warped image (FLAIR)
+        log_message "Segmenting warped image for Dice calculation..."
+        fast -t 2 -n 3 -o "${temp_dir}/warped_seg" "$warped"
+        # Combine GM and WM for a brain tissue mask
+        fslmaths "${temp_dir}/warped_seg_pve_1.nii.gz" -add "${temp_dir}/warped_seg_pve_2.nii.gz" -thr 0.5 -bin "${temp_dir}/warped_tissue_mask.nii.gz"
+
+        # Calculate intersection and union volumes of the tissue masks
+        fslmaths "${temp_dir}/fixed_tissue_mask.nii.gz" -mul "${temp_dir}/warped_tissue_mask.nii.gz" "${temp_dir}/intersection.nii.gz"
         
-        local vol_fixed=$(fslstats "${temp_dir}/fixed_bin.nii.gz" -V | awk '{print $1}')
-        local vol_warped=$(fslstats "${temp_dir}/warped_bin.nii.gz" -V | awk '{print $1}')
+        local vol_fixed=$(fslstats "${temp_dir}/fixed_tissue_mask.nii.gz" -V | awk '{print $1}')
+        local vol_warped=$(fslstats "${temp_dir}/warped_tissue_mask.nii.gz" -V | awk '{print $1}')
         local vol_intersection=$(fslstats "${temp_dir}/intersection.nii.gz" -V | awk '{print $1}')
         
         # Calculate Dice coefficient

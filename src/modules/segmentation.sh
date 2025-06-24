@@ -29,7 +29,7 @@ extract_brainstem() {
     mkdir -p "$brainstem_dir"
     
     # Create temporary workspace
-    local temp_dir=$(mktemp -d -p "${RESULTS_DIR}" segmentation_XXXXXX)
+    local temp_dir="${RESULTS_DIR}/segmentation"
     
     # Set output prefix
     local output_prefix="${brainstem_dir}/${input_basename}"
@@ -39,7 +39,7 @@ extract_brainstem() {
         log_formatted "SUCCESS" "Hierarchical joint fusion segmentation completed"
     else
         log_formatted "ERROR" "Hierarchical joint fusion segmentation failed"
-        rm -rf "$temp_dir"
+        #srm -rf "$temp_dir"
         return 1
     fi
     
@@ -56,7 +56,7 @@ extract_brainstem() {
     }
     
     # Clean up temporary files
-    rm -rf "$temp_dir"
+    #rm -rf "$temp_dir"
     
     log_formatted "SUCCESS" "Brainstem segmentation completed successfully"
     return 0
