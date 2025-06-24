@@ -152,6 +152,22 @@ create_enhanced_talairach_atlas() {
         ["right_pons"]="72"
         ["left_midbrain"]="215"
         ["right_midbrain"]="216"
+        ["left_substantia_nigra"]="341"
+        ["right_substantia_nigra"]="342"
+        ["left_red_nucleus"]="343"
+        ["right_red_nucleus"]="344"
+        ["left_mammillary_body"]="354"
+        ["right_mammillary_body"]="355"
+        ["left_medial_geniculate_1"]="437"
+        ["right_medial_geniculate_1"]="438"
+        ["left_subthalamic_nucleus"]="453"
+        ["right_subthalamic_nucleus"]="454"
+        ["right_midbrain_wm_1"]="459"
+        ["left_medial_geniculate_2"]="498"
+        ["right_medial_geniculate_2"]="499"
+        ["left_midbrain_wm_2"]="503"
+        ["right_brainstem_other"]="574"
+        ["left_midbrain_wm_3"]="576"
     )
     
     local region_files=()
@@ -268,17 +284,32 @@ execute_dual_atlas_fusion() {
         return 1
     fi
     
+    # --- Pre-Fusion Input Validation and Logging ---
+    log_message "--- Verifying inputs for dual-atlas fusion ---"
+    log_message "Harvard-Oxford Atlas: $harvard_atlas"
+    log_message "  - Dimensions: $(fslinfo "$harvard_atlas" | grep -E "^dim[1-3]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')"
+    log_message "Enhanced Talairach Atlas: $talairach_enhanced"
+    log_message "  - Dimensions: $(fslinfo "$talairach_enhanced" | grep -E "^dim[1-3]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')"
+    log_message "  - Voxel Stats (min/max intensity): $(fslstats "$talairach_enhanced" -R)"
+
     # Create label masks for joint fusion
     local labels_dir="${workspace}/labels"
     mkdir -p "$labels_dir"
     
     # Harvard-Oxford brainstem label (index 7)
+    log_message "Extracting Harvard-Oxford brainstem (label 8)..."
     local harvard_label_atlas_space="${labels_dir}/harvard_brainstem_atlas_space.nii.gz"
-    fslmaths "$harvard_atlas" -thr 6.5 -uthr 7.5 -bin "$harvard_label_atlas_space"
+    fslmaths "$harvard_atlas" -thr 7.5 -uthr 8.5 -bin "$harvard_label_atlas_space"
+    log_message "  - Output label mask: $harvard_label_atlas_space"
+    log_message "  - Voxel count: $(fslstats "$harvard_label_atlas_space" -V | awk '{print $1}')"
     
     # Talairach enhanced brainstem label (create binary mask)
+    log_message "Creating binary mask for enhanced Talairach atlas..."
     local talairach_label_atlas_space="${labels_dir}/talairach_brainstem_atlas_space.nii.gz"
     fslmaths "$talairach_enhanced" -bin "$talairach_label_atlas_space"
+    log_message "  - Output label mask: $talairach_label_atlas_space"
+    log_message "  - Voxel count: $(fslstats "$talairach_label_atlas_space" -V | awk '{print $1}')"
+    log_message "------------------------------------------------"
 
     # Warp atlases and labels to subject space
     log_message "Warping atlases and labels to subject space..."
@@ -305,9 +336,20 @@ execute_dual_atlas_fusion() {
     antsApplyTransforms -d 3 -i "$talairach_label_atlas_space" -r "$input_file" -o "$talairach_label_subject_space" \
         -t "$talairach_warp" -t "$talairach_affine" -n NearestNeighbor
 
+    # Calculate and log metrics for the warped Talairach brainstem
+    log_message "Calculating metrics for warped Talairach brainstem..."
+    local temp_talairach_bin_label="${labels_dir}/talairach_brainstem_subject_space_bin.nii.gz"
+    fslmaths "$talairach_label_subject_space" -bin "$temp_talairach_bin_label" # Ensure binary for metrics
+    local talairach_voxel_count=$(fslstats "$temp_talairach_bin_label" -V | awk '{print $1}')
+    local talairach_cog_mm=$(fslstats "$temp_talairach_bin_label" -c)
+    log_message "  ✓ Talairach brainstem in subject space:"
+    log_message "    - Voxel count: ${talairach_voxel_count}"
+    log_message "    - Center of Gravity (mm): ${talairach_cog_mm}"
+    rm -f "$temp_talairach_bin_label"
+
     # Execute antsJointFusion
     log_message "Executing antsJointFusion with dual atlases in subject space..."
-    
+    log_message "antsJointFusion -d 3 -t $input_file -g $harvard_atlas_subject_space -l $harvard_label_subject_space -g $talairach_atlas_subject_space a 0.1 -b 2.0 -c 1 -s 3 -p 1 -o ${results_dir}/joint_fusion.nii.gz"
     antsJointFusion \
         -d 3 \
         -t "$input_file" \
@@ -320,13 +362,15 @@ execute_dual_atlas_fusion() {
         -c 1 \
         -s 3 \
         -p 1 \
-        -o "${results_dir}/joint_fusion_"
+        -o "${results_dir}/joint_fusion.nii.gz"
     
     # Validate joint fusion output
-    if [[ ! -f "${results_dir}/joint_fusion_Labels.nii.gz" ]]; then
+    if [[ ! -f "${results_dir}/joint_fusion.nii.gz" ]]; then
         log_formatted "ERROR" "Joint fusion failed - no output labels"
         return 1
     fi
+
+    cp "${results_dir}/joint_fusion.nii.gz" "${results_dir}/joint_fusion_labels.nii.gz"
     
     log_formatted "SUCCESS" "Dual-atlas joint fusion completed"
     return 0
@@ -338,7 +382,7 @@ generate_segmentation_outputs() {
     
     log_message "Generating final segmentation outputs..."
     
-    local joint_fusion_labels="${workspace}/results/joint_fusion_Labels.nii.gz"
+    local joint_fusion_labels="${workspace}/results/joint_fusion_labels.nii.gz"
     local input_reference=$(dirname "$output_prefix")/$(basename "$output_prefix" | cut -d'_' -f1)*.nii.gz
     
     # Find the input file for reference space
@@ -380,7 +424,7 @@ generate_talairach_subdivisions() {
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
     local talairach_affine="${workspace}/registration/talairach/talairach_to_subject_0GenericAffine.mat"
     local talairach_warp="${workspace}/registration/talairach/talairach_to_subject_1Warp.nii.gz"
-    local joint_fusion_labels="${workspace}/results/joint_fusion_Labels.nii.gz"
+    local joint_fusion_labels="${workspace}/results/joint_fusion_labels.nii.gz"
     
     # Define Talairach regions
     declare -A TALAIRACH_REGIONS=(
