@@ -289,12 +289,10 @@ EOF
 
   if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
     log_message "Optimizing for 3T field strength ($FIELD_STRENGTH T)"
-    #EXTRACTION_TEMPLATE="MNI152_T1_2mm.nii.gz"
     N4_CONVERGENCE="0.000001"
     REG_METRIC_CROSS_MODALITY="MI"
   else
     log_message "Optimizing for 1.5T field strength ($FIELD_STRENGTH T)"
-    #EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
     # 1.5T adjustments
     N4_CONVERGENCE="0.000005"
     N4_BSPLINE=200

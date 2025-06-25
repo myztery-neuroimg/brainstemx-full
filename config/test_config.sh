@@ -58,8 +58,9 @@ export MAX_CPU_INTENSIVE_JOBS=1
 export DICOM_IMPORT_PARALLEL=1
 
 # Test output settings
-export RESULTS_DIR="/tmp/test_results_$$"  # Temporary directory for tests
-export LOG_DIR="$RESULTS_DIR/logs"
+# Use the TEST_DIR environment variable set by the main test script
+export RESULTS_DIR="${TEST_DIR}/results"
+export LOG_DIR="${TEST_DIR}/logs"
 
 # Disable expensive validation steps for tests
 export ORIENTATION_CORRECTION_ENABLED=false
@@ -94,8 +95,8 @@ cleanup_test_environment() {
 # Export cleanup function
 export -f cleanup_test_environment
 
-# Set trap to cleanup on exit
-trap cleanup_test_environment EXIT
+# The main test script will handle cleanup.
+# trap cleanup_test_environment EXIT
 
 echo "[TEST CONFIG] Test configuration loaded - using fast/minimal settings"
 echo "[TEST CONFIG] N4 iterations: $N4_ITERATIONS (vs production: 200x200x200x50)"
