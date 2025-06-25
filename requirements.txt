@@ -75,7 +75,7 @@ jinja2==3.1.6
     #   altair
     #   brainstemx-full
     #   pydeck
-joblib==1.4.2
+joblib==1.5.1
     # via
     #   brainstemx-full
     #   scikit-learn
