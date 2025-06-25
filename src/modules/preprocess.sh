@@ -196,7 +196,7 @@ process_rician_nlm_denoising() {
   local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
   
   # Set threading for antsDenoiseImage (uses ITK threading)
-  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="${ANTS_THREADS:-4}"
+  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="${ANTS_THREADS:-32}"
   
   # Execute Rician NLM denoising using enhanced ANTs command execution
   execute_ants_command "rician_nlm_denoising" "Rician Non-Local Means denoising for sharper bias fields and reduced false clusters" \
