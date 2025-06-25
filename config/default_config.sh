@@ -71,7 +71,7 @@ export PROCESSING_DATATYPE="float"  # internal float
 export OUTPUT_DATATYPE="int"        # final int16
 
 # Atlas and template configuration
-export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-2mm}"
+export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 
 # Joint fusion specific parameters
 export JOINT_FUSION_ALPHA="${JOINT_FUSION_ALPHA:-0.1}"      # Label smoothing
@@ -80,26 +80,15 @@ export JOINT_FUSION_PATCH_RADIUS="${JOINT_FUSION_PATCH_RADIUS:-2}"
 export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
 
 # ANTs registration parameters (existing)
-export ANTS_THREADS="${ANTS_THREADS:-24}"
 export REG_TRANSFORM_TYPE="${REG_TRANSFORM_TYPE:-2}"  # SyN registration
-# M3 Max Mac Studio optimizations
-export ANTS_THREADS=24  # Use most but not all cores
-export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=24
-export OMP_NUM_THREADS=24
-
-# Use all available memory efficiently
-export ANTS_MEMORY_LIMIT=128G  # Adjust based on actual RAM
-
-# Optimize for Apple Silicon
-export VECLIB_MAXIMUM_THREADS=24
-export OPENBLAS_NUM_THREADS=24
 # Quality settings (LOW, MEDIUM, HIGH)
 export MAX_CPU_INTENSIVE_JOBS=1
 # N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
+export N4_PRESET_VERY_LOW="20x20x20,0.00005,100,5"
 export N4_PRESET_LOW="35x35x35,0.00001,150,4"
-export N4_PRESET_MEDIUM="100x100x100,0.000001,250,2"
-export N4_PRESET_HIGH="200x200x200x5,0.0000001,500,2"
-export N4_PRESET_ULTRA="1000x500x250x10,0.00000001,2000,2"
+export N4_PRESET_MEDIUM="70x70x70,0.000005,200,2"
+export N4_PRESET_HIGH="100x100x100x2,0.000001,500,2"
+export N4_PRESET_ULTRA="250x250x250x5,0.0000001,2000,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
 
 export PARALLEL_JOBS=0
@@ -108,6 +97,41 @@ export PARALLEL_JOBS=0
 export DICOM_IMPORT_PARALLEL=12
 
 export QUALITY_PRESET="HIGH"
+
+
+export CORES="$(cpuinfo  | grep -i count | sed 's/.* //')"
+export ANTS_THREADS=$CORES  # Use most but not all cores
+export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$CORES
+export OMP_NUM_THREADS=$CORES
+export VECLIB_MAXIMUM_THREADS=$CORES
+export OPENBLAS_NUM_THREADS=$CORES
+
+if [[ "$CORES" -le 4 ]]; then  
+  # VM or container -level optimisations 
+  export MACHINE_SPEC="VERY_LOW"
+  export QUALITY_PRESET="VERY_LOW"
+  export ANTS_MEMORY_LIMIT="4G"
+elif [[ "$CORES" -le 8 ]]; then   
+  # Larger VM or lower-spec Mac 
+  export MACHINE_SPEC="LOW"
+  export QUALITY_PRESET="LOW"
+  export ANTS_MEMORY_LIMIT="8G"
+elif [[ "$CORES" -le 18 ]]; then   
+  # MacBook Pro -level optimisations
+  export MACHINE_SPEC=MEDIUM
+  # Use all available memory efficiently
+  export ANTS_MEMORY_LIMIT="14G"  # Adjust based on actual RAM
+  # Optimize for Apple Silicon
+else   
+  # Mac Studio-level optimizations
+  export MACHINE_SPEC=HIGH
+  export ANTS_THREADS=48  # Use most but not all cores
+  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=48
+  export OMP_NUM_THREADS=24
+  export ANTS_MEMORY_LIMIT="128G"  # Adjust based on actual RAM
+  export VECLIB_MAXIMUM_THREADS=24
+  export OPENBLAS_NUM_THREADS=24
+fi
 
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" == "ULTRA" ]; then
@@ -118,8 +142,13 @@ elif [ "$QUALITY_PRESET" == "HIGH" ]; then
     export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
 elif [ "$QUALITY_PRESET" == "MEDIUM" ]; then
     export N4_PARAMS="$N4_PRESET_MEDIUM"
+    export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"
+elif [ "$QUALITY_PRESET" == "LOW" ]; then
+    export N4_PARAMS="$N4_PRESET_MEDIUM"
+    export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"
 else
-    export N4_PARAMS="$N4_PRESET_LOW"
+    export N4_PARAMS="$N4_PRESET_VERY_LOW"
+    export N4_PRESET_FLAIR="$N4_PRESET_VERY_LOW"
 fi
 # Parse out the fields for general sequences
 export N4_ITERATIONS=$(echo "$N4_PARAMS"      | cut -d',' -f1)
@@ -134,13 +163,13 @@ export N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
 export N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
 
 # Multi-axial integration parameters (antsMultivariateTemplateConstruction2.sh)
-export TEMPLATE_ITERATIONS=2
+export TEMPLATE_ITERATIONS=3
 export TEMPLATE_GRADIENT_STEP=0.05
 export TEMPLATE_TRANSFORM_MODEL="SyN"
 export TEMPLATE_SIMILARITY_METRIC="CC"
 export TEMPLATE_SHRINK_FACTORS="6x4x2x1"
 export TEMPLATE_SMOOTHING_SIGMAS="3x2x1x0"
-export TEMPLATE_WEIGHTS="100x50x50x10"
+export TEMPLATE_WEIGHTS="100x100x100x10"
 
 # Registration & motion correction
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
@@ -153,7 +182,7 @@ export REG_PRECISION=3                 # Registration precision (higher = more a
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
 
 # Hyperintensity detection
-export THRESHOLD_WM_SD_MULTIPLIER=1.25  #Standard deviations from local norm
+export THRESHOLD_WM_SD_MULTIPLIER=1.2  #Standard deviations from local norm
 export MIN_HYPERINTENSITY_SIZE=4
 
 # Tissue segmentation parameters
@@ -173,6 +202,7 @@ export C3D_PADDING_MM=5
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "ERROR" "FSLDIR not set. Template references may fail."
+  exit 1
 else
   export TEMPLATE_DIR="${FSLDIR}/data/standard"
 fi
@@ -191,9 +221,9 @@ export REGISTRATION_MASK_2MM="MNI152_T1_2mm_brain_mask_dil.nii.gz"
 export DISABLE_DEDUPLICATION="false"
 
 # Set initial defaults (will be updated based on detected image resolution)
-export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
-export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
-export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
+export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_${DEFAULT_TEMPLATE_RES}"
+export PROBABILITY_MASK="$PROBABILITY_MASK_${DEFAULT_TEMPLATE_RES}"
+export REGISTRATION_MASK="$REGISTRATION_MASK_${DEFAULT_TEMPLATE_RES}"
 
 # Supported modalities for registration to T1
 export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE" "COR")
@@ -205,7 +235,7 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)
 # ------------------------------------------------------------------------------
 # DICOM pattern configuration for different scanner manufacturers
-export DICOM_PRIMARY_PATTERN=IM*  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
+export DICOM_PRIMARY_PATTERN=I*  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
 
 # Space-separated list of additional patterns to try for different vendors:
 # - *.dcm: Standard DICOM extension (all vendors)
@@ -221,8 +251,8 @@ export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM
 export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz" #hack
 export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz" #hack
 export RESAMPLE_TO_ISOTROPIC=false
-export ISOTROPIC_SPACING=1.0
-unset ISOTROPIC_SPACING
+#export ISOTROPIC_SPACING=1.0
+#unset ISOTROPIC_SPACING
 
 # Scan selection options
 # Available modes:
@@ -275,15 +305,6 @@ N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
 N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
 N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
 
-# Multi-axial integration parameters (antsMultivariateTemplateConstruction2.sh)
-export TEMPLATE_ITERATIONS=2
-export TEMPLATE_GRADIENT_STEP=0.2
-export TEMPLATE_TRANSFORM_MODEL="SyN"
-export TEMPLATE_SIMILARITY_METRIC="CC"
-export TEMPLATE_SHRINK_FACTORS="6x4x2x1"
-export TEMPLATE_SMOOTHING_SIGMAS="3x2x1x0"
-export TEMPLATE_WEIGHTS="100x50x50x10"
-
 # Registration & motion correction
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"
@@ -320,7 +341,7 @@ export ORIENTATION_ACCEPTABLE_THRESHOLD=0.3
 export SHEARING_DETECTION_THRESHOLD=0.05
 
 # Hyperintensity detection
-export MIN_HYPERINTENSITY_SIZE=4
+export MIN_HYPERINTENSITY_SIZE=6
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3

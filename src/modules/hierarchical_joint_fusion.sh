@@ -2,9 +2,10 @@
 # src/modules/hierarchical_joint_fusion.sh
 # Hierarchical multi-atlas joint fusion for brainstem segmentation
 
+source ./config/default_config.sh
+source ./src/modules/environment.sh
 # Global configuration from existing pipeline
-TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-2mm}"
-ANTS_THREADS="${ANTS_THREADS:-8}"
+TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 
 execute_hierarchical_joint_fusion() {
     local input_file="$1"

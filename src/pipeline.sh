@@ -24,6 +24,7 @@
 #set -o pipefail
 
 # Source modules
+source config/default_config.sh
 source src/modules/environment.sh
 source src/modules/utils.sh     # Load utilities module with execute_ants_command
 source src/modules/fast_wrapper.sh # Load FAST wrapper with parallel processing

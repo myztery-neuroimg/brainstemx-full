@@ -114,8 +114,8 @@ perform_brain_extraction() {
     local refined_mask="${temp_dir}/refined_mask.nii.gz"
 
     # 1. N4 Bias Field Correction
-    log_message "Step 1: Performing N4 Bias Field Correction"
-    if ! execute_with_logging "N4BiasFieldCorrection -d 3 -i \"$input_file\" -o \"$n4_corrected\" -s 4 -c \"[50x50x30x20,1e-6]\" -b \"[200]\"" "n4_correction"; then
+    log_message "Step 1: Performing N4 Bias Field Correction: N4BiasFieldCorrection -d 3 -i $input_file -o $n4_corrected -s $N4_SHRINK -c $N4_ITERATIONS -b [$N4_CONVERGENCE] n4_correction"
+    if ! execute_with_logging "N4BiasFieldCorrection -d 3 -i \"$input_file\" -o \"$n4_corrected\" -s $N4_SHRINK -c \"$N4_ITERATIONS\" -b \"[$N4_CONVERGENCE]\"" "n4_correction"; then
         log_formatted "ERROR" "N4BiasFieldCorrection failed."
         rm -rf "$temp_dir"
         return 1
