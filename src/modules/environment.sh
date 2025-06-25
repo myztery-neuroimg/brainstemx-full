@@ -550,7 +550,8 @@ check_command() {
 check_ants() {
   log_formatted "INFO" "Checking ANTs tools..."
   local ants_tools=("antsRegistrationSyN.sh" "N4BiasFieldCorrection" \
-                     "antsApplyTransforms" "antsBrainExtraction.sh" "MeasureImageSimilarity")
+                     "antsApplyTransforms" "antsBrainExtraction.sh" "MeasureImageSimilarity" \
+                     "ThresholdImage" "ImageMath")
   local missing=0
   for tool in "${ants_tools[@]}"; do
     if ! check_command "$tool" "ANTs ($tool)"; then

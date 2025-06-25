@@ -10,6 +10,8 @@
 # - Parallel processing for all of the above
 #
 
+source_module "utils.sh"
+
 # Function to detect 3D isotropic sequences
 # This function identifies 3D sequences like MPRAGE, SPACE, or 3D FLAIR
 # Returns 0 (true) if the sequence is detected as 3D isotropic, 1 (false) otherwise
@@ -696,6 +698,7 @@ process_cropping_with_padding() {
 # Function to extract brain
 extract_brain() {
   local input_file="$1"
+  local output_prefix="$2"
   
   # Validate input file
   if ! validate_nifti "$input_file" "Input file for brain extraction"; then
@@ -704,12 +707,18 @@ extract_brain() {
   fi
   
   local basename=$(basename "$input_file" .nii.gz)
-  local output_dir=$(create_module_dir "brain_extraction")
-  local output_file=$(get_output_path "brain_extraction" "$basename" "_brain")
-  local mask_file=$(get_output_path "brain_extraction" "$basename" "_brain_mask")
   
-  # Generate brain mask output paths
-  local brain_prefix="${output_dir}/${basename}_"
+  # Use provided output prefix if given, otherwise create default paths
+  if [ -n "$output_prefix" ]; then
+    local brain_prefix="$output_prefix"
+    local output_file="${output_prefix}BrainExtractionBrain.nii.gz"
+    local mask_file="${output_prefix}BrainExtractionMask.nii.gz"
+  else
+    local output_dir=$(create_module_dir "brain_extraction")
+    local output_file=$(get_output_path "brain_extraction" "$basename" "_brain")
+    local mask_file=$(get_output_path "brain_extraction" "$basename" "_brain_mask")
+    local brain_prefix="${output_dir}/${basename}_"
+  fi
 
   log_message "Extracting brain from $basename"
 
@@ -730,15 +739,21 @@ extract_brain() {
     return $ERR_PREPROC
   fi
   
-  # Rename output files to standard names
-  if ! mv "$source_brain" "$output_file"; then
-    log_formatted "ERROR" "Failed to move brain extraction output: $source_brain -> $output_file"
-    return $ERR_FILE_CREATION
-  fi
-  
-  if ! mv "$source_mask" "$mask_file"; then
-    log_formatted "ERROR" "Failed to move brain mask: $source_mask -> $mask_file"
-    return $ERR_FILE_CREATION
+  # Rename output files to standard names (only if using default paths)
+  if [ -z "$output_prefix" ]; then
+    if ! mv "$source_brain" "$output_file"; then
+      log_formatted "ERROR" "Failed to move brain extraction output: $source_brain -> $output_file"
+      return $ERR_FILE_CREATION
+    fi
+    
+    if ! mv "$source_mask" "$mask_file"; then
+      log_formatted "ERROR" "Failed to move brain mask: $source_mask -> $mask_file"
+      return $ERR_FILE_CREATION
+    fi
+  else
+    # When using custom output prefix, files are already in the correct location
+    output_file="$source_brain"
+    mask_file="$source_mask"
   fi
   
   # Validate output files
