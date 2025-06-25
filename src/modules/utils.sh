@@ -123,30 +123,31 @@ perform_brain_extraction() {
   
   # Use ANTs brain extraction with available template
   local template_dir="${TEMPLATE_DIR:-/usr/local/fsl/data/standard}"
-  local extraction_template="${template_dir}/${EXTRACTION_TEMPLATE:-MNI152_T1_1mm.nii.gz}"
-  local probability_mask="${template_dir}/${PROBABILITY_MASK:-MNI152_T1_1mm_brain_mask.nii.gz}"
+  #local extraction_template="${template_dir}/${EXTRACTION_TEMPLATE:-MNI152_T1_1mm.nii.gz}"
+  #local probability_mask="${template_dir}/${PROBABILITY_MASK:-MNI152_T1_1mm_brain_mask.nii.gz}"
   
   # Check if templates exist
-  if [ ! -f "$extraction_template" ]; then
-    log_formatted "WARNING" "Template not found: $extraction_template - using without template"
-    extraction_template=""
-  fi
-  
-  if [ ! -f "$probability_mask" ]; then
-    log_formatted "WARNING" "Probability mask not found: $probability_mask - using without mask"
-    probability_mask=""
-  fi
+  #if [ ! -f "$extraction_template" ]; then
+  #  log_formatted "WARNING" "Template not found: $extraction_template - using without template"
+  #  extraction_template=""
+  #fi
+  extraction_template=""
+  probability_mask="" 
+  #if [ ! -f "$probability_mask" ]; then
+  #  log_formatted "WARNING" "Probability mask not found: $probability_mask - using without mask"
+  #  probability_mask=""
+  #fi
   
   # Build ANTs brain extraction command
   local cmd="antsBrainExtraction.sh -d 3 -a \"$input_file\" -o \"$output_prefix\""
   
-  if [ -n "$extraction_template" ]; then
-    cmd="$cmd -e \"$extraction_template\""
-  fi
+  #if [ -n "$extraction_template" ]; then
+  #  cmd="$cmd -e \"$extraction_template\""
+  #fi
   
-  if [ -n "$probability_mask" ]; then
-    cmd="$cmd -m \"$probability_mask\""
-  fi
+  #if [ -n "$probability_mask" ]; then
+  #  cmd="$cmd -m \"$probability_mask\""
+  #fi
   
   log_message "Running ANTs brain extraction: $cmd"
   eval "$cmd"

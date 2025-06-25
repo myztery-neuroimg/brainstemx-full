@@ -46,24 +46,85 @@ standardize_orientation() {
             fi
             
             # Set orientation to radiological
-            fslorient -forceradiological "$output_file"
+            if ! fslorient -forceradiological "$output_file"; then
+                log_formatted "ERROR" "Failed to set radiological orientation for: $output_file"
+                return $ERR_PREPROC
+            fi
+
+            log_message "Saved to: $output_file"
             
-            log_formatted "SUCCESS" "Converted from NEUROLOGICAL to RADIOLOGICAL orientation"
-            
-        elif [[ "$current_orient" == "RADIOLOGICAL" ]] || [[ "$current_orient" == "UNKNOWN" ]]; then
-            log_message "Image already in RADIOLOGICAL orientation (or unknown), creating symbolic link"
+        elif [[ "$current_orient" == "RADIOLOGICAL" ]]; then
+            log_message "Image already in RADIOLOGICAL orientation, copying as-is"
             # Create symbolic link to avoid unnecessary copying
-            ln -sf "$(realpath "$input_file")" "$output_file"
+            cp -Rp "$(realpath "$input_file")" "$output_file"
+            #ln -sf "$(realpath "$input_file")" "$output_file"
             
             # Ensure it's marked as radiological
             fslorient -forceradiological "$output_file" 2>/dev/null || true
             
         else
-            log_formatted "WARNING" "Unknown orientation '$current_orient', assuming correct and proceeding"
-            ln -sf "$(realpath "$input_file")" "$output_file"
-            fslorient -forceradiological "$output_file" 2>/dev/null || true
+            log_formatted "WARNING" "Unknown orientation '$current_orient', NOT assuming correct and proceeding"
+            return 1
+            #cp -Rp "$(realpath "$input_file")" "$output_file"
+            #ln -sf "$(realpath "$input_file")" "$output_file"
+            #fslorient -forceradiological "$output_file" 2>/dev/null || true
         fi
-        
+
+            # Check and FIX sform/qform matrix issues
+            local sform_elements=($(fslorient -getsform "$output_file"))
+            local qform_elements=($(fslorient -getqform "$output_file"))
+
+            # Fix corrupted or missing spatial matrices
+            if [[ ${#sform_elements[@]} -ne 16 ]] || [[ "${sform_elements[0]}" == "0" && "${sform_elements[5]}" == "0" && "${sform_elements[10]}" == "0" ]]; then
+                log_message "Fixing corrupted spatial matrices by rebuilding from image geometry"
+                
+                # Reset matrices and rebuild from image geometry
+                local temp_fixed="${output_file%.nii.gz}_temp_fixed.nii.gz"
+                if fslreorient2std "$output_file" "$temp_fixed"; then
+                    mv "$temp_fixed" "$output_file"
+                    fslorient -forceradiological "$output_file"
+                    log_message "✓ Spatial matrices rebuilt and fixed"
+                else
+                    log_formatted "ERROR" "Failed to fix spatial matrices"
+                    rm -f "$temp_fixed"
+                    return $ERR_PREPROC
+                fi
+            fi
+
+          # Check and FIX anisotropic voxels
+          log_message "Checking fslval $output_file pixdim1 pixdim2 pixdim3"
+
+          local px="$(fslval $output_file pixdim1)"
+          local py="$(fslval $output_file pixdim2)"
+          local pz="$(fslval $output_file pixdim3)"
+          
+          local max_dim=$(echo "scale=2; if($px>$py && $px>$pz) $px; else if($py>$pz) $py; else $pz" | bc -l)
+          local min_dim=$(echo "scale=2; if($px<$py && $px<$pz) $px; else if($py<$pz) $py; else $pz" | bc -l)
+          local aniso_ratio=$(echo "scale=2; $max_dim / $min_dim" | bc -l)
+
+          # CONFIG
+          if [ "$RESAMPLE_TO_ISOTROPIC" == "true" ]; then
+            # Actually FIX anisotropic voxels by resampling
+            if (( $(echo "$aniso_ratio > 2.0" | bc -l) )); then
+                log_message "Fixing anisotropic voxels (${px}x${py}x${pz}mm) by resampling to isotropic"
+                
+                local target_res="$min_dim"
+                local temp_resampled="${output_file%.nii.gz}_temp_resampled.nii.gz"
+                
+                if flirt -in "$output_file" -ref "$output_file" -out "$temp_resampled" -applyisoxfm "$target_res" -interp spline; then
+                    mv "$temp_resampled" "$output_file"
+                    log_message "✓ Resampled to isotropic ${target_res}mm voxels"
+                else
+                    log_formatted "ERROR" "Failed to resample anisotropic voxels"
+                    rm -f "$temp_resampled"
+                    return $ERR_PREPROC
+                fi
+            fi
+          fi
+
+          log_message "✓ All spatial properties fixed: orientation, matrices, and voxel isotropy"
+          log_message "Output at $output_file"
+
         # Validate output
         if ! validate_nifti "$output_file" "Orientation-standardized image"; then
             log_formatted "ERROR" "Output validation failed: $output_file"
@@ -96,8 +157,9 @@ process_rician_nlm_denoising() {
   local output_file=$(get_output_path "denoised" "$basename" "_denoised")
   
   # Check if antsDenoiseImage is available
-  if ! command -v antsDenoiseImage &> /dev/null; then
-    log_formatted "WARNING" "antsDenoiseImage not available - using FSL SUSAN for denoising"
+  DENOISE_BINARY="DenoiseImage"
+  if ! command -v "$DENOISE_BINARY" &> /dev/null; then
+    log_formatted "WARNING" "$DENOISE_BINARY not available - using FSL SUSAN for denoising"
     
     # Use FSL SUSAN (structure-preserving spatial smoothing)
     if command -v susan &> /dev/null; then
@@ -138,7 +200,7 @@ process_rician_nlm_denoising() {
   
   # Execute Rician NLM denoising using enhanced ANTs command execution
   execute_ants_command "rician_nlm_denoising" "Rician Non-Local Means denoising for sharper bias fields and reduced false clusters" \
-    antsDenoiseImage \
+    "$DENOISE_BINARY" \
     -d 3 \
     -i "$file" \
     -o "$output_file" \
@@ -149,16 +211,16 @@ process_rician_nlm_denoising() {
   if [ $denoise_status -ne 0 ]; then
     log_formatted "ERROR" "Rician NLM denoising failed with status $denoise_status for: $file"
     log_formatted "WARNING" "Falling back to using original file without denoising"
-    ln -sf "$(realpath "$file")" "$output_file"
+    ln -sf "$(realpath $file)" "$output_file"
     echo "$output_file"
-    return 0
+    return 1
   fi
   
   # Validate output file
   if ! validate_nifti "$output_file" "Rician NLM denoised image"; then
     log_formatted "ERROR" "Denoised image validation failed: $output_file"
     log_formatted "WARNING" "Falling back to using original file"
-    ln -sf "$(realpath "$file")" "$output_file"
+    ln -sf "$(realpath $file)" "$output_file"
   fi
   
   log_message "Saved denoised image: $output_file"
@@ -227,14 +289,14 @@ EOF
 
   if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
     log_message "Optimizing for 3T field strength ($FIELD_STRENGTH T)"
-    EXTRACTION_TEMPLATE="MNI152_T1_2mm.nii.gz"
+    #EXTRACTION_TEMPLATE="MNI152_T1_2mm.nii.gz"
     N4_CONVERGENCE="0.000001"
     REG_METRIC_CROSS_MODALITY="MI"
   else
     log_message "Optimizing for 1.5T field strength ($FIELD_STRENGTH T)"
-    EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
+    #EXTRACTION_TEMPLATE="MNI152_T1_1mm.nii.gz"
     # 1.5T adjustments
-    N4_CONVERGENCE="0.0000005"
+    N4_CONVERGENCE="0.000005"
     N4_BSPLINE=200
     REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.3]"
     ATROPOS_MRF="[0.15,1x1x1]"
@@ -284,11 +346,13 @@ process_n4_correction() {
   # Step 2: Apply Rician NLM denoising on oriented image
   local denoised_file=$(process_rician_nlm_denoising "$oriented_file")
   local denoise_status=$?
+  denoised_file="$RESULTS_DIR/denoised/${basename}_oriented_denoised.nii.gz"
   if [ $denoise_status -ne 0 ] || [ ! -f "$denoised_file" ]; then
-    log_formatted "ERROR" "Rician NLM denoising failed for: $file (status: $denoise_status)"
+    log_formatted "ERROR" "Rician NLM denoising failed for: $file (status: $denoise_status file: $denoised_file)"
     return $ERR_PREPROC
   fi
   
+  log_message "Denoised file:  $denoised_file created"
   log_message "Using denoised image for improved N4 correction: $denoised_file"
   
   # Generate brain mask output paths (using denoised image)

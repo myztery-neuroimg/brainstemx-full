@@ -42,6 +42,7 @@ source src/modules/qa.sh
 source src/modules/scan_selection.sh  # Add scan selection module
 source src/modules/reference_space_selection.sh  # Add reference space selection module
 source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
+source config/default_config.sh
 
 # Debugging: Check if functions are available after sourcing in pipeline.sh
 if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
@@ -738,49 +739,51 @@ run_pipeline() {
       log_formatted "INFO" "===== NORMALIZING T1 TO MNI SPACE ====="
       log_message "This enables proper cross-subject comparisons and standardized analysis"
       
-      local t1_mni_prefix="${reg_dir}/t1_to_mni"
-      log_message "Registering T1 to MNI space for normalization..."
-      register_t1_to_mni "$t1_fmt" "$t1_mni_prefix"
-      local t1_mni_status=$?
+      #local t1_mni_prefix="${reg_dir}/t1_to_mni"
+      #log_message "Registering T1 to MNI space for normalization..."
+      #register_t1_to_mni "$t1_fmt" "$t1_mni_prefix"
+      #local t1_mni_status=$?
       
-      if [ $t1_mni_status -eq 0 ] && [ -f "${t1_mni_prefix}Warped.nii.gz" ]; then
-        log_formatted "SUCCESS" "T1 normalization to MNI space completed"
-        # Update t1_std to point to MNI-normalized version
-        t1_std="${t1_mni_prefix}Warped.nii.gz"
-        log_message "Updated T1 reference to MNI-normalized: $t1_std"
-      else
-        log_formatted "ERROR" "T1 to MNI normalization failed, falling back to native space"
-        t1_std="$t1_fmt"
-      fi
-      
+      #if [ $t1_mni_status -eq 0 ] && [ -f "${t1_mni_prefix}Warped.nii.gz" ]; then
+      #  log_formatted "SUCCESS" "T1 normalization to MNI space completed"
+      #  # Update t1_std to point to MNI-normalized version
+      #  t1_std="${t1_mni_prefix}Warped.nii.gz"
+      #  log_message "Updated T1 reference to MNI-normalized: $t1_std"
+      #else
+      #  log_formatted "ERROR" "T1 to MNI normalization failed, falling back to native space"
+      #  t1_std="$t1_fmt"
+      #fi
+
+      log_message "Not warping T1 to MNI space, as it would reduce detail.."
+
+      t1_std="$t1_fmt"
       # STEP 2: Register FLAIR to MNI-normalized T1
       log_formatted "INFO" "===== REGISTERING FLAIR TO MNI-NORMALIZED T1 ====="
-      log_message "This ensures all data is in standardized MNI space"
       
       local reg_prefix="${reg_dir}/flair_to_t1_mni"
-      log_message "Running FLAIR registration to MNI-normalized T1..."
+      log_message "Running FLAIR registration to T1..."
       register_modality_to_t1 "$t1_std" "$flair_fmt" "FLAIR" "$reg_prefix"
       flair_registered="${reg_prefix}Warped.nii.gz"
       
       # STEP 3: Create transform functions for atlas usage (now in MNI space)
-      log_formatted "INFO" "===== PREPARING ATLAS FUNCTIONS FOR MNI SPACE ====="
+      log_formatted "INFO" "===== PREPARING ATLAS FUNCTIONS FOR SUBJECT SPACE ====="
       local transform_dir="${reg_dir}/transforms"
       mkdir -p "$transform_dir"
       
       # Store transform information for reference
-      log_message "All processing is now in MNI space - no additional transforms needed for atlases"
+      log_message "All processing is now in Subject space - no additional transforms needed for atlases"
       log_message "T1 (MNI space): $t1_std"
       log_message "FLAIR (MNI space): $flair_registered"
       
       # Store reference paths for downstream processing
-      echo "T1_MNI_NORMALIZED=${t1_std}" > "${transform_dir}/mni_space_info.txt"
-      echo "FLAIR_MNI_REGISTERED=${flair_registered}" >> "${transform_dir}/mni_space_info.txt"
-      echo "SPACE=MNI152" >> "${transform_dir}/mni_space_info.txt"
-      echo "COORDINATE_SYSTEM=MNI152_2mm" >> "${transform_dir}/mni_space_info.txt"
+      echo "T1_MNI_NORMALIZED=${t1_std}" > "${transform_dir}/subject_space_info.txt"
+      echo "FLAIR_MNI_REGISTERED=${flair_registered}" >> "${transform_dir}/subject_space_info.txt"
+      #echo "SPACE=MNI152" >> "${transform_dir}/mni_space_info.txt"
+      #echo "COORDINATE_SYSTEM=MNI152_2mm" >> "${transform_dir}/mni_space_info.txt"
       
-      log_message "All data is now in standardized MNI space"
-      log_message "Atlases can be used directly without transformation"
-      log_message "Space information saved: ${transform_dir}/mni_space_info.txt"
+      #log_message "All data is now in standardized MNI space"
+      #log_message "Atlases can be used directly without transformation"
+      log_message "Space information saved: ${transform_dir}/subject_space_info.txt"
     fi
     
     # Validate registration step
@@ -805,7 +808,7 @@ run_pipeline() {
     log_message "FLAIR registered: $(fslinfo "$flair_registered" | grep "^data_type" | awk '{print $2}')"
     
     # Check binary masks (they should be UINT8)
-    log_message "MNI template mask: $(fslinfo "$FSLDIR/data/standard/MNI152_T1_1mm_brain_mask.nii.gz" 2>/dev/null | grep "^data_type" | awk '{print $2}' || echo "Not found")"
+    #log_message "MNI template mask: $(fslinfo "$FSLDIR/data/standard/MNI152_T1_1mm_brain_mask.nii.gz" 2>/dev/null | grep "^data_type" | awk '{print $2}' || echo "Not found")"
     
     # Verify registration quality specifically with our enhanced metrics
     verify_registration_quality "$t1_std" "$flair_registered" "${validation_dir}/quality_metrics"
