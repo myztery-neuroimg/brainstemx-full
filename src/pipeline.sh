@@ -528,21 +528,21 @@ run_pipeline() {
     
     # Brain extraction 
       log_message "Running brain extraction sequentially"
-      if ! extract_brain "$t1_file" "$RESULTS_DIR/brain_extraction"; then
+      if ! extract_brain "$t1_file" "$RESULTS_DIR/brain_extraction/t1_"; then
         log_formatted "ERROR" "Brain extraction failed for T1: $t1_file"
         return $ERR_PREPROC
       fi
-      if ! extract_brain "$flair_file" "$RESULTS_DIR/brain_extraction"; then
+      if ! extract_brain "$flair_file" "$RESULTS_DIR/brain_extraction/flair_"; then
         log_formatted "ERROR" "Brain extraction failed for FLAIR: $flair_file"
         return $ERR_PREPROC
       fi
     
     # Update file paths
-    local t1_n4_basename=$(basename "$t1_file" .nii.gz)
-    local flair_n4_basename=$(basename "$flair_file" .nii.gz)
+    #local t1_n4_basename=$(basename "$t1_file" .nii.gz)
+    #local flair_n4_basename=$(basename "$flair_file" .nii.gz)
     
-    t1_brain="$RESULTS_DIR/brain_extraction"/${t1_n4_basename}"_brain.nii.gz"
-    flair_brain="$RESULTS_DIR/brain_extraction"/${flair_n4_basename}"_brain.nii.gz"
+    t1_brain="$RESULTS_DIR/brain_extraction/t1_BrainExtractionBrain.nii.gz"
+    flair_brain="$RESULTS_DIR/brain_extraction/flair_BrainExtractionBrain.nii.gz"
     
     # Validate brain extraction step
     validate_step "Brain extraction" "$(basename "$t1_brain"),$(basename "$flair_brain")" "brain_extraction"
