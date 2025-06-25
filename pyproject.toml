@@ -44,7 +44,7 @@ dependencies = [
     "protobuf==5.29.5",
     "pyarrow==19.0.1",
     "pydicom==3.0.1",
-    "pylint==3.3.6",
+    "pylint==3.3.7",
     "pyparsing==3.2.3",
     "python-dateutil==2.9.0.post0",
     "pytz==2025.2",
