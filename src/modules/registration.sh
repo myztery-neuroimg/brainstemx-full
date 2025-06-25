@@ -60,85 +60,6 @@ if [ -f "$SCAN_SELECTION_MODULE" ]; then
     log_message "Loaded scan selection module: $SCAN_SELECTION_MODULE"
 fi
 
-# Function to run registration fix script - only call this after standardization
-run_registration_fix() {
-    # Only run if standardized directory exists
-    if [ -d "${RESULTS_DIR}/standardized" ]; then
-        if [ -f "$FIX_SCRIPT" ]; then
-            log_message "Running registration issue fixing tool: $FIX_SCRIPT"
-            bash "$FIX_SCRIPT"
-            # Note: We continue even if the fix script fails
-            log_message "Finished running fix_registration_issues.sh with status $?"
-        else
-            log_formatted "WARNING" "Registration fix script not found: $FIX_SCRIPT"
-        fi
-    else
-        log_message "Skipping registration fix script as standardized files don't exist yet"
-    fi
-}
-
-# Function to detect image resolution and set appropriate template
-detect_image_resolution() {
-    local image_file="$1"
-    local result="2mm"  # Default to 2mm for better handling of thick slices
-    
-    # Check if file exists
-    if [ ! -f "$image_file" ]; then
-        log_formatted "ERROR" "Image file not found: $image_file"
-        echo "$result"
-        return 1
-    fi
-    
-    # Get voxel dimensions using fslinfo
-    local pixdim1=$(fslinfo "$image_file" | grep pixdim1 | awk '{print $2}')
-    local pixdim2=$(fslinfo "$image_file" | grep pixdim2 | awk '{print $2}')
-    local pixdim3=$(fslinfo "$image_file" | grep pixdim3 | awk '{print $2}')
-    
-    # Calculate average voxel dimension
-    local avg_dim=$(echo "($pixdim1 + $pixdim2 + $pixdim3) / 3" | bc -l)
-    
-    log_message "Detected average voxel dimension: $avg_dim mm"
-    
-    # Determine closest template resolution
-    if (( $(echo "$avg_dim <= 1.25" | bc -l) )); then
-        result="1mm"
-    elif (( $(echo "$avg_dim <= 2.5" | bc -l) )); then
-        result="2mm"
-    else
-        log_formatted "WARNING" "Image has unusual resolution ($avg_dim mm). Using default template."
-    fi
-    
-    log_message "Selected template resolution: $result"
-    echo "$result"
-    return 0
-}
-
-# Function to set template based on detected resolution
-set_template_resolution() {
-    local resolution="$1"
-    
-    case "$resolution" in
-        "1mm")
-            export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
-            export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
-            export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
-            ;;
-        "2mm")
-            export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_2MM"
-            export PROBABILITY_MASK="$PROBABILITY_MASK_2MM"
-            export REGISTRATION_MASK="$REGISTRATION_MASK_2MM"
-            ;;
-        *)
-            log_formatted "WARNING" "Unknown resolution: $resolution. Using default (1mm)"
-            export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
-            export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
-            export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
-            ;;
-    esac
-    
-    log_message "Set templates for $resolution resolution: $EXTRACTION_TEMPLATE"
-    return 0
-}
 
 # Function to perform multi-stage registration: rigid → affine → SyN with brainstem ROI constraint
 perform_multistage_registration() {
@@ -286,9 +207,9 @@ perform_multistage_registration() {
     fi
 }
 
-# Function to register any modality to T1
-register_modality_to_t1() {
-    # Usage: register_modality_to_t1 <T1_file.nii.gz> <modality_file.nii.gz> <modality_name> <output_prefix>
+# Function to register a moving image to a fixed reference image
+register_to_reference() {
+    # Usage: register_to_reference <fixed_image> <moving_image> <moving_modality_name> <output_prefix>
     #
     # Enhanced with multi-stage registration for brainstem analysis:
     # 1. Rigid registration for initial alignment
@@ -301,24 +222,20 @@ register_modality_to_t1() {
     # - More precise alignment for brainstem-focused analysis
     # - Improved reproducibility through staged optimization
 
-    local t1_file="$1"
-    local modality_file="$2"
-    local modality_name="${3:-OTHER}"  # Default to OTHER if not specified
-    local out_prefix="${4:-${RESULTS_DIR}/registered/t1_to_${modality_name}}"  # Convert to lowercase
+    local fixed_image="$1"
+    local moving_image="$2"
+    local moving_modality_name="${3:-OTHER}"  # Default to OTHER if not specified
+    local out_prefix="${4:-${RESULTS_DIR}/registered/$(basename "$moving_image" .nii.gz)_to_ref}"
 
-    if [ ! -f "$t1_file" ] || [ ! -f "$modality_file" ]; then
-        log_formatted "ERROR" "T1 or $modality_name file not found"
+    if [ ! -f "$fixed_image" ] || [ ! -f "$moving_image" ]; then
+        log_formatted "ERROR" "Fixed or moving image not found"
         return 1
     fi
 
-    log_message "=== Registering $modality_name to T1 with WM-guided Registration ==="
-    log_message "T1: $t1_file"
-    log_message "$modality_name: $modality_file"
+    log_message "=== Registering $moving_modality_name to Reference with WM-guided Registration ==="
+    log_message "Reference (Fixed): $fixed_image"
+    log_message "Moving ($moving_modality_name): $moving_image"
     log_message "Output prefix: $out_prefix"
-    
-    # Detect resolution and set appropriate template
-    local detected_res=$(detect_image_resolution "$modality_file")
-    set_template_resolution "$detected_res"
     
     # Check if orientation preservation is enabled
     local orientation_preservation="${ORIENTATION_PRESERVATION_ENABLED:-false}"
@@ -341,7 +258,7 @@ register_modality_to_t1() {
     
     # Step 1: Create WM mask for guided registration if it doesn't exist
     if [ "$use_wm_guided_registration" = "true" ]; then
-        prepare_wm_segmentation "$t1_file" "$wm_mask" "$out_prefix" "$outer_ribbon_mask"
+        prepare_wm_segmentation "$fixed_image" "$wm_mask" "$out_prefix" "$outer_ribbon_mask"
         # Check if WM segmentation failed
         if [ "$use_wm_guided_registration" = "false" ]; then
             log_formatted "WARNING" "WM segmentation failed, using standard registration"
@@ -350,7 +267,7 @@ register_modality_to_t1() {
     
     # Step 2: Perform white matter guided initialization
     if [ "$use_wm_guided_registration" = "true" ] && [ -f "$wm_mask" ]; then
-        perform_wm_guided_initialization "$t1_file" "$modality_file" "$wm_mask" "$out_prefix" "$ants_wm_init_matrix"
+        perform_wm_guided_initialization "$fixed_image" "$moving_image" "$wm_mask" "$out_prefix" "$ants_wm_init_matrix"
         # Check if initialization succeeded
         if [ -f "${out_prefix}_wm_init_0GenericAffine.mat" ]; then
             ants_wm_init_matrix="${out_prefix}_wm_init_0GenericAffine.mat"
@@ -493,8 +410,8 @@ register_modality_to_t1() {
             # Use multi-stage registration with white matter guided initialization
             log_formatted "INFO" "===== WM-GUIDED MULTI-STAGE REGISTRATION ====="
             log_message "Executing multi-stage registration (rigid→affine→SyN) with white matter initialization"
-            log_message "Fixed image: $t1_file"
-            log_message "Moving image: $modality_file"
+            log_message "Fixed image: $fixed_image"
+            log_message "Moving image: $moving_image"
             log_message "Output prefix: $out_prefix"
             log_message "Transform format: $transform_format"
             log_message "Transform file: $ants_wm_init_matrix"
@@ -503,13 +420,13 @@ register_modality_to_t1() {
             local can_execute=true
             
             # Verify input files exist and are valid
-            if ! validate_nifti "$t1_file" "Fixed image (T1)" >/dev/null 2>&1; then
-                log_formatted "ERROR" "Fixed image validation failed: $t1_file"
+            if ! validate_nifti "$fixed_image" "Fixed image" >/dev/null 2>&1; then
+                log_formatted "ERROR" "Fixed image validation failed: $fixed_image"
                 can_execute=false
             fi
             
-            if ! validate_nifti "$modality_file" "Moving image ($modality_name)" >/dev/null 2>&1; then
-                log_formatted "ERROR" "Moving image validation failed: $modality_file"
+            if ! validate_nifti "$moving_image" "Moving image ($moving_modality_name)" >/dev/null 2>&1; then
+                log_formatted "ERROR" "Moving image validation failed: $moving_image"
                 can_execute=false
             fi
             
@@ -529,7 +446,7 @@ register_modality_to_t1() {
                 
                 # Use multi-stage registration with WM initialization
                 log_message "Starting WM-guided multi-stage registration..."
-                perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "$ants_wm_init_matrix" "$wm_mask"
+                perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "$ants_wm_init_matrix" "$wm_mask"
                 local ants_status=$?
                 
                 # Calculate elapsed time
@@ -559,7 +476,7 @@ register_modality_to_t1() {
                     local fb_start_time=$(date +%s)
                     
                     # Use multi-stage registration without initialization
-                    perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
+                    perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
                     local fb_status=$?
                     
                     local fb_end_time=$(date +%s)
@@ -591,17 +508,17 @@ register_modality_to_t1() {
             log_message "Running multi-stage registration with cost function masking"
             
             # Use multi-stage registration with mask
-            perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" "$outer_ribbon_mask"
+            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "$outer_ribbon_mask"
             
             if [ $? -ne 0 ]; then
                 log_formatted "WARNING" "Multi-stage registration with cost function masking failed, falling back to standard registration"
                 # Fall back to standard multi-stage registration
-                perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
+                perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
             fi
         else
             log_formatted "WARNING" "Outer ribbon mask is invalid, falling back to standard registration"
             # Fall back to standard multi-stage registration
-            perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
+            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
         fi
     else
         # Check if orientation preservation is enabled
@@ -609,7 +526,7 @@ register_modality_to_t1() {
         if [ "$orientation_preservation" = "true" ] && command -v register_with_topology_preservation &>/dev/null; then
             # Use topology-preserving registration
             log_message "Using topology-preserving registration for orientation preservation"
-            register_with_topology_preservation "$t1_file" "$modality_file" "$out_prefix" "r"
+            register_with_topology_preservation "$fixed_image" "$moving_image" "$out_prefix" "r"
         else
             # Fall back to standard multi-stage registration when no initialization or mask is available
             # This is still effective, just without the benefits of white matter guidance
@@ -617,7 +534,7 @@ register_modality_to_t1() {
             log_message "This approach still leverages multi-stage optimization with brainstem constraint"
             
             # Use standard multi-stage registration without initialization or mask
-            perform_multistage_registration "$t1_file" "$modality_file" "$out_prefix" "" ""
+            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
         fi
     fi
     
@@ -684,8 +601,8 @@ register_modality_to_t1() {
             
             # Perform thorough pre-emergency diagnostics
             log_message "Pre-emergency diagnostics:"
-            log_message "  T1 file: $t1_file ($(stat -f %z "$t1_file" 2>/dev/null || echo "?") bytes)"
-            log_message "  Modality file: $modality_file ($(stat -f %z "$modality_file" 2>/dev/null || echo "?") bytes)"
+            log_message "  Fixed file: $fixed_image ($(stat -f %z "$fixed_image" 2>/dev/null || echo "?") bytes)"
+            log_message "  Moving file: $moving_image ($(stat -f %z "$moving_image" 2>/dev/null || echo "?") bytes)"
             log_message "  ANTs binary: ${ants_bin}/antsRegistrationSyNQuick.sh"
             log_message "  Available threads: $ANTS_THREADS"
             
@@ -711,8 +628,8 @@ register_modality_to_t1() {
                 local method1_cmd=(
                     "${ants_bin}/antsRegistrationSyNQuick.sh"
                     "-d" "3"
-                    "-f" "$t1_file"
-                    "-m" "$modality_file"
+                    "-f" "$fixed_image"
+                    "-m" "$moving_image"
                     "-o" "${emergency_dir}/method1_"
                     "-n" "$ANTS_THREADS"
                     "-p" "f"
@@ -740,8 +657,8 @@ register_modality_to_t1() {
                 local method2_cmd=(
                     "${ants_bin}/antsRegistrationSyNQuick.sh"
                     "-d" "3"
-                    "-f" "$t1_file"
-                    "-m" "$modality_file"
+                    "-f" "$fixed_image"
+                    "-m" "$moving_image"
                     "-o" "${emergency_dir}/method2_"
                     "-n" "$ANTS_THREADS"
                     "-p" "f"
@@ -769,8 +686,8 @@ register_modality_to_t1() {
                 local method3_cmd=(
                     "${ants_bin}/antsRegistrationSyNQuick.sh"
                     "-d" "3"
-                    "-f" "$t1_file"
-                    "-m" "$modality_file"
+                    "-f" "$fixed_image"
+                    "-m" "$moving_image"
                     "-o" "${emergency_dir}/method3_"
                     "-n" "$ANTS_THREADS"
                     "-p" "f"
@@ -795,7 +712,7 @@ register_modality_to_t1() {
                 log_formatted "INFO" "Emergency Method 4: FSL FLIRT (final fallback)"
                 
                 log_message "Using FLIRT for emergency registration..."
-                flirt -in "$modality_file" -ref "$t1_file" \
+                flirt -in "$moving_image" -ref "$fixed_image" \
                       -out "${emergency_dir}/method4.nii.gz" \
                       -omat "${emergency_dir}/method4.mat" \
                       -dof 12 -interp trilinear
@@ -855,7 +772,7 @@ register_modality_to_t1() {
         local temp_corrected="${out_prefix}_temp_corrected.nii.gz"
         
         # Apply orientation correction
-        correct_orientation_distortion "$t1_file" "$modality_file" "${out_prefix}Warped.nii.gz" \
+        correct_orientation_distortion "$fixed_image" "$moving_image" "${out_prefix}Warped.nii.gz" \
             "${out_prefix}0GenericAffine.mat" "$temp_corrected"
             
         # Check if correction was needed and applied
@@ -867,7 +784,7 @@ register_modality_to_t1() {
     fi
     
     # Validate the registration with improved error handling
-    validate_registration_output "$t1_file" "$modality_file" "${out_prefix}Warped.nii.gz" "${out_prefix}"
+    validate_registration_output "$fixed_image" "$moving_image" "${out_prefix}Warped.nii.gz" "${out_prefix}"
     
     # If orientation correction is enabled, add orientation metrics to validation
     #if [ "$orientation_preservation" = "true" ] && command -v calculate_orientation_deviation &>/dev/null; then
@@ -885,17 +802,6 @@ register_modality_to_t1() {
     return 0
 }
 
-# Function to register FLAIR to T1 (wrapper for backward compatibility)
-register_t2_flair_to_t1mprage() {
-    # Usage: register_t2_flair_to_t1mprage <T1_file.nii.gz> <FLAIR_file.nii.gz> <output_prefix>
-    local t1_file="$1"
-    local flair_file="$2"
-    local out_prefix="${3:-${RESULTS_DIR}/registered/t1_to_flair}"
-    
-    # Call the new generic function with "FLAIR" as the modality name
-    register_modality_to_t1 "$t1_file" "$flair_file" "FLAIR" "$out_prefix"
-    return $?
-}
 
 # Function to create registration visualizations
 create_registration_visualizations() {
@@ -1359,7 +1265,7 @@ register_multiple_to_reference() {
         done
         
         log_message "Registering $basename to reference (detected modality: $modality)"
-        register_modality_to_t1 "$reference" "$input" "$modality" "$output_prefix"
+        register_to_reference "$reference" "$input" "$modality" "$output_prefix"
     done
     
     log_message "Multiple registration complete"
@@ -1392,7 +1298,7 @@ register_all_modalities() {
                 local output_prefix="${output_dir}/${basename}_to_t1"
                 
                 log_message "Found $modality file: $mod_file"
-                register_modality_to_t1 "$t1_file" "$mod_file" "$modality" "$output_prefix"
+                register_to_reference "$t1_file" "$mod_file" "$modality" "$output_prefix"
             done
         else
             log_message "No $modality files found in $input_dir"
@@ -1404,17 +1310,13 @@ register_all_modalities() {
 }
 
 # Export functions
-export -f detect_image_resolution
-export -f set_template_resolution
 export -f perform_multistage_registration
-export -f register_modality_to_t1
-export -f register_t2_flair_to_t1mprage
+export -f register_to_reference
 export -f create_registration_visualizations
 export -f validate_registration
 export -f apply_transformation
 export -f register_multiple_to_reference
 export -f register_all_modalities
-export -f run_registration_fix
 
 # Helper function to prepare white matter segmentation
 prepare_wm_segmentation() {
@@ -1736,73 +1638,8 @@ validate_registration_output() {
     return 0
 }
 
-# Function to register T1 to MNI space (proper normalization)
-register_t1_to_mni() {
-    local t1_input="$1"
-    local output_prefix="$2"
-    local template="${3:-${MNI_TEMPLATE}}"
-    
-    log_message "=== Registering T1 to MNI Space (Normalization) ==="
-    log_message "Input T1: $t1_input"
-    log_message "Output prefix: $output_prefix"
-    log_message "Template: $template"
-    
-    # Validate inputs
-    if [ ! -f "$t1_input" ]; then
-        log_formatted "ERROR" "T1 input file not found: $t1_input"
-        return 1
-    fi
-    
-    if [ ! -f "$template" ]; then
-        log_formatted "ERROR" "MNI template not found: $template"
-        return 1
-    fi
-    
-    # Create output directory
-    mkdir -p "$(dirname "$output_prefix")"
-    
-    # Detect optimal resolution for registration
-    local detected_res=$(detect_image_resolution "$t1_input")
-    set_template_resolution "$detected_res"
-    
-    log_message "Using template resolution: $detected_res"
-    log_message "Registration template: $EXTRACTION_TEMPLATE"
-    
-    # Use multi-stage registration for robust T1 to MNI normalization
-    log_message "Performing multi-stage T1 to MNI registration (rigid→affine→SyN)"
-    
-    # Use the actual template for registration
-    local reg_template="$template"
-    if [ -n "$EXTRACTION_TEMPLATE" ] && [ -f "$EXTRACTION_TEMPLATE" ]; then
-        reg_template="$EXTRACTION_TEMPLATE"
-        log_message "Using resolution-matched template: $reg_template"
-    fi
-    
-    # Perform the multi-stage registration
-    perform_multistage_registration "$reg_template" "$t1_input" "$output_prefix"
-    local reg_status=$?
-    
-    if [ $reg_status -eq 0 ] && [ -f "${output_prefix}Warped.nii.gz" ]; then
-        log_formatted "SUCCESS" "T1 to MNI normalization completed successfully"
-        log_message "Normalized T1: ${output_prefix}Warped.nii.gz"
-        
-        # Validate the normalized output
-        if validate_nifti "${output_prefix}Warped.nii.gz" "Normalized T1"; then
-            log_formatted "SUCCESS" "Normalized T1 passed validation"
-        else
-            log_formatted "WARNING" "Normalized T1 failed validation but proceeding"
-        fi
-        
-        return 0
-    else
-        log_formatted "ERROR" "T1 to MNI normalization failed (status: $reg_status)"
-        return 1
-    fi
-}
-
 # Export helper function
 export -f validate_registration_output
 export -f perform_registration_comparison
-export -f register_t1_to_mni
 
 log_message "Registration module loaded"

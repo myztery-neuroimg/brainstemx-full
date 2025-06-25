@@ -79,7 +79,7 @@ joblib==1.5.1
     # via
     #   brainstemx-full
     #   scikit-learn
-jsonschema==4.23.0
+jsonschema==4.24.0
     # via
     #   altair
     #   brainstemx-full
@@ -177,7 +177,7 @@ pillow==11.2.1
     #   matplotlib
     #   scikit-image
     #   streamlit
-platformdirs==4.3.7
+platformdirs==4.3.8
     # via
     #   brainstemx-full
     #   pylint
@@ -195,7 +195,7 @@ pyarrow==19.0.1
     #   streamlit
 pydicom==3.0.1
     # via brainstemx-full
-pylint==3.3.6
+pylint==3.3.7
     # via brainstemx-full
 pyparsing==3.2.3
     # via

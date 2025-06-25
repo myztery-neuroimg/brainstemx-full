@@ -83,7 +83,7 @@ execute_with_logging() {
   # - Stderr is sent to both the diagnostic log AND stderr
   # Remove quotes to avoid passing them directly to the command
   cmd=$(echo "$cmd" | sed -e 's/\\"/"/g')
-  eval "$cmd" > >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$LOG_FILE") 2> >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$diagnostic_log" >&2)
+  eval "$cmd" #> >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$LOG_FILE") 2> >(grep -ev "^ .DIAGNOSTIC.   ..[1-9]" | tee -a "$diagnostic_log" >&2)
   
   # Return the exit code of the command (not of the tee/grep pipeline)
   return ${PIPESTATUS[0]}
@@ -496,36 +496,6 @@ export -f log_message log_formatted log_error log_diagnostic execute_with_loggin
 #set -u
 #set -o pipefail
 
-# ------------------------------------------------------------------------------
-# Key Environment Variables (Paths & Directories)
-# ------------------------------------------------------------------------------
-export SRC_DIR="../DICOM"          # DICOM input directory
-export DICOM_PRIMARY_PATTERN='Image"*"'   # Filename pattern for your DICOM files, might be .dcm on some scanners, Image- for Siemens
-export PIPELINE_SUCCESS=true       # Track overall pipeline success
-export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
-export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
-
-# Parallelization configuration (defaults, can be overridden by config file)
-export PARALLEL_JOBS=1             # Number of parallel jobs to use
-export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
-export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
-export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
-
-export RESULTS_DIR="../mri_results"
-mkdir -p "$RESULTS_DIR"
-# Set ANTs Path relative to the script location
-export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PROJ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# Ensure ANTS_PATH is properly expanded
-export ANTS_PATH="${ANTS_PATH:-"$PROJ_ROOT/ants"}"
-# Replace tilde with $HOME if present
-export ANTS_PATH="${ANTS_PATH/#\~/$HOME}"
-export ANTS_BIN="${ANTS_PATH}/bin"
-# Log ANTs paths for debugging
-log_message "ANTs paths: ANTS_PATH=$ANTS_PATH, ANTS_BIN=$ANTS_BIN"
-# Flag to toggle ANTs SyN vs FLIRT linear registration
-export USE_ANTS_SYN="${USE_ANTS_SYN:-false}"
-log_message "USE_ANTS_SYN=$USE_ANTS_SYN"
 
 export LOG_DIR="${RESULTS_DIR}/logs"
 mkdir -p "$LOG_DIR"
@@ -543,113 +513,6 @@ export LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
 # ------------------------------------------------------------------------------
 PROCESSING_DATATYPE="float"  # internal float
 OUTPUT_DATATYPE="int"        # final int16
-
-# Quality settings (LOW, MEDIUM, HIGH)
-QUALITY_PRESET="HIGH"
-
-# Add ANTs to PATH if it exists
-if [ -d "$ANTS_BIN" ]; then
-  export PATH="$PATH:${ANTS_BIN}"
-  log_formatted "INFO" "Added ANTs bin directory to PATH: $ANTS_BIN"
-  export ANTS_THREADS=48
-  # Set ANTs/ITK threading variables for proper parallelization
-  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="$ANTS_THREADS"
-  export OMP_NUM_THREADS="$ANTS_THREADS"
-  export ANTS_RANDOM_SEED=1234
-  log_formatted "INFO" "Set parallel processing variables: ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$ANTS_THREADS, OMP_NUM_THREADS=$ANTS_THREADS"
-else
-  log_formatted "ERROR" "ANTs bin directory not found: $ANTS_BIN"
-fi
-
-# N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
-export N4_PRESET_LOW="20x20x25,0.0001,150,4"
-export N4_PRESET_MEDIUM="50x50x50x50,0.000001,200,4"
-export N4_PRESET_HIGH="100x100x100x50,0.0000001,300,2"
-export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
-
-# Set default N4_PARAMS by QUALITY_PRESET
-if [ "$QUALITY_PRESET" = "HIGH" ]; then
-    export N4_PARAMS="$N4_PRESET_HIGH"
-elif [ "$QUALITY_PRESET" = "MEDIUM" ]; then
-    export N4_PARAMS="$N4_PRESET_MEDIUM"
-else
-    export N4_PARAMS="$N4_PRESET_LOW"
-fi
-
-# Parse out the fields for general sequences
-N4_ITERATIONS=$(echo "$N4_PARAMS"      | cut -d',' -f1)
-N4_CONVERGENCE=$(echo "$N4_PARAMS"    | cut -d',' -f2)
-N4_BSPLINE=$(echo "$N4_PARAMS"        | cut -d',' -f3)
-N4_SHRINK=$(echo "$N4_PARAMS"         | cut -d',' -f4)
-
-# Parse out FLAIR-specific fields
-N4_ITERATIONS_FLAIR=$(echo "$N4_PRESET_FLAIR"  | cut -d',' -f1)
-N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
-N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
-N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
-
-# Multi-axial integration parameters (antsMultivariateTemplateConstruction2.sh)
-TEMPLATE_ITERATIONS=2
-TEMPLATE_GRADIENT_STEP=0.2
-TEMPLATE_TRANSFORM_MODEL="SyN"
-TEMPLATE_SIMILARITY_METRIC="CC"
-TEMPLATE_SHRINK_FACTORS="6x4x2x1"
-TEMPLATE_SMOOTHING_SIGMAS="3x2x1x0"
-TEMPLATE_WEIGHTS="100x50x50x10"
-
-# Registration & motion correction
-REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
-REG_METRIC_CROSS_MODALITY="MI"
-REG_METRIC_SAME_MODALITY="CC"
-ANTS_THREADS=12
-REG_PRECISION=1
-
-# White matter guided registration parameters
-WM_GUIDED_DEFAULT=true  # Default to use white matter guided registration
-WM_INIT_TRANSFORM_PREFIX="_wm_init"  # Prefix for WM-guided initialization transforms
-WM_MASK_SUFFIX="_wm_mask.nii.gz"  # Suffix for white matter mask files
-WM_THRESHOLD_VAL=3  # Threshold value for white matter segmentation (class 3 in Atropos)
-
-# Orientation distortion correction parameters
-# Main toggle
-ORIENTATION_PRESERVATION_ENABLED=true
-
-# Topology preservation parameters
-TOPOLOGY_CONSTRAINT_WEIGHT=0.5
-TOPOLOGY_CONSTRAINT_FIELD="1x1x1"
-
-# Jacobian regularization parameters
-JACOBIAN_REGULARIZATION_WEIGHT=1.0
-REGULARIZATION_GRADIENT_FIELD_WEIGHT=0.5
-
-# Correction thresholds
-ORIENTATION_CORRECTION_THRESHOLD=0.3
-ORIENTATION_SCALING_FACTOR=0.05
-ORIENTATION_SMOOTH_SIGMA=1.5
-
-# Quality assessment thresholds
-ORIENTATION_EXCELLENT_THRESHOLD=0.1
-ORIENTATION_GOOD_THRESHOLD=0.2
-ORIENTATION_ACCEPTABLE_THRESHOLD=0.3
-SHEARING_DETECTION_THRESHOLD=0.05
-
-# Hyperintensity detection
-# THRESHOLD_WM_SD_MULTIPLIER - defined in config files, don't override here
-MIN_HYPERINTENSITY_SIZE=4
-
-# Tissue segmentation parameters
-ATROPOS_T1_CLASSES=3
-ATROPOS_FLAIR_CLASSES=4
-ATROPOS_CONVERGENCE="5,0.0"
-ATROPOS_MRF="[0.1,1x1x1]"
-ATROPOS_INIT_METHOD="kmeans"
-
-# Cropping & padding
-PADDING_X=5
-PADDING_Y=5
-PADDING_Z=5
-C3D_CROP_THRESHOLD=0.1
-C3D_PADDING_MM=5
 
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
