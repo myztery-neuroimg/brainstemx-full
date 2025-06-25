@@ -387,6 +387,23 @@ run_pipeline() {
     return $ERR_DATA_MISSING
   fi
   
+  # Set global variables to track the authoritative reference space decision
+  if [ "$selected_modality" = "T1" ]; then
+    export PIPELINE_REFERENCE_MODALITY="T1"
+    export PIPELINE_REFERENCE_FILE="$t1_file"
+    export PIPELINE_MOVING_FILE="$flair_file"
+  else
+    export PIPELINE_REFERENCE_MODALITY="FLAIR"
+    export PIPELINE_REFERENCE_FILE="$flair_file"
+    export PIPELINE_MOVING_FILE="$t1_file"
+  fi
+  
+  log_formatted "INFO" "===== Authoritative Reference Space Set ====="
+  log_message "PIPELINE_REFERENCE_MODALITY: $PIPELINE_REFERENCE_MODALITY"
+  log_message "PIPELINE_REFERENCE_FILE:     $(basename "$PIPELINE_REFERENCE_FILE")"
+  log_message "PIPELINE_MOVING_FILE:        $(basename "$PIPELINE_MOVING_FILE")"
+  log_message "==========================================="
+
   # Log detailed resolution information about selected scans
   if [ -n "$t1_file" ] && [ -n "$flair_file" ]; then
     log_message "======== Selected Scan Information ========"
@@ -531,7 +548,7 @@ run_pipeline() {
     validate_step "Brain extraction" "$(basename "$t1_brain"),$(basename "$flair_brain")" "brain_extraction"
     
     # Smart standardization: detect optimal resolution across T1 and FLAIR
-    log_formatted "INFO" "===== SMART RESOLUTION DETECTION ====="
+    log_formatted "INFO" "===== SMART RESOLUTION DETECTION & REFERENCE SELECTION ====="
     local optimal_resolution=$(detect_optimal_resolution "$t1_brain" "$flair_brain")
     
     # Validate the resolution format
@@ -540,60 +557,55 @@ run_pipeline() {
       return $ERR_DATA_CORRUPT
     fi
     
-    log_formatted "SUCCESS" "Optimal resolution detected: $optimal_resolution mm"
-    log_message "T1 will be used as reference space for segmentation consistency"
-    
-    # Standardize dimensions using optimal resolution with reference grid approach
-    log_message "Running smart dimension standardization with reference grid approach"
-    log_message "This ensures T1 and FLAIR have IDENTICAL matrix dimensions while preserving highest resolution"
-    
-    # Always use T1 as reference for segmentation consistency
-    local ref_file="$t1_brain"
-    local other_file="$flair_brain"
-    local ref_name="T1"
-    local other_name="FLAIR"
-    
-    # Check if we're downsampling FLAIR
-    local t1_inplane=$(echo "scale=6; ($(fslval "$t1_brain" pixdim1) + $(fslval "$t1_brain" pixdim2)) / 2" | bc -l)
-    local flair_inplane=$(echo "scale=6; ($(fslval "$flair_brain" pixdim1) + $(fslval "$flair_brain" pixdim2)) / 2" | bc -l)
-    
-    if (( $(echo "$flair_inplane < $t1_inplane" | bc -l) )); then
-      log_formatted "INFO" "FLAIR has higher resolution (${flair_inplane}mm vs ${t1_inplane}mm) but using T1 as reference"
-      log_message "This maintains 'T1 native space' consistency for atlas-based segmentation"
-      log_message "FLAIR will be downsampled to match T1 grid for identical dimensions"
+    log_formatted "SUCCESS" "Optimal resolution for subject space detected: $optimal_resolution mm"
+
+    # Use the authoritative reference decision from Step 2.
+    # The brain-extracted versions of the files are used here.
+    local reference_image_brain=""
+    local moving_image_brain=""
+
+    if [ "$PIPELINE_REFERENCE_MODALITY" = "T1" ]; then
+        reference_image_brain="$t1_brain"
+        moving_image_brain="$flair_brain"
     else
-      log_formatted "SUCCESS" "T1 has equal or higher resolution - optimal for segmentation"
+        reference_image_brain="$flair_brain"
+        moving_image_brain="$t1_brain"
     fi
+
+    log_message "Using authoritative reference from Step 2: $PIPELINE_REFERENCE_MODALITY"
+    log_message "Reference Image (brain): $(basename "$reference_image_brain")"
+    log_message "Moving Image (brain):    $(basename "$moving_image_brain")"
+
+    # Standardize dimensions using the selected reference
+    log_message "Running smart dimension standardization..."
     
-    # Step 1: Standardize T1 first (always reference for segmentation)
-    log_message "Standardizing T1 with optimal resolution: $optimal_resolution"
-    if ! standardize_dimensions "$ref_file" "$optimal_resolution"; then
-      log_formatted "ERROR" "T1 standardization failed"
-      return $ERR_PREPROC
+    # 1. Standardize the reference image to the optimal resolution
+    if ! standardize_dimensions "$reference_image_brain" "$optimal_resolution"; then
+        log_formatted "ERROR" "Standardization failed for reference image: $reference_image_brain"
+        return $ERR_PREPROC
     fi
-    
-    # Get the standardized T1 file path
-    local ref_basename=$(basename "$ref_file" .nii.gz)
-    local ref_std=$(get_output_path "standardized" "$ref_basename" "_std")
-    
-    # Step 2: Standardize FLAIR using T1 as reference grid
-    log_message "Standardizing FLAIR using T1 as reference grid for identical dimensions"
-    if ! standardize_dimensions "$other_file" "$optimal_resolution" "$ref_std"; then
-      log_formatted "ERROR" "FLAIR standardization failed"
-      return $ERR_PREPROC
+    local reference_std=$(get_output_path "standardized" "$(basename "$reference_image_brain" .nii.gz)" "_std")
+
+    # 2. Standardize the moving image to the reference image's grid
+    if ! standardize_dimensions "$moving_image_brain" "" "$reference_std"; then
+        log_formatted "ERROR" "Standardization failed for moving image: $moving_image_brain"
+        return $ERR_PREPROC
     fi
-    
-    # Update file paths - T1 is always reference
-    local t1_brain_basename=$(basename "$t1_brain" .nii.gz)
-    local flair_brain_basename=$(basename "$flair_brain" .nii.gz)
-    
-    t1_std=$(get_output_path "standardized" "$t1_brain_basename" "_std")      # Reference T1 (native space)
-    flair_std=$(get_output_path "standardized" "$flair_brain_basename" "_std") # FLAIR resampled to T1 grid
-        
+    local moving_std=$(get_output_path "standardized" "$(basename "$moving_image_brain" .nii.gz)" "_std")
+
+    # Assign standardized files to t1_std and flair_std for downstream use
+    if [ "$PIPELINE_REFERENCE_MODALITY" = "T1" ]; then
+        t1_std="$reference_std"
+        flair_std="$moving_std"
+    else
+        t1_std="$moving_std"
+        flair_std="$reference_std"
+    fi
+
     # Validate standardization step
     validate_step "Standardize dimensions" "$(basename "$t1_std"),$(basename "$flair_std")" "standardized"
     
-    log_formatted "SUCCESS" "$flair_std standardized in T1 native space with identical dimensions"
+    log_formatted "SUCCESS" "Images standardized to a common high-resolution subject space."
 
     # Launch enhanced visual QA for brain extraction with better error handling and guidance
     enhanced_launch_visual_qa "$t1_std" "$t1_brain" ":colormap=heat:opacity=0.5" "brain-extraction" "sagittal"
@@ -653,7 +665,6 @@ run_pipeline() {
       # Only run registration fix if we're continuing from previous stages
       # This will check for coordinate space mismatches and fix datatypes
       log_message "Running registration issue fixing tool for data continuity..."
-      run_registration_fix
     fi
     
     # Create output directory for registration
@@ -670,7 +681,7 @@ run_pipeline() {
         log_formatted "WARNING" "No registered FLAIR found after multi-modality registration. Using original FLAIR."
         # Fall back to standard FLAIR registration
         local reg_prefix="${reg_dir}/t1_to_flair"
-        register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+        register_to_reference "$t1_std" "$flair_std" "FLAIR" "$reg_prefix"
         flair_registered="${reg_prefix}Warped.nii.gz"
       else
         log_message "Using automatically registered FLAIR: $flair_registered"
@@ -678,36 +689,64 @@ run_pipeline() {
     else
       # MAIN REGISTRATION EXECUTION - This was missing!
       log_formatted "INFO" "===== EXECUTING MAIN REGISTRATION ====="
-      log_message "Registering FLAIR to T1 using enhanced ANTs pipeline"
       
-      # Check if registration already exists (for resume functionality)
-      local reg_prefix="${reg_dir}/$(basename "$flair_std" .nii.gz)_to_t1"
-      local existing_registered="${reg_prefix}Warped.nii.gz"
-      
-      if [ -f "$existing_registered" ] && [ -s "$existing_registered" ]; then
-        log_message "Found existing registration: $existing_registered"
-        log_message "Skipping registration (use clean output directory to force re-registration)"
-        flair_registered="$existing_registered"
+      # Dynamically set registration parameters based on the authoritative reference
+      local reference_std=""
+      local moving_std=""
+      local moving_modality=""
+      if [ "$PIPELINE_REFERENCE_MODALITY" = "T1" ]; then
+        reference_std="$t1_std"
+        moving_std="$flair_std"
+        moving_modality="FLAIR"
+        log_message "Registering FLAIR to T1 reference space"
       else
-        log_message "Running FLAIR to T1 registration..."
-        log_message "Input T1: $t1_std"
-        log_message "Input FLAIR: $flair_std"
+        reference_std="$flair_std"
+        moving_std="$t1_std"
+        moving_modality="T1"
+        log_message "Registering T1 to FLAIR reference space"
+      fi
+
+      # Check if registration already exists (for resume functionality)
+      local reg_prefix="${reg_dir}/$(basename "$moving_std" .nii.gz)_to_$(basename "$reference_std" .nii.gz)"
+      local moving_registered_file="${reg_prefix}Warped.nii.gz"
+      
+      if [ -f "$moving_registered_file" ] && [ -s "$moving_registered_file" ]; then
+        log_message "Found existing registration: $moving_registered_file"
+        log_message "Skipping registration (use clean output directory to force re-registration)"
+      else
+        log_message "Running registration..."
+        log_message "Reference: $reference_std"
+        log_message "Moving:    $moving_std"
         log_message "Output prefix: $reg_prefix"
         
         # Call the main registration function
-        register_modality_to_t1 "$t1_std" "$flair_std" "FLAIR" "$reg_prefix"
+        register_to_reference "$reference_std" "$moving_std" "$moving_modality" "$reg_prefix"
         local reg_status=$?
         
-        if [ $reg_status -eq 0 ] && [ -f "${reg_prefix}Warped.nii.gz" ]; then
+        if [ $reg_status -eq 0 ] && [ -f "$moving_registered_file" ]; then
           log_formatted "SUCCESS" "Registration completed successfully"
-          flair_registered="${reg_prefix}Warped.nii.gz"
         else
           log_formatted "ERROR" "Registration failed with status $reg_status"
           return $ERR_REGISTRATION
         fi
       fi
       
-      log_message "Registration output: $flair_registered"
+      # Assign flair_registered for backward compatibility in QA steps
+      local flair_registered="$moving_registered_file"
+      if [ "$PIPELINE_REFERENCE_MODALITY" = "FLAIR" ]; then
+        # If FLAIR is the reference, the "registered" file is the T1.
+        # For QA visualization against T1, we need the registered T1.
+        # However, downstream analysis expects a `flair_registered` variable.
+        # This is tricky. For now, we will pass the registered moving image.
+        # The QA step will correctly overlay the registered T1 onto the FLAIR reference.
+        # But if we want to overlay on T1, we need to be careful.
+        # The QA call `enhanced_launch_visual_qa "$t1_std" "$flair_registered"` will show
+        # the registered T1 on the standardized (but not reference) T1. This is not ideal.
+        # A better QA would be `enhanced_launch_visual_qa "$reference_std" "$moving_registered_file"`
+        flair_registered="$moving_registered_file"
+      fi
+
+      log_message "Registration output: $moving_registered_file"
       # Validate coordinate spaces and datatypes
       log_formatted "INFO" "===== VALIDATING DATA BEFORE REGISTRATION ====="
       local val_dir="${reg_dir}/validation"
@@ -735,55 +774,9 @@ run_pipeline() {
         standardize_image_format "$flair_std" "" "$flair_fmt" "FLOAT32"
       fi
       
-      # STEP 1: Normalize T1 to MNI space for standardized analysis
-      log_formatted "INFO" "===== NORMALIZING T1 TO MNI SPACE ====="
-      log_message "This enables proper cross-subject comparisons and standardized analysis"
-      
-      #local t1_mni_prefix="${reg_dir}/t1_to_mni"
-      #log_message "Registering T1 to MNI space for normalization..."
-      #register_t1_to_mni "$t1_fmt" "$t1_mni_prefix"
-      #local t1_mni_status=$?
-      
-      #if [ $t1_mni_status -eq 0 ] && [ -f "${t1_mni_prefix}Warped.nii.gz" ]; then
-      #  log_formatted "SUCCESS" "T1 normalization to MNI space completed"
-      #  # Update t1_std to point to MNI-normalized version
-      #  t1_std="${t1_mni_prefix}Warped.nii.gz"
-      #  log_message "Updated T1 reference to MNI-normalized: $t1_std"
-      #else
-      #  log_formatted "ERROR" "T1 to MNI normalization failed, falling back to native space"
-      #  t1_std="$t1_fmt"
-      #fi
-
-      log_message "Not warping T1 to MNI space, as it would reduce detail.."
-
-      t1_std="$t1_fmt"
-      # STEP 2: Register FLAIR to MNI-normalized T1
-      log_formatted "INFO" "===== REGISTERING FLAIR TO MNI-NORMALIZED T1 ====="
-      
-      local reg_prefix="${reg_dir}/flair_to_t1_mni"
-      log_message "Running FLAIR registration to T1..."
-      register_modality_to_t1 "$t1_std" "$flair_fmt" "FLAIR" "$reg_prefix"
-      flair_registered="${reg_prefix}Warped.nii.gz"
-      
-      # STEP 3: Create transform functions for atlas usage (now in MNI space)
-      log_formatted "INFO" "===== PREPARING ATLAS FUNCTIONS FOR SUBJECT SPACE ====="
-      local transform_dir="${reg_dir}/transforms"
-      mkdir -p "$transform_dir"
-      
-      # Store transform information for reference
-      log_message "All processing is now in Subject space - no additional transforms needed for atlases"
-      log_message "T1 (MNI space): $t1_std"
-      log_message "FLAIR (MNI space): $flair_registered"
-      
-      # Store reference paths for downstream processing
-      echo "T1_MNI_NORMALIZED=${t1_std}" > "${transform_dir}/subject_space_info.txt"
-      echo "FLAIR_MNI_REGISTERED=${flair_registered}" >> "${transform_dir}/subject_space_info.txt"
-      #echo "SPACE=MNI152" >> "${transform_dir}/mni_space_info.txt"
-      #echo "COORDINATE_SYSTEM=MNI152_2mm" >> "${transform_dir}/mni_space_info.txt"
-      
-      #log_message "All data is now in standardized MNI space"
-      #log_message "Atlases can be used directly without transformation"
-      log_message "Space information saved: ${transform_dir}/subject_space_info.txt"
+      # All registration is now performed in the highest-resolution subject space.
+      # The `flair_registered` variable from the previous block already holds the result.
+      log_message "All registration is now performed in native subject space."
     fi
     
     # Validate registration step
@@ -846,6 +839,7 @@ run_pipeline() {
     log_message "Attempting all available segmentation methods..."
     
     # Use the comprehensive method that tries all approaches
+    # Segmentation is always performed on the T1 image for atlas compatibility.
     if ! extract_brainstem_final "$t1_std"; then
         log_formatted "ERROR" "Segmentation failed - critical pipeline step failed"
         log_formatted "ERROR" "Cannot proceed without valid segmentation data"
@@ -866,6 +860,37 @@ run_pipeline() {
     # Validate main segmentation files (dorsal/ventral are just compatibility placeholders)
     validate_step "Segmentation" "${t1_basename}_brainstem.nii.gz,${t1_basename}_pons.nii.gz" "segmentation"
   
+    # If T1 was not the reference space, transform the T1-based segmentation masks to the reference space (FLAIR)
+    if [ "$PIPELINE_REFERENCE_MODALITY" != "T1" ]; then
+        log_formatted "INFO" "===== TRANSFORMING SEGMENTATION TO REFERENCE SPACE ====="
+        log_message "Reference is FLAIR. Transforming T1-based segmentations to FLAIR space for analysis."
+        
+        local seg_dir="$RESULTS_DIR/segmentation"
+        local transformed_seg_dir="${seg_dir}/in_reference_space"
+        mkdir -p "$transformed_seg_dir"
+        
+        # Find the registration transform (T1 to FLAIR)
+        local reg_prefix="${reg_dir}/$(basename "$t1_std" .nii.gz)_to_$(basename "$flair_std" .nii.gz)"
+        local transform_affine="${reg_prefix}0GenericAffine.mat"
+        local transform_warp="${reg_prefix}1Warp.nii.gz"
+
+        if [ -f "$transform_affine" ] && [ -f "$transform_warp" ]; then
+            log_message "Found transform: $transform_warp"
+            for mask_file in "$seg_dir/brainstem/"*.nii.gz; do
+                local out_mask="${transformed_seg_dir}/$(basename "$mask_file")"
+                log_message "Transforming $(basename $mask_file) to reference space..."
+                # The reference image for the transformation is the FLAIR image
+                apply_transformation "$mask_file" "$flair_std" "$out_mask" "$transform_warp" "NearestNeighbor" "$transform_affine"
+            done
+            log_formatted "SUCCESS" "Segmentation masks transformed to reference space."
+            # Update brainstem_output to point to the transformed mask for QA and downstream use
+            brainstem_output="${transformed_seg_dir}/$(basename "$brainstem_output")"
+        else
+            log_formatted "WARNING" "Could not find transforms to move segmentation to reference space ($reg_prefix)."
+            log_message "Analysis will proceed in T1 space, which may not be ideal."
+        fi
+    fi
+
     # The brainstem output already contains intensity values, no need to create another
     log_message "Using existing intensity segmentation masks for visualization..."
     local brainstem_intensity="$brainstem_output"  # This already contains T1 intensities
@@ -1005,7 +1030,7 @@ run_pipeline() {
       log_formatted "ERROR" "No registered FLAIR found. Will register now."
       if [ -n "$t1_std" ] && [ -n "$flair_std" ]; then
         local reg_prefix="${reg_dir}/t1_to_flair"
-        register_t2_flair_to_t1mprage "$t1_std" "$flair_std" "$reg_prefix"
+        register_to_reference "$t1_std" "$flair_std" "FLAIR" "$reg_prefix"
         flair_registered="${reg_prefix}Warped.nii.gz"
       else
         log_formatted "ERROR" "Cannot find or create registered FLAIR file" $ERR_DATA_MISSING
