@@ -177,7 +177,7 @@ pillow==11.2.1
     #   matplotlib
     #   scikit-image
     #   streamlit
-platformdirs==4.3.7
+platformdirs==4.3.8
     # via
     #   brainstemx-full
     #   pylint
