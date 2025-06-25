@@ -106,18 +106,23 @@ perform_brain_extraction() {
     
     log_message "Using ANTs template-free brain extraction for: $input_file"
 
-    local temp_dir
-    temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/brain_extraction_XXXXXX")
-    local n4_corrected="${temp_dir}/n4_corrected.nii.gz"
-    local initial_mask="${temp_dir}/initial_mask.nii.gz"
-    local largest_component_mask="${temp_dir}/largest_component_mask.nii.gz"
-    local refined_mask="${temp_dir}/refined_mask.nii.gz"
+    # Create output directory for intermediate files based on output prefix
+    local output_dir=$(dirname "$output_prefix")
+    local basename_prefix=$(basename "$output_prefix")
+    local intermediate_dir="${output_dir}/brain_extraction_intermediate"
+    mkdir -p "$intermediate_dir"
+    
+    # Define intermediate file paths (keep N4-corrected as permanent output)
+    local n4_corrected="${output_prefix}N4Corrected.nii.gz"
+    local initial_mask="${intermediate_dir}/${basename_prefix}InitialMask.nii.gz"
+    local largest_component_mask="${intermediate_dir}/${basename_prefix}LargestComponent.nii.gz"
+    local refined_mask="${intermediate_dir}/${basename_prefix}RefinedMask.nii.gz"
 
     # 1. N4 Bias Field Correction
-    log_message "Step 1: Performing N4 Bias Field Correction: N4BiasFieldCorrection -d 3 -i $input_file -o $n4_corrected -s $N4_SHRINK -c $N4_ITERATIONS -b [$N4_CONVERGENCE] n4_correction"
-    if ! execute_with_logging "N4BiasFieldCorrection -d 3 -i \"$input_file\" -o \"$n4_corrected\" -s $N4_SHRINK -c \"$N4_ITERATIONS\" -b \"[$N4_CONVERGENCE]\"" "n4_correction"; then
+    log_message "Step 1: Performing N4 Bias Field Correction: N4BiasFieldCorrection -d 3 -i $input_file -o $n4_corrected -s $N4_SHRINK -c $N4_CONVERGENCE -b [$N4_BSPLINE] n4_correction"
+    if ! execute_with_logging "N4BiasFieldCorrection -d 3 -i \"$input_file\" -o \"$n4_corrected\" -s $N4_SHRINK -c \"$N4_CONVERGENCE\" -b \"[$N4_BSPLINE]\"" "n4_correction"; then
         log_formatted "ERROR" "N4BiasFieldCorrection failed."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
 
@@ -125,7 +130,7 @@ perform_brain_extraction() {
     log_message "Step 2: Creating initial brain mask with Otsu thresholding"
     if ! execute_with_logging "ThresholdImage 3 \"$n4_corrected\" \"$initial_mask\" Otsu 1" "otsu_threshold"; then
         log_formatted "ERROR" "Otsu thresholding failed."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
 
@@ -133,7 +138,7 @@ perform_brain_extraction() {
     log_message "Step 3: Identifying largest connected component"
     if ! execute_with_logging "ImageMath 3 \"$largest_component_mask\" GetLargestComponent \"$initial_mask\"" "largest_component"; then
         log_formatted "ERROR" "Failed to get largest component."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
 
@@ -141,21 +146,21 @@ perform_brain_extraction() {
     log_message "Step 4a: Dilating mask"
     if ! execute_with_logging "ImageMath 3 \"$refined_mask\" MD \"$largest_component_mask\" 4" "mask_refinement_dilate"; then
         log_formatted "ERROR" "Mask dilation failed."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
 
     log_message "Step 4b: Eroding mask to refine boundaries"
     if ! execute_with_logging "ImageMath 3 \"$refined_mask\" ME \"$refined_mask\" 4" "mask_refinement_erode"; then
         log_formatted "ERROR" "Mask erosion failed."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
 
     log_message "Step 4c: Filling holes in the final mask"
     if ! execute_with_logging "ImageMath 3 \"$mask_file\" FillHoles \"$refined_mask\"" "mask_refinement_fill"; then
         log_formatted "ERROR" "Mask hole filling failed."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
 
@@ -163,12 +168,17 @@ perform_brain_extraction() {
     log_message "Step 5: Applying final mask to create brain-extracted image"
     if ! execute_with_logging "ImageMath 3 \"$brain_file\" m \"$n4_corrected\" \"$mask_file\"" "apply_mask"; then
         log_formatted "ERROR" "Failed to create brain-extracted image."
-        rm -rf "$temp_dir"
+        rm -rf "$intermediate_dir"
         return 1
     fi
     
     log_formatted "SUCCESS" "ANTs template-free brain extraction completed successfully."
-    rm -rf "$temp_dir"
+    log_message "N4-corrected image saved: $n4_corrected"
+    log_message "Brain mask saved: $mask_file"
+    log_message "Brain-extracted image saved: $brain_file"
+    
+    # Clean up only intermediate processing files, keep N4-corrected image
+    rm -rf "$intermediate_dir"
     return 0
 
   # Fallback to FSL BET if ANTs tools are not available

@@ -83,13 +83,14 @@ export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
 export REG_TRANSFORM_TYPE="${REG_TRANSFORM_TYPE:-2}"  # SyN registration
 # Quality settings (LOW, MEDIUM, HIGH)
 export MAX_CPU_INTENSIVE_JOBS=1
-# N4 Bias Field Correction presets: "iterations,convergence,bspline,shrink"
-export N4_PRESET_VERY_LOW="20x20x20,0.00005,100,5"
-export N4_PRESET_LOW="35x35x35,0.00001,150,4"
-export N4_PRESET_MEDIUM="70x70x70,0.000005,200,2"
-export N4_PRESET_HIGH="100x100x100x2,0.000001,500,2"
-export N4_PRESET_ULTRA="250x250x250x5,0.0000001,2000,2"
-export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # override if needed
+# N4 Bias Field Correction presets: "iterations,convergence_threshold,spline_distance_mm,shrink_factor"
+# Spline distance: larger values = coarser fit = faster; smaller values = finer fit = slower
+export N4_PRESET_VERY_LOW="20x20x20,0.0001,1x1x3,2"
+export N4_PRESET_LOW="35x35x35,0.00025,2x2x3,2"
+export N4_PRESET_MEDIUM="70x70x70,0.0001,2x2x3,2"
+export N4_PRESET_HIGH="100x100x100x2,0.00005,2x2x3,2"
+export N4_PRESET_ULTRA="250x250x250x5,0.00001,2x2x3,2"
+export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # Use more conservative settings for FLAIR
 
 export PARALLEL_JOBS=0
 
@@ -118,17 +119,19 @@ elif [[ "$CORES" -le 8 ]]; then
   export ANTS_MEMORY_LIMIT="8G"
 elif [[ "$CORES" -le 18 ]]; then   
   # MacBook Pro -level optimisations
-  export MACHINE_SPEC=MEDIUM
+  export MACHINE_SPEC="MEDIUM"
+  export QUALITY_PRESET="MEDIUM"
   # Use all available memory efficiently
   export ANTS_MEMORY_LIMIT="14G"  # Adjust based on actual RAM
   # Optimize for Apple Silicon
 else   
   # Mac Studio-level optimizations
-  export MACHINE_SPEC=HIGH
-  export ANTS_THREADS=48  # Use most but not all cores
-  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=48
+  export MACHINE_SPEC="HIGH"
+  export QUALITY_PRESET="LOW"
+  export ANTS_THREADS=24  # Use most but not all cores
+  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=24
   export OMP_NUM_THREADS=24
-  export ANTS_MEMORY_LIMIT="128G"  # Adjust based on actual RAM
+  export ANTS_MEMORY_LIMIT="64G"  # Adjust based on actual RAM
   export VECLIB_MAXIMUM_THREADS=24
   export OPENBLAS_NUM_THREADS=24
 fi
@@ -221,9 +224,9 @@ export REGISTRATION_MASK_2MM="MNI152_T1_2mm_brain_mask_dil.nii.gz"
 export DISABLE_DEDUPLICATION="false"
 
 # Set initial defaults (will be updated based on detected image resolution)
-export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_${DEFAULT_TEMPLATE_RES}"
-export PROBABILITY_MASK="$PROBABILITY_MASK_${DEFAULT_TEMPLATE_RES}"
-export REGISTRATION_MASK="$REGISTRATION_MASK_${DEFAULT_TEMPLATE_RES}"
+export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
+export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
+export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
 
 # Supported modalities for registration to T1
 export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE" "COR")

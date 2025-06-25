@@ -358,7 +358,7 @@ process_n4_correction() {
   local brain_mask="${brain_prefix}BrainExtractionMask.nii.gz"
   
   # Brain extraction for a better mask (using denoised image for better extraction)
-  if ! perform_brain_extraction "$denoised_file" "$brain_prefix"; then
+  if ! extract_brain "$denoised_file" "$brain_prefix"; then
     local brain_status=$?
     log_formatted "ERROR" "Brain extraction failed for denoised image: $denoised_file (status: $brain_status)"
     return $ERR_PREPROC
@@ -440,7 +440,7 @@ run_parallel_n4_correction() {
   export -f process_n4_correction process_rician_nlm_denoising get_n4_parameters standardize_orientation
   export -f log_message log_formatted validate_nifti validate_file
   export -f get_output_path get_module_dir create_module_dir
-  export -f log_diagnostic execute_with_logging perform_brain_extraction execute_ants_command
+  export -f log_diagnostic execute_with_logging execute_ants_command
   
   # Run in parallel using the common function
   run_parallel "process_n4_correction" "$pattern" "$input_dir" "$jobs" "$max_depth"
