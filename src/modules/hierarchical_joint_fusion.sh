@@ -242,38 +242,33 @@ execute_dual_atlas_fusion() {
     log_message "Registering Harvard-Oxford atlas to subject space..."
     local harvard_affine="${registration_dir}/harvard/harvard_to_subject_0GenericAffine.mat"
     local harvard_warp="${registration_dir}/harvard/harvard_to_subject_1Warp.nii.gz"
-    if [[ -f "$harvard_warp" ]] && [[ -f "$harvard_affine" ]]; then
-        log_message "Harvard-Oxford registration to subject space already exists. Skipping."
-    else
-        antsRegistrationSyN.sh \
-            -d 3 \
-            -f "$input_file" \
-            -m "$harvard_atlas" \
-            -o "${registration_dir}/harvard/harvard_to_subject_" \
-            -t s \
-            -j 1 \
-            -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
-    fi
+    #if [[ -f "$harvard_warp" ]] && [[ -f "$harvard_affine" ]]; then
+    #    log_message "Harvard-Oxford registration to subject space already exists. Skipping."
+    #else
+    antsRegistrationSyN.sh \
+        -d 3 \
+        -f "$input_file" \
+        -m "$harvard_atlas" \
+        -o "${registration_dir}/harvard/harvard_to_subject_" \
+        -t s \
+        -j 1 \
+        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Register enhanced Talairach to subject
     log_message "Registering enhanced Talairach atlas to subject space..."
     local talairach_affine="${registration_dir}/talairach/talairach_to_subject_0GenericAffine.mat"
     local talairach_warp="${registration_dir}/talairach/talairach_to_subject_1Warp.nii.gz"
-    if [[ -f "$talairach_warp" ]] && [[ -f "$talairach_affine" ]]; then
-        log_message "Enhanced Talairach registration to subject space already exists. Skipping."
-    else
-        antsRegistrationSyN.sh \
-            -d 3 \
-            -f "$input_file" \
-            -m "$talairach_enhanced" \
-            -o "${registration_dir}/talairach/talairach_to_subject_" \
-            -t s \
-            -j 1 \
-            -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
-    fi
+
+    antsRegistrationSyN.sh \
+        -d 3 \
+        -f "$input_file" \
+        -m "$talairach_enhanced" \
+        -o "${registration_dir}/talairach/talairach_to_subject_" \
+        -t s \
+        -j 1 \
+        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
     # Validate registrations
-    
     if [[ ! -f "$harvard_affine" ]] || [[ ! -f "$harvard_warp" ]]; then
         log_formatted "ERROR" "Harvard-Oxford registration failed"
         return 1
@@ -299,7 +294,7 @@ execute_dual_atlas_fusion() {
     # Harvard-Oxford brainstem label (index 7)
     log_message "Extracting Harvard-Oxford brainstem (label 8)..."
     local harvard_label_atlas_space="${labels_dir}/harvard_brainstem_atlas_space.nii.gz"
-    fslmaths "$harvard_atlas" -thr 7.5 -uthr 8.5 -bin "$harvard_label_atlas_space"
+    fslmaths "$harvard_atlas" -thr 8 -uthr 8 -bin "$harvard_label_atlas_space"
     log_message "  - Output label mask: $harvard_label_atlas_space"
     log_message "  - Voxel count: $(fslstats "$harvard_label_atlas_space" -V | awk '{print $1}')"
     
@@ -333,7 +328,7 @@ execute_dual_atlas_fusion() {
     local talairach_label_subject_space="${labels_dir}/talairach_brainstem_subject_space.nii.gz"
     antsApplyTransforms -d 3 -i "$talairach_enhanced" -r "$input_file" -o "$talairach_atlas_subject_space" \
         -t "$talairach_warp" -t "$talairach_affine" -n Linear
-    antsApplyTransforms -d 3 -i "$talairach_label_atlas_space" -r "$input_file" -o "$talairach_label_subject_space" \
+    antsApplyTransforms -d 3 -i "$talairach_enhanced" -r "$input_file" -o "$talairach_label_subject_space" \
         -t "$talairach_warp" -t "$talairach_affine" -n NearestNeighbor
 
     # Calculate and log metrics for the warped Talairach brainstem
@@ -345,7 +340,7 @@ execute_dual_atlas_fusion() {
     log_message "  ✓ Talairach brainstem in subject space:"
     log_message "    - Voxel count: ${talairach_voxel_count}"
     log_message "    - Center of Gravity (mm): ${talairach_cog_mm}"
-    rm -f "$temp_talairach_bin_label"
+    #rm -f "$temp_talairach_bin_label"
 
     # Execute antsJointFusion
     log_message "Executing antsJointFusion with dual atlases in subject space..."
@@ -380,7 +375,7 @@ generate_segmentation_outputs() {
     local workspace="$1"
     local output_prefix="$2"
     
-    log_message "Generating final segmentation outputs..."
+    log_message "Generating final segmentation outputs... Workspace: $workspace"
     
     local joint_fusion_labels="${workspace}/results/joint_fusion_labels.nii.gz"
     local input_reference=$(dirname "$output_prefix")/$(basename "$output_prefix" | cut -d'_' -f1)*.nii.gz
@@ -391,6 +386,7 @@ generate_segmentation_outputs() {
     fi
     
     # Generate primary brainstem mask
+    log_message "fslmaths $joint_fusion_labels -bin $brainstem_mask"
     local brainstem_mask="${output_prefix}_brainstem.nii.gz"
     fslmaths "$joint_fusion_labels" -bin "$brainstem_mask"
     
@@ -419,13 +415,15 @@ generate_talairach_subdivisions() {
     local workspace="$1"
     local output_prefix="$2"
     
-    log_message "Generating Talairach subdivision masks in subject space..."
+    log_message "Generating Talairach subdivision masks in subject space...  Workspace: $workspace"
     
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
     local talairach_affine="${workspace}/registration/talairach/talairach_to_subject_0GenericAffine.mat"
     local talairach_warp="${workspace}/registration/talairach/talairach_to_subject_1Warp.nii.gz"
     local joint_fusion_labels="${workspace}/results/joint_fusion_labels.nii.gz"
     
+    log_message "talairach_atlas: $talairach_atlas talairach_affine: $talairach_affine talairach_warp: $talairach_warp joint_fusion_labels: $joint_fusion_labels"
+
     # Define Talairach regions
     declare -A TALAIRACH_REGIONS=(
         ["left_medulla"]="5"
