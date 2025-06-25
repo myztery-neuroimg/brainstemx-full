@@ -328,7 +328,7 @@ execute_dual_atlas_fusion() {
     local talairach_label_subject_space="${labels_dir}/talairach_brainstem_subject_space.nii.gz"
     antsApplyTransforms -d 3 -i "$talairach_enhanced" -r "$input_file" -o "$talairach_atlas_subject_space" \
         -t "$talairach_warp" -t "$talairach_affine" -n Linear
-    antsApplyTransforms -d 3 -i "$talairach_enhanced" -r "$input_file" -o "$talairach_label_subject_space" \
+    antsApplyTransforms -d 3 -i "$talairach_label_atlas_space" -r "$input_file" -o "$talairach_label_subject_space" \
         -t "$talairach_warp" -t "$talairach_affine" -n NearestNeighbor
 
     # Calculate and log metrics for the warped Talairach brainstem
@@ -386,8 +386,9 @@ generate_segmentation_outputs() {
     fi
     
     # Generate primary brainstem mask
-    log_message "fslmaths $joint_fusion_labels -bin $brainstem_mask"
     local brainstem_mask="${output_prefix}_brainstem.nii.gz"
+    log_message "fslmaths $joint_fusion_labels -bin $brainstem_mask"
+
     fslmaths "$joint_fusion_labels" -bin "$brainstem_mask"
     
     # Generate FLAIR intensity mask if FLAIR image available
