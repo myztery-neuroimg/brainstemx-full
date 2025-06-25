@@ -374,11 +374,11 @@ run_pipeline() {
   log_message "Rationale: $selection_rationale"
   
   # Assign files based on selection result
-  if [ "$selected_modality" = "T1" ]; then
+  if [ "$selected_modality" == "T1" ]; then
     local t1_file="$selected_file"
     # Find the best FLAIR for this T1
     local flair_file=$(select_best_scan "FLAIR" "*FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
-  elif [ "$selected_modality" = "FLAIR" ]; then
+  elif [ "$selected_modality" == "FLAIR" ]; then
     local flair_file="$selected_file"
     # Find the best T1 for this FLAIR
     local t1_file=$(select_best_scan "T1" "*T1*.nii.gz" "$EXTRACT_DIR" "$flair_file" "${T1_SELECTION_MODE:-highest_resolution}")
@@ -388,7 +388,7 @@ run_pipeline() {
   fi
   
   # Set global variables to track the authoritative reference space decision
-  if [ "$selected_modality" = "T1" ]; then
+  if [ "$selected_modality" == "T1" ]; then
     export PIPELINE_REFERENCE_MODALITY="T1"
     export PIPELINE_REFERENCE_FILE="$t1_file"
     export PIPELINE_MOVING_FILE="$flair_file"
@@ -528,11 +528,11 @@ run_pipeline() {
     
     # Brain extraction 
       log_message "Running brain extraction sequentially"
-      if ! extract_brain "$t1_file"; then
+      if ! extract_brain "$t1_file" "$RESULTS_DIR/brain_extraction"; then
         log_formatted "ERROR" "Brain extraction failed for T1: $t1_file"
         return $ERR_PREPROC
       fi
-      if ! extract_brain "$flair_file"; then
+      if ! extract_brain "$flair_file" "$RESULTS_DIR/brain_extraction"; then
         log_formatted "ERROR" "Brain extraction failed for FLAIR: $flair_file"
         return $ERR_PREPROC
       fi
@@ -541,8 +541,8 @@ run_pipeline() {
     local t1_n4_basename=$(basename "$t1_file" .nii.gz)
     local flair_n4_basename=$(basename "$flair_file" .nii.gz)
     
-    t1_brain=$(get_output_path "brain_extraction" "$t1_n4_basename" "_brain")
-    flair_brain=$(get_output_path "brain_extraction" "$flair_n4_basename" "_brain")
+    t1_brain="$RESULTS_DIR/brain_extraction"/${t1_n4_basename}"_brain.nii.gz"
+    flair_brain="$RESULTS_DIR/brain_extraction"/${flair_n4_basename}"_brain.nii.gz"
     
     # Validate brain extraction step
     validate_step "Brain extraction" "$(basename "$t1_brain"),$(basename "$flair_brain")" "brain_extraction"
