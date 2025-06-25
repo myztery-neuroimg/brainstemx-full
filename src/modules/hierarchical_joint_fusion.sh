@@ -365,7 +365,10 @@ execute_dual_atlas_fusion() {
         return 1
     fi
 
-    cp "${results_dir}/joint_fusion.nii.gz" "${results_dir}/joint_fusion_labels.nii.gz"
+    # TODO
+    # replace with fslmath
+    return 1
+    #cp "${results_dir}/joint_fusion.nii.gz" "${results_dir}/joint_fusion_labels.nii.gz"
     
     log_formatted "SUCCESS" "Dual-atlas joint fusion completed"
     return 0

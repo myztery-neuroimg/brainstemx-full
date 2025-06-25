@@ -29,6 +29,7 @@ MODULE_PATHS=(
   "../src/modules/dicom_analysis.sh"
   "./modules/dicom_analysis.sh"
   "../modules/dicom_analysis.sh"
+  "../../config/default_config.sh"
 )
 
 # Also source vendor-specific import module
