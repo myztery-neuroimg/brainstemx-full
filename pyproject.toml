@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = "==3.12.8" 
 dependencies = [
     "antspyx>=0.5.4",
-    "astroid==3.3.9",
+    "astroid==3.3.10",
     "attrs==25.3.0",
     "blinker==1.9.0",
     "cachetools==5.5.2",
