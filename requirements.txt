@@ -144,7 +144,7 @@ numpy==2.0.1
     #   streamlit
     #   suitpy
     #   tifffile
-packaging==24.2
+packaging==25.0
     # via
     #   altair
     #   brainstemx-full
