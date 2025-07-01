@@ -124,7 +124,7 @@ nibabel==5.3.2
     #   brainstemx-full
     #   neuroimagingtools
     #   suitpy
-numpy==2.0.1
+numpy==2.3.1
     # via
     #   antspyx
     #   brainstemx-full
