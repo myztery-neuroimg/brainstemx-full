@@ -33,7 +33,7 @@ dependencies = [
     "narwhals==1.33.0",
     "neuroimagingtools==1.1.4",
     "nibabel==5.3.2",
-    "numpy==2.0.1",
+    "numpy==2.3.1",
     "packaging==25.0",
     "pandas==2.2.3",
     "pathlib==1.0.1",
