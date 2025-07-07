@@ -97,7 +97,7 @@ markupsafe==3.0.2
     # via
     #   brainstemx-full
     #   jinja2
-matplotlib==3.10.1
+matplotlib==3.10.3
     # via
     #   antspyx
     #   brainstemx-full
