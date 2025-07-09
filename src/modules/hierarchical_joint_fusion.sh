@@ -345,7 +345,7 @@ execute_dual_atlas_fusion() {
 
     # Execute antsJointFusion
     log_message "Executing antsJointFusion with dual atlases in subject space..."
-    log_message "antsJointFusion -d 3 -t $input_file -g $harvard_atlas_subject_space -l $harvard_label_subject_space -g $talairach_atlas_subject_space a 0.1 -b 2.0 -c 1 -s 3 -p 1 -o ${results_dir}/joint_fusion.nii.gz"
+    log_message "antsJointFusion -d 3 -t $input_file -g $harvard_atlas_subject_space -l $harvard_label_subject_space -g $talairach_atlas_subject_space -a 0.1 -b 2.0 -c 1 -s 3 -p 1 -o ${results_dir}/joint_fusion.nii.gz"
     antsJointFusion \
         -d 3 \
         -t "$input_file" \

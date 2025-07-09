@@ -346,7 +346,7 @@ run_pipeline() {
     # Find T1 and FLAIR files
   # Use simple glob patterns that work reliably with find
   export T1_PRIORITY_PATTERN="${T1_PRIORITY_PATTERN:-T1_MPRAGE_SAG_*.nii.gz}"
-  export FLAIR_PRIORITY_PATTERN="${FLAIR_PRIORITY_PATTERN:-T2_SPACE_FLAIR_Sag_CS_*.nii.gz}"
+  export FLAIR_PRIORITY_PATTERN="${FLAIR_PRIORITY_PATTERN:-T2_SPACE_FLAIR_Sag_CS_17.nii.gz}"
   
   log_message "Using T1 pattern: $T1_PRIORITY_PATTERN"
   log_message "Using FLAIR pattern: $FLAIR_PRIORITY_PATTERN"
@@ -377,7 +377,7 @@ run_pipeline() {
   if [ "$selected_modality" == "T1" ]; then
     local t1_file="$selected_file"
     # Find the best FLAIR for this T1
-    local flair_file=$(select_best_scan "FLAIR" "*FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
+    local flair_file=$(select_best_scan "SPACE_FLAIR" "*SPACE_FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
   elif [ "$selected_modality" == "FLAIR" ]; then
     local flair_file="$selected_file"
     # Find the best T1 for this FLAIR

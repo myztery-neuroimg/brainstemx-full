@@ -1573,7 +1573,7 @@ perform_registration_comparison() {
     fi
 
     log_message "Please select the T2 scan for comparison."
-    local selected_t2=$(select_best_scan "T2" "*T2*.nii.gz" "$input_dir" "$selected_t1" "interactive")
+    local selected_t2=$(select_best_scan "T2" "*FLAIR_.*1035.nii.gz" "$input_dir" "$selected_t1" "interactive")
      if [ -z "$selected_t2" ]; then
         log_formatted "ERROR" "No T2 scan selected. Aborting comparison."
         return 1

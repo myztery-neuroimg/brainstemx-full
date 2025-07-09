@@ -99,7 +99,7 @@ discover_original_sequences() {
     
     # Find potential FLAIR sequences (broader patterns) - support both .nii and .nii.gz
     #local all_flair_files=($(find "$extraction_dir" \( -name "*FLAIR*.nii.gz" -o -name "*FLAIR*.nii" \) -o \( -name "*flair*.nii.gz" -o -name "*flair*.nii" \) -o \( -name "*T2*SPACE*.nii.gz" -o -name "*T2*SPACE*.nii" \) 2>/dev/null))
-    local all_flair_files=($(find "$extraction_dir" \( -name "*FLAIR*.nii.gz" -o -name "*SPACE*FLAIR*_17.nii" \) 2>/dev/null))
+    local all_flair_files=($(find "$extraction_dir" \( -name "*SPACE*FLAIR*.nii.gz" -o -name "*SPACE*FLAIR*_17.nii" \) 2>/dev/null))
     
     log_message "Found ${#all_t1_files[@]} potential T1 files"
     log_message "Found ${#all_flair_files[@]} potential FLAIR files"
