@@ -48,7 +48,7 @@ dill==0.3.9
     # via
     #   brainstemx-full
     #   pylint
-fonttools==4.57.0
+fonttools==4.58.5
     # via
     #   brainstemx-full
     #   matplotlib
