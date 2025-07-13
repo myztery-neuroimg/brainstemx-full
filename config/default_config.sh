@@ -87,8 +87,8 @@ export MAX_CPU_INTENSIVE_JOBS=1
 export N4_PRESET_VERY_LOW="20x20x20,0.0001,1x1x3,2"
 export N4_PRESET_LOW="35x35x35,0.00025,2x2x3,2"
 export N4_PRESET_MEDIUM="70x70x70,0.0001,2x2x3,2"
-export N4_PRESET_HIGH="100x100x100x2,0.00005,2x2x3,2"
-export N4_PRESET_ULTRA="250x250x250x5,0.00001,2x2x3,2"
+export N4_PRESET_HIGH="100x100x100,0.00005,2x2x3,2"
+export N4_PRESET_ULTRA="250x250x250x3,0.00001,2x2x3,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # Use more conservative settings for FLAIR
 
 export PARALLEL_JOBS=0
@@ -126,14 +126,16 @@ elif [[ "$CORES" -le 18 ]]; then
 else   
   # Mac Studio-level optimizations
   export MACHINE_SPEC="HIGH"
-  export QUALITY_PRESET="LOW"
-  export ANTS_THREADS=24  # Use most but not all cores
-  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=24
-  export OMP_NUM_THREADS=24
+  export QUALITY_PRESET="MEDIUM"
+  export ANTS_THREADS=28  # Use most but not all cores
+  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=28
+  export OMP_NUM_THREADS=28
   export ANTS_MEMORY_LIMIT="64G"  # Adjust based on actual RAM
-  export VECLIB_MAXIMUM_THREADS=24
-  export OPENBLAS_NUM_THREADS=24
+  export VECLIB_MAXIMUM_THREADS=28
+  export OPENBLAS_NUM_THREADS=28
 fi
+
+echo "QUALITY_PRESET: ${QUALITY_PRESET} ANTS_THREADS:${ANTS_THREADS}" >&2
 
 # Set default N4_PARAMS by QUALITY_PRESET
 if [ "$QUALITY_PRESET" == "ULTRA" ]; then
