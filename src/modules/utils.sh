@@ -172,31 +172,39 @@ perform_brain_extraction() {
         return 1
     fi
     
-    log_formatted "SUCCESS" "ANTs template-free brain extraction completed successfully."
-    log_message "N4-corrected image saved: $n4_corrected"
-    log_message "Brain mask saved: $mask_file"
-    log_message "Brain-extracted image saved: $brain_file"
-    
+    if [ -f "$mask_file" ]; then
+        log_formatted "SUCCESS" "ANTs template-free brain extraction completed successfully."
+        log_message "N4-corrected image saved: $n4_corrected"
+        log_message "Brain mask saved: $mask_file"
+        log_message "Brain-extracted image saved: $brain_file"
+        log_message "Removing intermediate directory: $intermediate_dir"
+        rm -rf "$intermediate_dir"
+        return 0
+    fi
+
     # Clean up only intermediate processing files, keep N4-corrected image
     rm -rf "$intermediate_dir"
-    return 0
+    return 1
 
   # Fallback to FSL BET if ANTs tools are not available
   elif command -v bet &> /dev/null; then
-    log_formatted "WARNING" "ANTs tools not found. Falling back to FSL BET."
+    log_formatted "WARNING" "ANTs tools not found. Falling back to FSL BET for brain extraction on: $input_file"
     
-    log_message "Using FSL BET for brain extraction on: $input_file"
+    log_message "Executing: bet $input_file $brain_file -m -f 0.5"
     if execute_with_logging "fsl_bet" \
       bet "$input_file" "$brain_file" -m -f 0.5; then
       # Rename the generated mask to match the expected output filename
       local bet_mask="${output_prefix}BrainExtractionBrain_mask.nii.gz"
       if [ -f "$bet_mask" ]; then
         mv "$bet_mask" "$mask_file"
+        log_formatted "SUCCESS" "FSL BET completed successfully. Output saved to ${mask_file}"
+        return 0
+      else
+        log_formatted "ERROR" "FSL BET failed. Command returned successfully but ${bet_mask} not found"
+        return 1
       fi
-      log_formatted "SUCCESS" "FSL BET completed successfully."
-      return 0
     else
-      log_formatted "ERROR" "FSL BET failed."
+      log_formatted "ERROR" "FSL BET failed. Command returned error."
       return 1
     fi
   else
