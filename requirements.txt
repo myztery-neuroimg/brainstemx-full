@@ -224,7 +224,7 @@ requests==2.32.4
     #   brainstemx-full
     #   streamlit
     #   suitpy
-rpds-py==0.24.0
+rpds-py==0.26.0
     # via
     #   brainstemx-full
     #   jsonschema
