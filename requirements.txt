@@ -18,7 +18,7 @@ blinker==1.9.0
 cachetools==6.1.0
     # via
     #   brainstemx-full
-certifi==2025.4.26
+certifi==2025.8.3
     # via
     #   brainstemx-full
     #   requests
