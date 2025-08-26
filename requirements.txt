@@ -218,7 +218,7 @@ referencing==0.36.2
     #   brainstemx-full
     #   jsonschema
     #   jsonschema-specifications
-requests==2.32.4
+requests==2.32.5
     # via
     #   antspyx
     #   brainstemx-full
