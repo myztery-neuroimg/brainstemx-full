@@ -55,7 +55,7 @@ gitdb==4.0.12
     # via
     #   brainstemx-full
     #   gitpython
-gitpython==3.1.44
+gitpython==3.1.45
     # via
     #   brainstemx-full
     #   streamlit
