@@ -194,7 +194,7 @@ pyarrow==19.0.1
     #   streamlit
 pydicom==3.0.1
     # via brainstemx-full
-pylint==3.3.7
+pylint==3.3.8
     # via brainstemx-full
 pyparsing==3.2.3
     # via
