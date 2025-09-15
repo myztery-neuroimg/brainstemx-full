@@ -233,7 +233,7 @@ scikit-image==0.25.2
     # via brainstemx-full
 scikit-learn==1.6.1
     # via brainstemx-full
-scipy==1.15.2
+scipy==1.16.2
     # via
     #   brainstemx-full
     #   scikit-image
