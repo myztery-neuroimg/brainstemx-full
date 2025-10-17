@@ -268,7 +268,7 @@ tomlkit==0.13.2
     # via
     #   brainstemx-full
     #   pylint
-tornado==6.5.1
+tornado==6.5.2
     # via
     #   brainstemx-full
     #   streamlit
