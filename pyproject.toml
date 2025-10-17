@@ -9,7 +9,7 @@ dependencies = [
     "astroid==3.3.10",
     "attrs==25.3.0",
     "blinker==1.9.0",
-    "cachetools==6.1.0",
+    "cachetools==6.2.1",
     "certifi==2025.8.3",
     "charset-normalizer==3.4.3",
     "click==8.2.1",
