@@ -168,7 +168,7 @@ patsy==1.0.1
     # via
     #   brainstemx-full
     #   statsmodels
-pillow==11.3.0
+pillow==12.0.0
     # via
     #   antspyx
     #   brainstemx-full
