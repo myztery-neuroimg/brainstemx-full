@@ -92,7 +92,7 @@ kiwisolver==1.4.8
     #   matplotlib
 lazy-loader==0.4
     # via scikit-image
-markupsafe==3.0.2
+markupsafe==3.0.3
     # via
     #   brainstemx-full
     #   jinja2
