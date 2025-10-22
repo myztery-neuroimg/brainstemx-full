@@ -17,7 +17,7 @@ BrainStem X (_Brainstem/Pons specific_ intensityclustering implementation) is an
 
 ## Project status
 
-The project is in active development as of June 2025. Whilst many improvements are in the works, we hope it already offers some helpful functionality. Future works including a platform portable docker implementation via neurodocker.
+The project is in active development as of October 2025. Whilst many improvements are in the works, we hope it already offers some helpful functionality. Future works including a platform portable docker implementation via neurodocker.
 
 For a minimal pure-python implemention with synthetic data generation, LLM report generation and a web-ui, refer to https://github.com/myztery-neuroimg/brainstemx (currently a very immature implementation and work in progress).
 
