@@ -107,7 +107,7 @@ mccabe==0.7.0
     # via
     #   brainstemx-full
     #   pylint
-narwhals==1.33.0
+narwhals==2.9.0
     # via
     #   altair
     #   brainstemx-full
