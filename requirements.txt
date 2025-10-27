@@ -209,7 +209,7 @@ pytz==2025.2
     # via
     #   brainstemx-full
     #   pandas
-pyyaml==6.0.2
+pyyaml==6.0.3
     # via
     #   antspyx
     #   brainstemx-full
