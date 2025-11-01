@@ -188,7 +188,7 @@ protobuf==5.29.5
     # via
     #   brainstemx-full
     #   streamlit
-pyarrow==19.0.1
+pyarrow==22.0.0
     # via
     #   brainstemx-full
     #   streamlit
