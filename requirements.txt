@@ -164,7 +164,7 @@ pandas==2.2.3
     #   streamlit
 pathlib==1.0.1
     # via brainstemx-full
-patsy==1.0.1
+patsy==1.0.2
     # via
     #   brainstemx-full
     #   statsmodels
