@@ -74,7 +74,7 @@ jinja2==3.1.6
     #   altair
     #   brainstemx-full
     #   pydeck
-joblib==1.5.1
+joblib==1.5.2
     # via
     #   brainstemx-full
     #   scikit-learn
@@ -194,7 +194,7 @@ pyarrow==19.0.1
     #   streamlit
 pydicom==3.0.1
     # via brainstemx-full
-pylint==4.0.0
+pylint==4.0.2
     # via brainstemx-full
 pyparsing==3.2.3
     # via
