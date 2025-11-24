@@ -291,7 +291,7 @@ watchdog==6.0.0 ; sys_platform != 'darwin'
     # via
     #   brainstemx-full
     #   streamlit
-webcolors==24.11.1
+webcolors==25.10.0
     # via
     #   antspyx
     #   brainstemx-full
