@@ -272,7 +272,7 @@ tornado==6.5.2
     # via
     #   brainstemx-full
     #   streamlit
-typing-extensions==4.13.1
+typing-extensions==4.15.0
     # via
     #   altair
     #   brainstemx-full
