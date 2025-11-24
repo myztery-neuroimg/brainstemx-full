@@ -68,6 +68,6 @@ dependencies = [
     "tzdata==2025.2",
     "urllib3==2.5.0",
     "watchdog==6.0.0 ; sys_platform != 'darwin'",
-    "webcolors==24.11.1",
+    "webcolors==25.10.0",
     "seaborn",
 ]
