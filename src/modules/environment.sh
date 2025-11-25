@@ -492,9 +492,9 @@ export -f log_message log_formatted log_error log_diagnostic execute_with_loggin
 # ------------------------------------------------------------------------------
 # Shell Options
 # ------------------------------------------------------------------------------
-#set -e
-#set -u
-#set -o pipefail
+set -e
+set -u
+set -o pipefail
 
 
 export LOG_DIR="${RESULTS_DIR}/logs"

@@ -10,7 +10,7 @@
 # - Parallel processing for all of the above
 #
 
-source_module "utils.sh"
+source "src/modules/utils.sh"
 
 # Function to detect 3D isotropic sequences
 # This function identifies 3D sequences like MPRAGE, SPACE, or 3D FLAIR

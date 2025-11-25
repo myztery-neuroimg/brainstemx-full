@@ -11,11 +11,9 @@
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export SRC_DIR="../DICOM"          # DICOM input directory
 export DICOM_PRIMARY_PATTERN='Image"*"'   # Filename pattern for your DICOM files, might be .dcm on some scanners, Image- for Siemens
 export PIPELINE_SUCCESS=true       # Track overall pipeline success
 export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
-export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
 
 # Parallelization configuration (defaults, can be overridden by config file)
 export PARALLEL_JOBS=1             # Number of parallel jobs to use
@@ -23,8 +21,11 @@ export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
 export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
 export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
 
+export EXTRACT_DIR="../extracted"
 export RESULTS_DIR="../mri_results"
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$EXTRACT_DIR"
+
 # Set ANTs Path relative to the script location
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -38,6 +39,9 @@ log_message "ANTs paths: ANTS_PATH=$ANTS_PATH, ANTS_BIN=$ANTS_BIN"
 # Flag to toggle ANTs SyN vs FLIRT linear registration
 export USE_ANTS_SYN="${USE_ANTS_SYN:-false}"
 log_message "USE_ANTS_SYN=$USE_ANTS_SYN"
+
+export CORES="$(cpuinfo  | grep -i count | sed 's/.* //')"
+export ANTS_THREADS=$CORES  # Use most but not all cores
 
 # Add ANTs to PATH if it exists
 if [ -d "$ANTS_BIN" ]; then
@@ -56,8 +60,6 @@ fi
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
 export SRC_DIR="${HOME}/DICOM"        # DICOM input directory
-export EXTRACT_DIR="../extracted"  # Where NIfTI files land after dcm2niix
-export RESULTS_DIR="../mri_results"
 # ANTs configuration
 export ANTS_BIN="${ANTS_PATH}/bin"  # Directory containing ANTs binaries
 export PATH="$PATH:${ANTS_BIN}"
@@ -99,8 +101,6 @@ export DICOM_IMPORT_PARALLEL=12
 export QUALITY_PRESET="HIGH"
 
 
-export CORES="$(cpuinfo  | grep -i count | sed 's/.* //')"
-export ANTS_THREADS=$CORES  # Use most but not all cores
 export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$CORES
 export OMP_NUM_THREADS=$CORES
 export VECLIB_MAXIMUM_THREADS=$CORES
