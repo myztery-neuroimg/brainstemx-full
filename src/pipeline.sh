@@ -19,9 +19,9 @@
 #
 
 # Set strict error handling
-#set -e
-#set -u
-#set -o pipefail
+set -e
+set -u
+set -o pipefail
 
 # Source modules
 source src/modules/environment.sh
@@ -42,7 +42,7 @@ source src/modules/qa.sh
 source src/modules/scan_selection.sh  # Add scan selection module
 source src/modules/reference_space_selection.sh  # Add reference space selection module
 source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
-source config/default_config.sh
+#source config/default_config.sh
 
 # Debugging: Check if functions are available after sourcing in pipeline.sh
 if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
@@ -158,8 +158,8 @@ get_stage_number() {
 parse_arguments() {
   # Default values
   CONFIG_FILE="config/default_config.sh"
-  SRC_DIR="..../DiCOM"
-  RESULTS_DIR="../mri_results"
+  SRC_DIR="../DICOM"
+  export RESULTS_DIR="../mri_results"
   SUBJECT_ID=""
   QUALITY_PRESET="MEIDUM"
   PIPELINE_TYPE="FULL"
@@ -290,7 +290,6 @@ run_pipeline() {
   local subject_id="$SUBJECT_ID"
   local input_dir="$SRC_DIR"
   local output_dir="$RESULTS_DIR"
-  export EXTRACT_DIR="${RESULTS_DIR}/extracted"
 
   # Load parallel configuration if available
   #load_parallel_config "config/parallel_config.sh"
