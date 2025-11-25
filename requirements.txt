@@ -184,7 +184,7 @@ plotly==6.3.0
     # via
     #   brainstemx-full
     #   suitpy
-protobuf==5.29.5
+protobuf==6.33.1
     # via
     #   brainstemx-full
     #   streamlit
