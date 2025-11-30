@@ -18,47 +18,7 @@
 #   -h, --help           Show this help message and exit
 #
 
-# Set strict error handling
-set -e
-set -u
-set -o pipefail
-
-# Source modules
-source src/modules/environment.sh
-source src/modules/utils.sh     # Load utilities module with execute_ants_command
-source src/modules/fast_wrapper.sh # Load FAST wrapper with parallel processing
-source src/modules/dicom_analysis.sh
-source src/modules/dicom_cluster_mapping.sh  # Add DICOM cluster mapping module
-source src/modules/import.sh
-source src/modules/preprocess.sh
-source src/modules/brain_extraction.sh
-source src/modules/registration.sh
-source src/modules/segmentation.sh
-source src/modules/segmentation_transformation_extraction.sh
-source src/modules/segment_talairach.sh
-source src/modules/analysis.sh
-source src/modules/visualization.sh
-source src/modules/qa.sh
-source src/modules/scan_selection.sh  # Add scan selection module
-source src/modules/reference_space_selection.sh  # Add reference space selection module
-source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
-#source config/default_config.sh
-
-# Debugging: Check if functions are available after sourcing in pipeline.sh
-if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
-    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in pipeline.sh"
-else
-    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in pipeline.sh"
-fi
-if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
-    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in pipeline.sh"
-else
-    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in pipeline.sh"
-fi
-
-#source src/modules/extract_dicom_metadata.py
-
-# Show help message
+# Show help message (defined early to allow --help without loading modules)
 show_help() {
   echo "Usage: ./pipeline.sh [options]"
   echo ""
@@ -101,6 +61,56 @@ show_help() {
   echo "  --verbose:        Detailed output including technical parameters"
   echo "  --debug:          Full output with all ANTs technical details saved to logs"
 }
+
+# Check for --help or -h before loading modules (fast path)
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+  esac
+done
+
+# Set strict error handling
+set -e
+set -u
+set -o pipefail
+
+# Source modules
+source src/modules/environment.sh
+source src/modules/utils.sh     # Load utilities module with execute_ants_command
+source src/modules/fast_wrapper.sh # Load FAST wrapper with parallel processing
+source src/modules/dicom_analysis.sh
+source src/modules/dicom_cluster_mapping.sh  # Add DICOM cluster mapping module
+source src/modules/import.sh
+source src/modules/preprocess.sh
+source src/modules/brain_extraction.sh
+source src/modules/registration.sh
+source src/modules/segmentation.sh
+source src/modules/segmentation_transformation_extraction.sh
+source src/modules/segment_talairach.sh
+source src/modules/analysis.sh
+source src/modules/visualization.sh
+source src/modules/qa.sh
+source src/modules/scan_selection.sh  # Add scan selection module
+source src/modules/reference_space_selection.sh  # Add reference space selection module
+source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
+#source config/default_config.sh
+
+# Debugging: Check if functions are available after sourcing in pipeline.sh
+if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
+    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in pipeline.sh"
+else
+    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in pipeline.sh"
+fi
+if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
+    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in pipeline.sh"
+else
+    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in pipeline.sh"
+fi
+
+#source src/modules/extract_dicom_metadata.py
 
 # Load configuration file
 load_config() {
