@@ -705,8 +705,8 @@ check_all_dependencies() {
   
   # Check for fix_dcm2niix_duplicates.sh
   local script_paths=(
-    "./src/fix_dcm2niix_duplicates.sh"
-    "../src/fix_dcm2niix_duplicates.sh"
+    "src/modules/fix_dcm2niix_duplicates.sh"
+    "../src/modules/fix_dcm2niix_duplicates.sh"
     "$(dirname "${BASH_SOURCE[0]}")/../fix_dcm2niix_duplicates.sh"
   )
   
@@ -726,8 +726,8 @@ check_all_dependencies() {
   
   # Check for analyze_dicom_headers.py
   script_paths=(
-    "./src/analyze_dicom_headers.py"
-    "../src/analyze_dicom_headers.py"
+    "src/modules/analyze_dicom_headers.py"
+    "../src/modules/analyze_dicom_headers.py"
     "$(dirname "${BASH_SOURCE[0]}")/../analyze_dicom_headers.py"
   )
   
