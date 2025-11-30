@@ -497,12 +497,19 @@ set -u
 set -o pipefail
 
 
-export LOG_DIR="${RESULTS_DIR}/logs"
-mkdir -p "$LOG_DIR"
-mkdir -p "$RESULTS_DIR"
+# Defer log directory creation until RESULTS_DIR is set
+# This function should be called after parse_arguments sets RESULTS_DIR
+initialize_log_directory() {
+  export LOG_DIR="${RESULTS_DIR}/logs"
+  mkdir -p "$LOG_DIR"
+  mkdir -p "$RESULTS_DIR"
+  export LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
+}
 
-# Log file capturing pipeline-wide logs
-export LOG_FILE="${LOG_DIR}/processing_$(date +"%Y%m%d_%H%M%S").log"
+# Set defaults to avoid unbound variable errors (e.g., when running --help)
+export RESULTS_DIR="${RESULTS_DIR:-../mri_results}"
+export LOG_DIR="${LOG_DIR:-${RESULTS_DIR}/logs}"
+export LOG_FILE="${LOG_FILE:-/dev/null}"
 
 # ------------------------------------------------------------------------------
 # Export environment variables just defined above
@@ -1173,10 +1180,13 @@ initialize_environment() {
   set -e
   set -u
   set -o pipefail
-  
+
   # Initialize error count
   error_count=0
-  
+
+  # Initialize log directory now that RESULTS_DIR is set
+  initialize_log_directory
+
   log_message "Initializing environment"
   
   # Export functions
