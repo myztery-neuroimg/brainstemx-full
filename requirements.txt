@@ -112,7 +112,7 @@ narwhals==2.9.0
     #   altair
     #   brainstemx-full
     #   plotly
-networkx==3.5
+networkx==3.6
     # via scikit-image
 neuroimagingtools==1.1.4
     # via
