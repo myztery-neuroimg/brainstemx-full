@@ -2,7 +2,7 @@
 #    uv export --no-hashes
 antspyx==0.5.4
     # via brainstemx-full
-astroid==3.3.10
+astroid==4.0.2
     # via
     #   brainstemx-full
     #   pylint
