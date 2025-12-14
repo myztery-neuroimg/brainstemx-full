@@ -187,7 +187,7 @@ export REG_PRECISION=3                 # Registration precision (higher = more a
 
 # Hyperintensity detection
 export THRESHOLD_WM_SD_MULTIPLIER=1.2  #Standard deviations from local norm
-export MIN_HYPERINTENSITY_SIZE=4
+export MIN_HYPERINTENSITY_SIZE=3
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3
@@ -272,7 +272,7 @@ export FLAIR_SELECTION_MODE="interactive"  # For FLAIR generally prefer ORIGINAL
 # Advanced registration options
 
 # Auto-register all modalities to T1 (if false, only FLAIR is registered)
-export AUTO_REGISTER_ALL_MODALITIES=true
+export AUTO_REGISTER_ALL_MODALITIES=false
 
 # Auto-detect resolution and use appropriate template
 # When true, the pipeline will select between 1mm and 2mm templates based on input image resolution
@@ -289,7 +289,7 @@ export AUTO_DETECT_RESOLUTION=true
 export ORIENTATION_CORRECTION_ENABLED=false   # Disable automatic orientation correction
 export ORIENTATION_VALIDATION_ENABLED=false   # Disable validation
 export orientation_preservation=false
-export HALT_ON_ORIENTATION_MISMATCH=false      # Halt pipeline on orientation mismatch (if validation enabled)
+export HALT_ON_ORIENTATION_MISMATCH=true # Halt pipeline on orientation mismatch (if validation enabled)
 
 # Expected orientation for validation
 export EXPECTED_QFORM_X="Left-to-Right"
@@ -345,7 +345,7 @@ export ORIENTATION_ACCEPTABLE_THRESHOLD=0.3
 export SHEARING_DETECTION_THRESHOLD=0.05
 
 # Hyperintensity detection
-export MIN_HYPERINTENSITY_SIZE=6
+export MIN_HYPERINTENSITY_SIZE=4
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3
@@ -360,4 +360,3 @@ export PADDING_Y=5
 export PADDING_Z=5
 export C3D_CROP_THRESHOLD=0.1
 export C3D_PADDING_MM=5
-
