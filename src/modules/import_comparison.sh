@@ -533,7 +533,7 @@ generate_comparison_report() {
             for nifti_file in "$strategy_dir"/*.nii.gz; do
                 if [ -f "$nifti_file" ]; then
                     local basename=$(basename "$nifti_file" .nii.gz)
-                    local file_size=$(stat -f%z "$nifti_file" 2>/dev/null || echo "0")
+                    local file_size=$(get_file_size "$nifti_file" 2>/dev/null || echo "0")
                     strategy_signature="${strategy_signature}${basename}:${file_size};"
                     strategy_file_counts_for_comparison["$strategy"]=$((strategy_file_counts_for_comparison["$strategy"] + 1))
                 fi
