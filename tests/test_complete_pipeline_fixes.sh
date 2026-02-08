@@ -196,5 +196,3 @@ cleanup() {
 # Run main function and cleanup on exit
 trap cleanup EXIT
 main
-
-fi
