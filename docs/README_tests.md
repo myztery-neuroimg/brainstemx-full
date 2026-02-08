@@ -8,12 +8,16 @@ The test suite is organized into functional categories using a custom assertion-
 
 **Quick start — run all CI-safe tests locally:**
 ```bash
+# Bash unit tests (232 tests, ~5s)
 bash tests/test_environment_unit.sh
 bash tests/test_pipeline_control_unit.sh
 bash tests/test_import_unit.sh
+
+# Python unit tests (26 tests, ~5s)
+uv run pytest tests/test_gmm_threshold.py -v
 ```
 
-These 232 tests run in seconds with no external dependencies (FSL, ANTs, etc.).
+These 258 tests run in seconds with no external dependencies (FSL, ANTs, etc.).
 
 ## Test Structure
 
@@ -28,7 +32,8 @@ tests/
 ├── Core Module Tests
 │   ├── test_dicom_analysis.sh           # DICOM analysis module comprehensive testing
 │   ├── test_segmentation.sh             # Brainstem segmentation functionality
-│   └── test_orientation_preservation.sh # Orientation correction methods
+│   ├── test_orientation_preservation.sh # Orientation correction methods
+│   └── test_gmm_threshold.py            # GMM threshold estimation (Python/pytest)
 ├── Integration Tests
 │   ├── test_integration.sh              # Centralized path/error handling integration
 │   ├── test_dicom_mapping_integration.sh # DICOM cluster mapping integration
@@ -288,6 +293,32 @@ bash tests/test_import_unit.sh
 **Usage**:
 ```bash
 ./tests/test_orientation_preservation.sh <t1_image> <other_modality> <output_dir>
+```
+
+### test_gmm_threshold.py
+
+**Purpose**: Unit tests for the standalone GMM threshold estimation script
+
+**Tests Module**: [`src/modules/gmm_threshold.py`](src/modules/gmm_threshold.py)
+**Framework**: Python pytest (not bash assertion framework)
+**Test Count**: 26
+
+**Test Classes**:
+1. **TestExtractValues** (4 tests) — NIfTI loading, shape mismatch detection, NaN/Inf filtering, empty mask handling
+2. **TestComputeAdaptiveThreshold** (6 tests) — 2-component and 3-component SD formulas, small/moderate weight conservative thresholds, custom SD and weight cutoff overrides
+3. **TestFitGmm** (7 tests) — Bimodal detection, uniform region handling, too-few-voxels fallback, output key completeness, floor percentile enforcement, configurable min_voxels
+4. **TestCLI** (5 tests) — Subprocess invocation, config parameter passthrough, missing file errors, no-args usage, help text listing all parameters
+5. **TestDefaults** (4 tests) — All config keys present in DEFAULTS dict, weight cutoffs logically ordered, SD multipliers positive, percentiles within valid range
+
+**Special Implementation Notes**:
+- Creates synthetic NIfTI volumes in-memory using nibabel (no real neuroimaging data needed)
+- Tests run in ~5 seconds with no external tool dependencies
+- Captures stdout/stderr separately to validate the key=value output protocol
+- CLI tests use `subprocess.run` to exercise the full argument parsing path
+
+**Usage**:
+```bash
+uv run pytest tests/test_gmm_threshold.py -v
 ```
 
 ## Integration Tests
@@ -568,6 +599,7 @@ cleanup_test_environment
 | test_parallel.sh | ~8 | ⚠️ Partial | GNU parallel, FSL | No |
 | test_smart_standardization.sh | ~6 | ⚠️ Partial | FSL | No |
 | test_dicom_mapping_integration.sh | ~5 | ⚠️ Partial | None | No |
+| test_gmm_threshold.py | 26 | ✅ Complete | Python 3.12, pytest, nibabel, numpy, scikit-learn | Yes |
 | test_orientation_fix.sh | | 📋 Pending | TBD | TBD |
 | test_original_detection.sh | | 📋 Pending | TBD | TBD |
 | test_path_resolution.sh | | 📋 Pending | TBD | TBD |

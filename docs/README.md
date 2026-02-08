@@ -120,11 +120,12 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 - **FLAIR enhancement integration** creating both T1 and FLAIR intensity versions for multi-modal analysis
 - **Native space preservation** maintains segmentation accuracy in subject's original high-resolution space rather than downsampling to template resolution
 
-#### Comprehensive Analysis Pipeline (analysis.sh)
+#### Comprehensive Analysis Pipeline (analysis.sh, gmm_threshold.py)
 - **Atlas-based regional analysis** using all available Talairach brainstem regions for per-region hyperintensity detection
-- **Gaussian Mixture Model (GMM) thresholding** with 3-component analysis for intelligent threshold selection
+- **Standalone GMM threshold estimation** via `src/modules/gmm_threshold.py` — reads z-score and region mask NIfTI files directly, fits an adaptive Gaussian Mixture Model (2–3 components based on data density), and returns threshold parameters to the calling bash process via stdout (no intermediate files)
+- **Centralized configuration** — all 12 GMM tuning parameters (component limits, SD multipliers, weight cutoffs, floor/fallback percentiles) are set in `config/default_config.sh` and passed as CLI arguments, with defaults that match the config for standalone use
 - **Per-region z-score normalization** addressing tissue inhomogeneity across different brainstem regions
-- **Connectivity weighting** for refined detection using 3D morphological operations
+- **Connectivity weighting** for refined detection using 3D morphological operations (fslmaths)
 - **Multi-threshold hyperintensity detection** with configurable standard deviation multipliers and minimum cluster size filtering
 - **Cross-modality validation** analyzes both FLAIR hyperintensities and T1 hypointensities with statistical correlation
 
@@ -181,22 +182,26 @@ The segmentation module implements a **two-tier atlas approach**:
    - Addresses shape variance in hydrocephalus and Chiari malformation cases
    - Integrates CSF, gray matter, and white matter probability maps
 
-#### Analysis Module (analysis.sh)
+#### Analysis Module (analysis.sh + gmm_threshold.py)
 The analysis module implements **atlas-based regional hyperintensity detection**:
 
-1. **Gaussian Mixture Model (GMM) Analysis**
-   - 3-component GMM for each Talairach brainstem region
-   - Intelligent threshold selection beyond simple z-score methods
-   - Per-region normalization addressing tissue inhomogeneity
+1. **GMM Threshold Estimation** (`src/modules/gmm_threshold.py`)
+   - Standalone Python script invoked per Talairach brainstem region
+   - Reads z-score NIfTI + region mask directly (no intermediate text files)
+   - Adaptive component count (2–3) based on voxel density within each region
+   - Weight-aware threshold adjustment: small hyperintense populations trigger more conservative thresholds to reduce false positives
+   - Floor percentile prevents unreasonably low thresholds; data-driven fallback when GMM fit fails
+   - All parameters configurable via `config/default_config.sh` (`GMM_*` variables)
+   - Results emitted as key=value on stdout; diagnostics to stderr — no filesystem IPC
 
 2. **Multi-Modal Integration**
    - FLAIR hyperintensity detection with configurable SD thresholds
    - T1 hypointensity correlation analysis
    - Cross-modal validation using statistical correlation
 
-3. **Morphological Refinement**
-   - 3D connectivity analysis with 26-neighbor connectivity
-   - Minimum cluster size filtering (configurable, default 27 voxels)
+3. **Cluster Filtering**
+   - 3D connectivity analysis with 26-neighbor connectivity (fslmaths)
+   - Minimum cluster size filtering (configurable via `MIN_HYPERINTENSITY_SIZE`)
    - Morphological closing operations to eliminate noise
 
 #### QA Module (qa.sh)
@@ -319,7 +324,8 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Volume consistency validation** with anatomical location verification and comprehensive QA reporting
 
 #### Stage 6: Comprehensive Hyperintensity Analysis
-- **Multi-threshold detection** configurable SD multipliers (1.5-3.0) with minimum cluster size filtering
+- **Per-region GMM thresholding** via standalone `gmm_threshold.py` — adaptive 2–3 component Gaussian Mixture Models fitted per Talairach brainstem region, with all tuning parameters driven from `config/default_config.sh`
+- **Multi-threshold detection** configurable SD multipliers with minimum cluster size filtering
 - **Cross-modality validation** analyzes hyperintensity patterns across T1/T2/FLAIR with statistical correlation
 - **Native-to-standard space mapping** enables analysis in both subject native and standardized coordinates
 - **DICOM cluster backtrace** creates coordinate lookup tables for medical imaging viewer navigation
@@ -347,7 +353,7 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - Preprocessing → [`src/modules/preprocess.sh`](src/modules/preprocess.sh:1)
 - Registration → [`src/modules/registration.sh`](src/modules/registration.sh:1)
 - Multi-Atlas Segmentation → [`src/modules/segmentation.sh`](src/modules/segmentation.sh:1)
-- Comprehensive Analysis → [`src/modules/analysis.sh`](src/modules/analysis.sh:1)
+- Comprehensive Analysis → [`src/modules/analysis.sh`](src/modules/analysis.sh:1), [`src/modules/gmm_threshold.py`](src/modules/gmm_threshold.py:1)
 - Enhanced Registration Validation → [`src/modules/enhanced_registration_validation.sh`](src/modules/enhanced_registration_validation.sh:1)
 - Advanced Visualization → [`src/modules/visualization.sh`](src/modules/visualization.sh:1)
 - Quality Assurance → [`src/modules/qa.sh`](src/modules/qa.sh:1)
@@ -481,9 +487,9 @@ BrainStem X leverages established neuroimaging tools, reinventing very little bu
 
 ### Programming Resources / Libraries (including..)
 - Python Neuroimaging Libraries (NiBabel, PyDicom, antspyx)
-- GNU Parallel  
+- GNU Parallel
 - Matplotlib & Seaborn
-- NumPy & SciPy
+- NumPy, scikit-learn
 
 ## Independent Development
 

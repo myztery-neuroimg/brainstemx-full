@@ -49,7 +49,9 @@ export ATROPOS_CONVERGENCE="3,0.01"  # Very loose convergence
 export ATROPOS_MRF="[0.2,1x1x1]"     # Weaker MRF regularization
 
 # Minimal hyperintensity detection
-export THRESHOLD_WM_SD_MULTIPLIER=2.0  # Standard threshold
+# THRESHOLD_WM_SD_MULTIPLIER is the single authoritative fallback — GMM
+# inherits it automatically via analysis.sh, no separate GMM override needed.
+export THRESHOLD_WM_SD_MULTIPLIER=2.0  # Standard threshold (also used as GMM fallback)
 export MIN_HYPERINTENSITY_SIZE=10      # Larger minimum size
 
 # Disable parallel processing for tests (as requested)

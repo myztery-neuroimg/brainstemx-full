@@ -114,6 +114,7 @@ src/
     ├── registration.sh      # Multi-stage ANTs registration
     ├── segmentation.sh      # Harvard-Oxford & Talairach atlas segmentation
     ├── analysis.sh          # Hyperintensity detection & cluster analysis
+    ├── gmm_threshold.py     # Standalone GMM threshold estimation (called by analysis.sh)
     ├── visualization.sh     # 3D rendering & HTML reporting
     └── qa.sh                # Quality assurance (20+ validation checks)
 
@@ -149,10 +150,14 @@ docs/                        # Technical documentation
 
 ## Testing
 
-Custom assertion-based framework:
+Bash tests use a custom assertion-based framework:
 - `assert_equals()`, `assert_file_exists()`, `assert_exit_code()`
 - Tests use isolated temp directories
 - Key tests: `test_integration.sh`, `test_dicom_analysis.sh`, `test_segmentation.sh`
+
+Python tests use pytest:
+- `tests/test_gmm_threshold.py` — 26 tests for GMM threshold estimation
+- Run with: `uv run pytest tests/ -v`
 
 ## Configuration
 
@@ -163,6 +168,8 @@ Key environment variables:
 - `MAX_CPU_INTENSIVE_JOBS` - ANTs jobs limit
 - `SCAN_SELECTION_MODE` - registration_optimized | original | highest_resolution
 - `USE_ANTS_SYN` - ANTs vs FLIRT for registration
+- `GMM_*` - 11 GMM threshold parameters (see `config/default_config.sh`)
+- `THRESHOLD_WM_SD_MULTIPLIER` - Authoritative fallback threshold (GMM inherits this)
 
 ## Important Notes
 
