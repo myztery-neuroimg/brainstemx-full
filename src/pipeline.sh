@@ -171,7 +171,7 @@ parse_arguments() {
   SRC_DIR="../DICOM"
   export RESULTS_DIR="../mri_results"
   SUBJECT_ID=""
-  QUALITY_PRESET="MEIDUM"
+  QUALITY_PRESET="MEDIUM"
   PIPELINE_TYPE="FULL"
   START_STAGE_NAME="import"
   
@@ -277,7 +277,6 @@ parse_arguments() {
 
 # Function to validate a processing step
 validate_step() {
-  return 0
   local step_name="$1"
   local output_files="$2"
   local module="$3"
