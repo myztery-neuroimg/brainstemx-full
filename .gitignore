@@ -21,3 +21,10 @@ data
 *.git
 *.jpg
 *.pyc
+.claude
+.shellcheckrc
+.pytest
+pytest_cache
+.venv
+.gitignore
+talairach_subdivisions

@@ -185,9 +185,51 @@ export REG_PRECISION=3                 # Registration precision (higher = more a
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
 
+# ---------------------------------------------------------------------------
 # Hyperintensity detection
-export THRESHOLD_WM_SD_MULTIPLIER=1.2  #Standard deviations from local norm
-export MIN_HYPERINTENSITY_SIZE=3
+# ---------------------------------------------------------------------------
+# This is the single authoritative threshold used as the fallback whenever a
+# data-driven method (GMM, percentile) fails or has too few voxels.  Both the
+# GMM path and the non-GMM detect_hyperintensities() path reference this value,
+# so changing it here changes all fallback behaviour consistently.
+export THRESHOLD_WM_SD_MULTIPLIER=1.2   # SD multiplier from local norm; used by GMM fallback + legacy path
+export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cluster --minextent)
+
+# ---------------------------------------------------------------------------
+# GMM per-region thresholding  (gmm_threshold.py --help for full docs)
+# ---------------------------------------------------------------------------
+# Maps 1:1 to gmm_threshold.py CLI args: GMM_<NAME> -> --<name> (underscores
+# become hyphens).  analysis.sh passes these env vars to the Python script.
+#
+# WHY THESE VALUES:
+# - SD multipliers (1.0, 1.5, 2.0, 2.5): Standard choices in lesion
+#   literature for outlier detection on z-scored intensities.  2-component
+#   models need a tighter multiplier because there's no "low" component
+#   absorbing the left tail. These have NOT been validated on this pipeline's
+#   data and should be tuned per-cohort.
+# - Weight cutoffs (0.05, 0.15): Heuristic boundaries.  Below 5% the
+#   "hyperintense" component is likely noise; below 15% it's small enough
+#   to warrant caution.  Source: empirical, not literature.
+# - Floor/fallback percentiles (95, 97.5): Conservative floors that prevent
+#   the GMM from producing thresholds below the population tail.
+# - Min voxels (20), voxels-per-component (30): Minimum sample sizes for
+#   stable EM convergence.  sklearn's GaussianMixture will technically fit
+#   with fewer, but results become unreliable.
+#
+export GMM_MAX_COMPONENTS=3             # --max-components: max Gaussian components (2 or 3)
+export GMM_MIN_VOXELS=20                # --min-voxels: below this, skip GMM and use fallback
+export GMM_VOXELS_PER_COMPONENT=30      # --voxels-per-component: adaptive n_comp = min(max, voxels/this)
+export GMM_SD_2COMP=1.0                 # --sd-2comp: threshold = upper_mean + this * upper_std (2-comp)
+export GMM_SD_3COMP=1.5                 # --sd-3comp: threshold = upper_mean + this * upper_std (3-comp)
+export GMM_SMALL_WEIGHT_CUTOFF=0.05     # --small-weight-cutoff: upper weight < this -> conservative
+export GMM_SMALL_WEIGHT_SD=2.5          # --small-weight-sd: conservative multiplier
+export GMM_MODERATE_WEIGHT_CUTOFF=0.15  # --moderate-weight-cutoff: upper weight < this -> moderate
+export GMM_MODERATE_WEIGHT_SD=2.0       # --moderate-weight-sd: moderate multiplier
+export GMM_FLOOR_PERCENTILE=95          # --floor-percentile: threshold never below this data percentile
+export GMM_FALLBACK_PERCENTILE=97.5     # --fallback-percentile: used when GMM fit fails but data exists
+# NOTE: GMM_FALLBACK_THRESHOLD is intentionally NOT set here.
+# It defaults to THRESHOLD_WM_SD_MULTIPLIER (above) so there is ONE
+# authoritative fallback value.  Override only if you need them to diverge.
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3
@@ -344,8 +386,8 @@ export ORIENTATION_GOOD_THRESHOLD=0.2
 export ORIENTATION_ACCEPTABLE_THRESHOLD=0.3
 export SHEARING_DETECTION_THRESHOLD=0.05
 
-# Hyperintensity detection
-export MIN_HYPERINTENSITY_SIZE=4
+# NOTE: MIN_HYPERINTENSITY_SIZE is set in the hyperintensity detection block above (line ~190)
+# Do not re-export here to avoid silent overrides.
 
 # Tissue segmentation parameters
 export ATROPOS_T1_CLASSES=3
