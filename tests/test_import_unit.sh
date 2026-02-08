@@ -7,7 +7,6 @@
 #   - import_extract_metadata (DICOM file discovery, fallback metadata)
 #   - import_convert_dicom_to_nifti (dcm2niix invocation, fallback paths)
 #   - import_validate_nifti_files (valid/empty directories)
-#   - import_validate_dicom_files_new_2 (always returns 0 - disabled)
 #   - import_dicom_data (end-to-end import orchestration)
 #   - Function availability after module load
 #
@@ -56,7 +55,6 @@ assert_function_exists "import_dicom_data"              "import_dicom_data defin
 assert_function_exists "import_convert_dicom_to_nifti"  "import_convert_dicom_to_nifti defined"
 assert_function_exists "import_extract_metadata"        "import_extract_metadata defined"
 assert_function_exists "import_validate_nifti_files"    "import_validate_nifti_files defined"
-assert_function_exists "import_validate_dicom_files_new_2" "import_validate_dicom_files_new_2 defined"
 assert_function_exists "import_deduplicate_identical_files" "import_deduplicate_identical_files defined"
 assert_function_exists "import_process_all_nifti_files_in_dir" "import_process_all_nifti_files_in_dir defined"
 assert_function_exists "process_dicom_series"           "process_dicom_series defined"
@@ -91,18 +89,6 @@ ec=$?
 set -e
 assert_exit_code 0 "$ec" \
     "import_deduplicate_identical_files returns 0 for non-existent dir"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. import_validate_dicom_files_new_2 (currently disabled - always returns 0)
-# ══════════════════════════════════════════════════════════════════════════════
-begin_test_group "3. import_validate_dicom_files_new_2"
-
-set +e
-import_validate_dicom_files_new_2 "$TEMP_TEST_DIR" "$TEMP_TEST_DIR/out" 2>/dev/null
-ec=$?
-set -e
-assert_exit_code 0 "$ec" \
-    "import_validate_dicom_files_new_2 returns 0 (disabled function)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. import_extract_metadata
