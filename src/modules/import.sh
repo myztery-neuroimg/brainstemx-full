@@ -8,10 +8,8 @@
 # - DICOM to NIfTI conversion
 # - Deduplication
 #
-unset import_deduplicate_identical_files
 unset import_extract_metadata
 unset import_convert_dicom_to_nifti
-unset import_validate_dicom_files_new_2
 unset import_validate_nifti_files
 unset import_process_all_nifti_files_in_dir
 unset import_import_dicom_data
@@ -68,46 +66,6 @@ if [ "$DICOM_ANALYSIS_LOADED" = false ]; then
   }
   export -f extract_scanner_metadata
 fi
-# Function to deduplicate identical files - now completely disabled
-import_deduplicate_identical_files() {
-  local dir="$1"
-  
-  # IMPORTANT: Deduplication is now permanently disabled
-  # This prevents accidental removal of unique slices and data loss
-  #log_formatted "WARNING" "Deduplication is completely disabled - required to preserve all slices"
-  #return 0
-  
-  # The following code is never executed but kept for reference
-  
-  log_message "==== Deduplicating identical files in $dir (USE WITH CAUTION) ===="
-  [ -d "$dir" ] || return 0
-
-  mkdir -p "${dir}/tmp_checksums"
-
-  # Check if the NIfTI files are actually from different series
-  # before attempting deduplication - this is a safety check
-  local series_count=$(find "$dir" -name "*.nii.gz" -type f | sed 's/.*_\([^_]*\)\.nii\.gz$/\1/' | sort | uniq | wc -l)
-  if [ "$series_count" -gt 1 ]; then
-    log_message "Found $series_count different series - skipping deduplication to preserve unique data"
-    rm -rf "${dir}/tmp_checksums"
-    return 0
-  fi
-
-  # Add additional safety check - don't deduplicate files with different slice counts
-  # as this likely indicates different acquisitions
-  local unique_dims=$(find "$dir" -name "*.nii.gz" -type f -exec fslinfo {} \; | grep -E "^dim3" | awk '{print $2}' | sort | uniq | wc -l)
-  if [ "$unique_dims" -gt 1 ]; then
-    log_message "Found files with different slice counts - skipping deduplication to preserve unique data"
-    rm -rf "${dir}/tmp_checksums"
-    return 0
-  fi
-
-  # Only proceed with actual deduplication if explicitly enabled and deemed safe
-  log_message "DEDUPLICATION DISABLED - modern dcm2niix handles this better"
-  rm -rf "${dir}/tmp_checksums"
-  return 0
-}
-
 # Function to extract scanner metadata using vendor-agnostic functions
 import_extract_metadata() {
   local dicom_dir="$1"
@@ -554,48 +512,6 @@ import_convert_dicom_to_nifti() {
   return 0
 }
 
-# Function to validate DICOM files
-import_validate_dicom_files_new_2() {
-  # Print directly to terminal for debug
-  return 0
-  local dicom_dir="$1"
-  local output_dir="$2"
-  local dicom_count=0
-  local sample_dicom=""
-  log_message "Starting validate_dicom_files_new with directory: $dicom_dir"
-  log_message "Validating DICOM files in $dicom_dir"
-  mkdir -p "$output_dir"
-  
-  # Check for DICOM files using configured patterns
-  log_message "Looking for files matching pattern: $DICOM_PRIMARY_PATTERN"
-  sample_dicom=$(ls "$dicom_dir"/${DICOM_PRIMARY_PATTERN} 2>/dev/null | head -1)
-  
-  if [ -f "$sample_dicom" ]; then
-    dicom_count=$(find "$dicom_dir" -mame $DICOM_PRIMARY_PATTERN 2>/dev/null | wc -l)
-    log_message "Found $dicom_count DICOM files with primary pattern. Sample: $sample_dicom"
-  else 
-    # Method 2: Try different common DICOM patterns
-    for pattern in "*.dcm" "IM_*" "Image*" "*.[0-9][0-9][0-9][0-9]" "DICOM*"; do
-      sample_dicom=$(ls "$dicom_dir"/$pattern 2>/dev/null | head -1)
-      if [ -f "$sample_dicom" ]; then
-        dicom_count=$(ls "$dicom_dir"/$pattern 2>/dev/null | wc -l)
-        log_message "Found $dicom_count DICOM files with pattern $pattern"
-        break
-      fi
-    done
-  fi
-  
-  if [ $dicom_count -eq 0 ]; then
-    log_message "ERROR: No DICOM files found in $dicom_dir"
-    return 1
-  fi
-  
-  log_message "Found $dicom_count DICOM files"
-
-  return 0
-  
-}
-
 # Function to validate NIfTI files
 import_validate_nifti_files() {
   local nifti_dir="$1"
@@ -754,11 +670,6 @@ import_dicom_data() {
   test -d "$dicom_dir" && log_message "DEBUG: DIRECTORY EXISTS" || log_message "DEBUG: DIRECTORY DOES NOT EXIST"
   log_message "** Importing DICOM data from $dicom_dir"
   
-  # Validate DICOM files
-  log_message "DEBUG: About to call import_validate_dicom_files_new_2"
-  import_validate_dicom_files_new_2 "$dicom_dir" "$output_dir"
-  log_message "DEBUG: validate_dicom_files COMPLETED"
-  
   # Extract metadata using vendor-agnostic function
   log_message "DEBUG: About to call extract_metadata"
   import_extract_metadata "$dicom_dir"
@@ -824,10 +735,6 @@ import_dicom_data() {
   import_validate_nifti_files "$output_dir"
   log_message "DEBUG: validate_nifti_files COMPLETED with status $?"
   
-  # Deduplicate identical files
-  import_deduplicate_identical_files "$output_dir"
-  log_message "DEBUG: deduplicate_identical_files COMPLETED with status $?"
-  
   log_message "DICOM import complete"
   return 0
 }
@@ -835,10 +742,8 @@ import_dicom_data() {
 
 # Export functions
 export -f process_dicom_series
-export -f import_deduplicate_identical_files
 export -f import_extract_metadata
 export -f import_convert_dicom_to_nifti
-export -f import_validate_dicom_files_new_2
 export -f import_validate_nifti_files
 export -f import_process_all_nifti_files_in_dir
 export -f import_dicom_data

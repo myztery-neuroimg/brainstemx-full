@@ -9,6 +9,10 @@
 # - Dependency checks
 #
 
+# Include guard - prevent redundant re-sourcing by modules
+if [ -n "${_ENVIRONMENT_LOADED:-}" ]; then return 0 2>/dev/null || true; fi
+_ENVIRONMENT_LOADED=true
+
 # ------------------------------------------------------------------------------
 # Logging & Color Setup (needs to be defined first)
 # ------------------------------------------------------------------------------
@@ -929,8 +933,9 @@ validate_nifti() {
   # First check if file exists and is readable
   validate_file "$file" "$description" || return $?
   
-  # Check file size
-  local file_size=$(stat -f "%z" "$file" 2>/dev/null || stat --format="%s" "$file" 2>/dev/null)
+  # Check file size (Linux stat first, macOS fallback)
+  local file_size
+  file_size=$(stat --format="%s" "$file" 2>/dev/null || stat -f "%z" "$file" 2>/dev/null)
   if [ -z "$file_size" ] || [ "$file_size" -lt "$min_size" ]; then
     log_error "$description has suspicious size ($file_size bytes): $file" $ERR_DATA_CORRUPT
     return $ERR_DATA_CORRUPT
@@ -1206,84 +1211,6 @@ initialize_environment() {
   export -f log_diagnostic execute_with_logging
   
   log_message "Environment initialized"
-}
-
-# Parse command line arguments
-parse_arguments() {
-  # Default values
-  CONFIG_FILE="config/default_config.sh"
-  SRC_DIR="../DiCOM"
-  RESULTS_DIR="../mri_results"
-  SUBJECT_ID=""
-  QUALITY_PRESET="MEDIUM"
-  PIPELINE_TYPE="FULL"
-  
-  # Parse arguments
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -c|--config)
-        CONFIG_FILE="$2"
-        shift 2
-        ;;
-      -i|--input)
-        SRC_DIR="$2"
-        shift 2
-        ;;
-      -o|--output)
-        RESULTS_DIR="$2"
-        shift 2
-        ;;
-      -s|--subject)
-        SUBJECT_ID="$2"
-        shift 2
-        ;;
-      -q|--quality)
-        QUALITY_PRESET="$2"
-        shift 2
-        ;;
-      -p|--pipeline)
-        PIPELINE_TYPE="$2"
-        shift 2
-        ;;
-      -h|--help)
-        show_help
-        exit 0
-        ;;
-      *)
-        log_formatted "ERROR" "Unknown option: $1"
-        show_help
-        exit 1
-        ;;
-    esac
-  done
-  
-  # If subject ID is not provided, derive it from the input directory
-  if [ -z "$SUBJECT_ID" ]; then
-    SUBJECT_ID=$(basename "$SRC_DIR")
-  fi
-  
-  # Export variables
-  export SRC_DIR
-  export RESULTS_DIR
-  export SUBJECT_ID
-  export QUALITY_PRESET
-  export PIPELINE_TYPE
-  
-  log_message "Arguments parsed: SRC_DIR=$SRC_DIR, RESULTS_DIR=$RESULTS_DIR, SUBJECT_ID=$SUBJECT_ID, QUALITY_PRESET=$QUALITY_PRESET, PIPELINE_TYPE=$PIPELINE_TYPE"
-}
-
-# Show help message
-show_help() {
-  echo "Usage: ./pipeline.sh [options]"
-  echo ""
-  echo "Options:"
-  echo "  -c, --config FILE    Configuration file (default: config/default_config.sh)"
-  echo "  -i, --input DIR      Input directory (default: ../DiCOM)"
-  echo "  -o, --output DIR     Output directory (default: ../mri_results)"
-  echo "  -s, --subject ID     Subject ID (default: derived from input directory)"
-  echo "  -q, --quality LEVEL  Quality preset (LOW, MEDIUM, HIGH) (default: MEDIUM)"
-  echo "  -p, --pipeline TYPE  Pipeline type (BASIC, FULL, CUSTOM) (default: FULL)"
-  echo "  -h, --help           Show this help message and exit"
 }
 
 compute_initial_affine() {
