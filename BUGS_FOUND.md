@@ -86,25 +86,162 @@ Note: The `parse_arguments()` in `environment.sh` has the correct spelling "MEDI
 
 ---
 
-## Issue 4: Duplicate parse_arguments() functions (environment.sh vs pipeline.sh)
+## Issue 4: Unguarded re-sourcing causes repeated side effects, variable clobbering, and potential pipeline termination
 
-**Labels:** bug, architecture
+**Labels:** bug, architecture, high-priority
 
 ### Description
-Two separate `parse_arguments()` functions exist:
-1. **`src/modules/environment.sh`** (line ~1212): Simpler version without `--start-stage`, `--compare-import-options`, verbosity flags, or `PIPELINE_MODE`
-2. **`src/pipeline.sh`** (line ~168): Full version with all pipeline-specific flags
 
-Since `pipeline.sh` sources `environment.sh` first, and then defines its own `parse_arguments()`, the environment.sh version is silently overridden. However, if any other script sources only `environment.sh` and calls `parse_arguments()`, it gets the limited version with different defaults.
+`environment.sh` and `default_config.sh` are sourced **multiple times** during a
+single pipeline run. Neither file has an include guard. `default_config.sh` has
+severe side effects that re-execute on every source, including an `exit 1` that
+can kill the entire pipeline mid-run.
 
-### Impact
-- `environment.sh` version defaults `SRC_DIR` to `"../DiCOM"`, pipeline.sh version defaults to `"../DICOM"` (capitalization difference)
-- environment.sh version defaults `QUALITY_PRESET` to `"MEDIUM"`, pipeline.sh version defaults to `"MEIDUM"` (typo)
-- Any script sourcing only environment.sh gets a `parse_arguments()` that doesn't support `--start-stage`, `--verbose`, `--quiet`, `--debug`, or `--compare-import-options`
-- Confusing maintenance surface - fixes to one copy don't propagate to the other
+### The re-sourcing chain
+
+During a normal `pipeline.sh` execution:
+
+```
+pipeline.sh
+├─ L81:  source environment.sh                           ← 1st
+├─ L82-98: source 16 modules, including:
+│   ├─ segmentation.sh
+│   │   ├─ L4: source default_config.sh                  ← SIDE EFFECTS (1st)
+│   │   ├─ L5: source environment.sh                     ← 2nd
+│   │   └─ L8: source hierarchical_joint_fusion.sh
+│   │       ├─ L5: source default_config.sh              ← SIDE EFFECTS (2nd)
+│   │       └─ L6: source environment.sh                 ← 3rd
+│   ├─ segmentation_transformation_extraction.sh
+│   │   ├─ L2: source environment.sh                     ← 4th
+│   │   └─ L3: source default_config.sh                  ← SIDE EFFECTS (3rd)
+│   ├─ reference_space_selection.sh
+│   │   └─ L18: source environment.sh                    ← 5th
+│   └─ enhanced_registration_validation.sh
+│       └─ L21-30: conditional source environment.sh     ← 6th (maybe)
+└─ L309 (in run_pipeline): load_config default_config.sh ← SIDE EFFECTS (4th)
+```
+
+**Result: `environment.sh` sourced 5-6 times, `default_config.sh` sourced 3-4 times.**
+
+### default_config.sh side effects on EVERY source
+
+| Line(s) | Side Effect | Severity |
+|---------|-------------|----------|
+| 43 | `cpuinfo \| grep -i count` — runs external process | Medium: overhead + potential inconsistency |
+| 109-136 | CPU-based branching **resets** `QUALITY_PRESET`, `ANTS_THREADS`, `ANTS_MEMORY_LIMIT`, all threading vars | **High: clobbers values set by parse_arguments or -q flag** |
+| 25, 62, 67 | `RESULTS_DIR` and `SRC_DIR` overwritten with hardcoded defaults | **High: clobbers parse_arguments -o/-i values** |
+| 26-27 | `mkdir -p "$RESULTS_DIR"` and `mkdir -p "$EXTRACT_DIR"` | Low: idempotent |
+| 38, 41, 49, 56 | `log_message`/`log_formatted` called at top level | **Crash if sourced before environment.sh** (segmentation.sh L4) |
+| 48, 65 | `PATH="$PATH:${ANTS_BIN}"` appended | Low: PATH accumulates duplicates |
+| 138 | `echo "QUALITY_PRESET: ..." >&2` | Low: output noise |
+| **207-209** | **`exit 1` if `FSLDIR` unset** | **CATASTROPHIC: kills entire pipeline** |
+
+### Sourcing order problem
+
+Several modules source `default_config.sh` **before** `environment.sh`:
+
+```bash
+# segmentation.sh
+source "config/default_config.sh"     # L4 — calls log_message() which doesn't exist yet!
+source "src/modules/environment.sh"   # L5
+
+# hierarchical_joint_fusion.sh
+source ./config/default_config.sh     # L5 — same problem
+source ./src/modules/environment.sh   # L6
+```
+
+`default_config.sh` calls `log_message` and `log_formatted` at the top level
+(lines 38, 41, 49, 56). If `environment.sh` hasn't been sourced yet, these
+functions are undefined and the source fails or produces errors.
+
+### environment.sh re-sourcing effects
+
+While mostly harmless (function re-definitions), re-sourcing `environment.sh`
+also:
+
+- **Overwrites `parse_arguments()`**: environment.sh defines a simpler version
+  (line ~1212) missing `--start-stage`, `--verbose`, `--debug`,
+  `--compare-import-options`. After pipeline.sh defines its full version (L168),
+  any subsequent re-source of environment.sh replaces it with the limited one.
+- **Re-exports `RESULTS_DIR` default** (line 510): `export RESULTS_DIR="${RESULTS_DIR:-../mri_results}"` — safe if already set, but adds fragility.
+- **Re-runs `set -e -u -o pipefail`** (line 495-497).
+
+### The duplicate `parse_arguments` problem
+
+Two separate `parse_arguments()` functions exist with divergent behavior:
+
+| | `environment.sh` (L1212) | `pipeline.sh` (L168) |
+|--|---|---|
+| `SRC_DIR` default | `../DiCOM` | `../DICOM` (different case) |
+| `QUALITY_PRESET` default | `MEDIUM` | `MEIDUM` (typo, see Bug #3) |
+| `--start-stage` | Not supported | Supported |
+| `--verbose/--quiet/--debug` | Not supported | Supported |
+| `--compare-import-options` | Not supported | Supported |
+
+Since modules re-source environment.sh after pipeline.sh defines its version,
+the environment.sh version silently wins in the function namespace.
+
+### Variable clobbering timeline
+
+```
+1. parse_arguments sets: RESULTS_DIR="/custom/output" QUALITY_PRESET="HIGH"
+2. segmentation.sh sourced → default_config.sh executes:
+   - L67: RESULTS_DIR="../mri_results"    ← CLOBBERED
+   - L101: QUALITY_PRESET="HIGH"          ← overwritten
+   - L109-136: QUALITY_PRESET reset based on cpuinfo → maybe "MEDIUM" ← CLOBBERED AGAIN
+3. hierarchical_joint_fusion.sh sourced → default_config.sh executes again:
+   - Same clobbering repeats
+4. load_config in run_pipeline → default_config.sh executes again:
+   - Same clobbering repeats
+```
+
+### `DICOM_PRIMARY_PATTERN` defined twice in same file
+
+`default_config.sh` defines this variable twice with different values:
+```bash
+L14:  export DICOM_PRIMARY_PATTERN='Image"*"'   # Quoted glob — won't match
+L242: export DICOM_PRIMARY_PATTERN=I*            # Unquoted — matches I* at source time
+```
+
+The second definition (L242) wins but expands `I*` at source time against the
+current working directory, producing unpredictable results.
+
+### Impact Summary
+
+1. **Pipeline can terminate mid-run** if FSLDIR becomes unset during re-source
+2. **User-supplied arguments are silently overwritten** (-o, -q, etc.)
+3. **Quality preset can change mid-pipeline** based on CPU count re-evaluation
+4. **Sourcing modules before environment.sh causes undefined function calls**
+5. **parse_arguments regresses** from full version to limited version
+6. **cpuinfo runs 3-4 times** unnecessarily
 
 ### Suggested Fix
-Remove `parse_arguments()` from `environment.sh` and keep only the full version in `pipeline.sh`, or extract it to a shared location.
+
+1. **Add include guards** to both files:
+   ```bash
+   # Top of environment.sh
+   [[ -n "${_ENVIRONMENT_SH_LOADED:-}" ]] && return 0
+   _ENVIRONMENT_SH_LOADED=1
+
+   # Top of default_config.sh
+   [[ -n "${_DEFAULT_CONFIG_LOADED:-}" ]] && return 0
+   _DEFAULT_CONFIG_LOADED=1
+   ```
+
+2. **Remove redundant `source` statements** from modules that are already
+   sourced by pipeline.sh before they're loaded (segmentation.sh,
+   hierarchical_joint_fusion.sh, segmentation_transformation_extraction.sh,
+   reference_space_selection.sh).
+
+3. **Move side effects out of default_config.sh** — the `exit 1` for FSLDIR,
+   `mkdir -p` calls, and `cpuinfo` execution should be in initialization
+   functions, not at file scope.
+
+4. **Remove `parse_arguments()` from environment.sh** — keep only the full
+   version in pipeline.sh.
+
+5. **Fix the duplicate `DICOM_PRIMARY_PATTERN`** — remove L14 or L242 and
+   quote the glob properly.
 
 ---
 
