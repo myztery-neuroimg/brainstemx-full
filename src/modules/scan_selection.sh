@@ -17,7 +17,7 @@ evaluate_scan_quality() {
     log_message "Evaluating quality of scan: $scan_path"
     
     # Check file size - larger files often (but not always) indicate better quality
-    local file_size=$(stat -f "%z" "$scan_path" 2>/dev/null || stat --format="%s" "$scan_path")
+    local file_size=$(get_file_size "$scan_path")
     log_message "  File size: $file_size bytes"
     
     # Check dimensions and voxel size

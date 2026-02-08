@@ -8,7 +8,7 @@
 
 # Source the environment module to get the execute_ants_command function
 SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-source "${SCRIPT_DIR}/src/modules/environment.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 
 # Create output directory
 mkdir -p ../mri_results/validation/space/t1_flair/

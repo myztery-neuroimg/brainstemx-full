@@ -302,7 +302,7 @@ register_to_reference() {
         
         # Dump matrix content for debugging
         if [ -f "$ants_wm_init_matrix" ]; then
-            log_message "Matrix file exists with size: $(stat -f %z "$ants_wm_init_matrix") bytes"
+            log_message "Matrix file exists with size: $(get_file_size "$ants_wm_init_matrix" 2>/dev/null || echo "?") bytes"
             log_message "Matrix content preview: [Binary ANTs transform file - content not displayed]"
         else
             log_formatted "ERROR" "Matrix file does not exist: $ants_wm_init_matrix"
@@ -329,7 +329,7 @@ register_to_reference() {
             fi
             
             # Get file size safely
-            local file_size=$(stat -f %z "$ants_wm_init_matrix" 2>/dev/null || stat --format="%s" "$ants_wm_init_matrix" 2>/dev/null || echo "0")
+            local file_size=$(get_file_size "$ants_wm_init_matrix" 2>/dev/null || echo "0")
             log_message "Transform file size: $file_size bytes"
             
             # Check if it's a text-based FSL format (with error handling)
@@ -460,7 +460,7 @@ register_to_reference() {
                     # Verify output files were created
                     if [ -f "${out_prefix}Warped.nii.gz" ] && [ -s "${out_prefix}Warped.nii.gz" ]; then
                         log_formatted "SUCCESS" "WM-guided multi-stage registration completed successfully"
-                        log_message "Output file created: ${out_prefix}Warped.nii.gz ($(stat -f %z "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "unknown") bytes)"
+                        log_message "Output file created: ${out_prefix}Warped.nii.gz ($(get_file_size "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "unknown") bytes)"
                         registration_success=true
                     else
                         log_formatted "WARNING" "Registration reported success but output file missing or empty"
@@ -580,7 +580,7 @@ register_to_reference() {
         for ext in "Warped.nii.gz" "_Warped.nii.gz" "Warped.nii" "warped.nii.gz" "_warped.nii.gz"; do
             if [ -f "${out_prefix}${ext}" ]; then
                 log_message "Found warped file with different extension: ${out_prefix}${ext}"
-                log_message "File size: $(stat -f %z "${out_prefix}${ext}" 2>/dev/null || stat --format="%s" "${out_prefix}${ext}" 2>/dev/null || echo "Unknown") bytes"
+                log_message "File size: $(get_file_size "${out_prefix}${ext}" 2>/dev/null || echo "Unknown") bytes"
                 # Create symbolic link with expected name
                 ln -sf "${out_prefix}${ext}" "${out_prefix}Warped.nii.gz"
                 found_warped=true
@@ -601,8 +601,8 @@ register_to_reference() {
             
             # Perform thorough pre-emergency diagnostics
             log_message "Pre-emergency diagnostics:"
-            log_message "  Fixed file: $fixed_image ($(stat -f %z "$fixed_image" 2>/dev/null || echo "?") bytes)"
-            log_message "  Moving file: $moving_image ($(stat -f %z "$moving_image" 2>/dev/null || echo "?") bytes)"
+            log_message "  Fixed file: $fixed_image ($(get_file_size "$fixed_image" 2>/dev/null || echo "?") bytes)"
+            log_message "  Moving file: $moving_image ($(get_file_size "$moving_image" 2>/dev/null || echo "?") bytes)"
             log_message "  ANTs binary: ${ants_bin}/antsRegistrationSyNQuick.sh"
             log_message "  Available threads: $ANTS_THREADS"
             
@@ -735,7 +735,7 @@ register_to_reference() {
                 log_formatted "SUCCESS" "Emergency registration succeeded after $attempted_methods attempts (${total_elapsed}s)"
                 
                 # Verify final output file
-                local final_size=$(stat -f %z "${out_prefix}Warped.nii.gz" 2>/dev/null || stat --format="%s" "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "0")
+                local final_size=$(get_file_size "${out_prefix}Warped.nii.gz" 2>/dev/null || echo "0")
                 log_message "Final output: ${out_prefix}Warped.nii.gz ($final_size bytes)"
                 
                 # Test file integrity

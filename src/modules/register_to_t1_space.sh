@@ -10,7 +10,7 @@
 
 # Source environment.sh to get access to logging and utility functions
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-source "${SCRIPT_DIR}/environment.sh"
+source "${SCRIPT_DIR}/require_env.sh"
 
 # Function to register a FLAIR/T2 image to T1 reference space
 # This bypasses the white matter segmentation step that often causes issues

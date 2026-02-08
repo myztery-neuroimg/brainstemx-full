@@ -15,7 +15,7 @@
 
 # Source environment and existing scan selection functions
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-source "${SCRIPT_DIR}/environment.sh"
+source "${SCRIPT_DIR}/require_env.sh"
 
 # Import existing scan selection functions if available
 if [ -f "${SCRIPT_DIR}/../scan_selection.sh" ]; then

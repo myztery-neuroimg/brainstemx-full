@@ -1133,8 +1133,8 @@ extract_brainstem_talairach() {
     fi
     
     # Validate transform files are non-empty and readable
-    local affine_size=$(stat -f "%z" "${ants_prefix}0GenericAffine.mat" 2>/dev/null || stat --format="%s" "${ants_prefix}0GenericAffine.mat" 2>/dev/null || echo "0")
-    local warp_size=$(stat -f "%z" "${ants_prefix}1Warp.nii.gz" 2>/dev/null || stat --format="%s" "${ants_prefix}1Warp.nii.gz" 2>/dev/null || echo "0")
+    local affine_size=$(get_file_size "${ants_prefix}0GenericAffine.mat" 2>/dev/null || echo "0")
+    local warp_size=$(get_file_size "${ants_prefix}1Warp.nii.gz" 2>/dev/null || echo "0")
     
     if [ "$affine_size" -lt 100 ]; then
         log_formatted "ERROR" "Talairach affine transform file is suspiciously small or empty: $affine_size bytes"

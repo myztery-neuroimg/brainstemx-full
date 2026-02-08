@@ -3,7 +3,7 @@
 # Script to clean up bad symlinks in segmentation directories
 
 # Source environment
-source "$(dirname "${BASH_SOURCE[0]}")/modules/environment.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 
 echo "Cleaning up segmentation directory symlinks..."
 echo ""

@@ -2,8 +2,8 @@
 # src/modules/hierarchical_joint_fusion_simplified.sh
 # Simplified: Direct Talairach label extraction (no joint fusion voting)
 
+source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 source ./config/default_config.sh
-source ./src/modules/environment.sh
 TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 
 execute_hierarchical_joint_fusion() {

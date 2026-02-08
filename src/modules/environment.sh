@@ -184,7 +184,7 @@ safe_fslmaths() {
         log_message "Input files were:"
         for file in "${input_files[@]}"; do
             if [ -f "$file" ]; then
-                local file_size=$(stat -f%z "$file" 2>/dev/null || stat --format="%s" "$file" 2>/dev/null || echo "?")
+                local file_size=$(get_file_size "$file" 2>/dev/null || echo "?")
                 log_message "  ✓ $file (exists, $file_size bytes)"
                 
                 # Check if file is readable and get basic info
@@ -629,6 +629,23 @@ check_os() {
   return 0
 }
 
+# Detect platform-appropriate stat command for file size
+# Called once at startup; exports get_file_size for all modules
+_detect_stat_variant() {
+    if stat --format="%s" /dev/null &>/dev/null; then
+        # GNU coreutils stat (Linux)
+        get_file_size() { stat --format="%s" "$1"; }
+    elif stat -f "%z" /dev/null &>/dev/null; then
+        # BSD stat (macOS)
+        get_file_size() { stat -f "%z" "$1"; }
+    else
+        # Fallback: use wc -c (POSIX, slightly slower)
+        get_file_size() { wc -c < "$1" | tr -d ' '; }
+    fi
+    export -f get_file_size
+}
+_detect_stat_variant
+
 check_dependencies() {
   log_formatted "INFO" "==== MRI Processing Dependency Checker ===="
   
@@ -933,11 +950,14 @@ validate_nifti() {
   # First check if file exists and is readable
   validate_file "$file" "$description" || return $?
   
-  # Check file size (Linux stat first, macOS fallback)
+  # Check file size
   local file_size
-  file_size=$(stat --format="%s" "$file" 2>/dev/null || stat -f "%z" "$file" 2>/dev/null)
-  if [ -z "$file_size" ] || [ "$file_size" -lt "$min_size" ]; then
-    log_error "$description has suspicious size ($file_size bytes): $file" $ERR_DATA_CORRUPT
+  if ! file_size=$(get_file_size "$file"); then
+    log_error "Cannot determine file size for $description: $file" $ERR_DATA_CORRUPT
+    return $ERR_DATA_CORRUPT
+  fi
+  if [ "$file_size" -lt "$min_size" ]; then
+    log_error "$description has suspicious size ($file_size bytes, minimum $min_size): $file" $ERR_DATA_CORRUPT
     return $ERR_DATA_CORRUPT
   fi
   
