@@ -1,0 +1,150 @@
+name: Validate Scripts
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-check:
+    name: Bash Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check bash syntax with bash -n
+        run: |
+          echo "Checking syntax of all .sh files..."
+          failed=0
+          count=0
+          while IFS= read -r file; do
+            if ! bash -n "$file" 2>/tmp/syntax_err; then
+              echo "FAIL: $file"
+              cat /tmp/syntax_err
+              failed=$((failed + 1))
+            fi
+            count=$((count + 1))
+          done < <(find . -name '*.sh' -not -path './.git/*' | sort)
+          echo ""
+          echo "Checked $count files, $failed failed"
+          [ "$failed" -eq 0 ]
+
+  shellcheck:
+    name: ShellCheck (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck --severity=error
+        run: |
+          echo "Running shellcheck (error-level only)..."
+          failed=0
+          count=0
+          while IFS= read -r file; do
+            if ! shellcheck --severity=error "$file" 2>/dev/null; then
+              failed=$((failed + 1))
+            fi
+            count=$((count + 1))
+          done < <(find . -name '*.sh' -not -path './.git/*' | sort)
+          echo ""
+          echo "Checked $count files, $failed had errors"
+          [ "$failed" -eq 0 ]
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run unit test suites
+        run: |
+          failed=0
+          for suite in tests/test_environment_unit.sh tests/test_pipeline_control_unit.sh tests/test_import_unit.sh; do
+            echo ""
+            echo "========================================"
+            echo "Running: $suite"
+            echo "========================================"
+            if bash "$suite"; then
+              echo "PASS: $suite"
+            else
+              echo "FAIL: $suite (exit code: $?)"
+              failed=$((failed + 1))
+            fi
+          done
+          echo ""
+          echo "========================================"
+          if [ "$failed" -gt 0 ]; then
+            echo "$failed test suite(s) failed"
+            exit 1
+          else
+            echo "All test suites passed"
+          fi
+
+  pipeline-smoke-test:
+    name: Pipeline Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pipeline.sh --help works
+        run: |
+          output=$(bash src/pipeline.sh --help 2>&1)
+          echo "$output"
+          echo ""
+          echo "--- Validating help output ---"
+          echo "$output" | grep -q "Usage:" || { echo "FAIL: missing Usage line"; exit 1; }
+          echo "$output" | grep -q "Pipeline Stages:" || { echo "FAIL: missing Pipeline Stages"; exit 1; }
+          echo "PASS: --help output looks correct"
+
+      - name: Verify pipeline loads all modules and fails gracefully on missing tools
+        run: |
+          # Set required vars to dummy values so module sourcing doesn't crash
+          # on unbound variables. The pipeline should still fail at the
+          # dependency check stage — that's exactly what we want to verify.
+          export FSLDIR=/tmp/fake_fsl
+          export ANTS_PATH=/tmp/fake_ants
+
+          echo "Running pipeline.sh with no input data..."
+          output=$(bash src/pipeline.sh 2>&1 || true)
+          echo "$output"
+          echo ""
+          echo "--- Validating module loading ---"
+
+          check() {
+            if echo "$output" | grep -q "$1"; then
+              echo "PASS: found '$1'"
+            else
+              echo "FAIL: missing '$1'"
+              return 1
+            fi
+          }
+
+          failed=0
+
+          # Confirm key modules loaded successfully
+          check "Environment module loaded"          || failed=$((failed + 1))
+          check "Import module loaded"               || failed=$((failed + 1))
+          check "Registration module loaded"         || failed=$((failed + 1))
+          check "Segmentation module loaded"         || failed=$((failed + 1))
+          check "Analysis module loaded"             || failed=$((failed + 1))
+          check "Visualization module loaded"        || failed=$((failed + 1))
+
+          # Confirm pipeline got past module loading to actual execution
+          check "Arguments parsed:"                  || failed=$((failed + 1))
+          check "Comprehensive Pipeline Dependency Check" || failed=$((failed + 1))
+
+          # Confirm it failed for the RIGHT reason (missing tools, not a crash)
+          check "critical dependencies are missing"  || failed=$((failed + 1))
+
+          echo ""
+          if [ "$failed" -gt 0 ]; then
+            echo "$failed checks failed — pipeline may not be loading correctly"
+            exit 1
+          else
+            echo "All checks passed — pipeline loads and fails gracefully"
+          fi
