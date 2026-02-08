@@ -6,7 +6,7 @@ joblib==1.5.2
     # via scikit-learn
 lazy-loader==0.4
     # via scikit-image
-networkx==3.5
+networkx==3.6.1
     # via scikit-image
 nibabel==5.3.2
     # via brainstemx-full
