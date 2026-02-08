@@ -4,17 +4,32 @@ This document provides a comprehensive overview of the test suite for the BrainS
 
 ## Overview
 
-The test suite is organized into functional categories and uses multiple testing frameworks to ensure comprehensive coverage of the pipeline's capabilities. Tests range from unit tests for individual modules to integration tests that validate the entire processing workflow.
+The test suite is organized into functional categories using a custom assertion-based framework. Tests range from fast, mock-based unit tests (requiring no external tools) to integration tests that validate the entire processing workflow with real data.
+
+**Quick start — run all CI-safe tests locally:**
+```bash
+bash tests/test_environment_unit.sh
+bash tests/test_pipeline_control_unit.sh
+bash tests/test_import_unit.sh
+```
+
+These 232 tests run in seconds with no external dependencies (FSL, ANTs, etc.).
 
 ## Test Structure
 
 ```
 tests/
+├── Shared Framework
+│   └── test_helpers.sh                  # Assertions, mocks, setup/teardown (see below)
+├── Unit Tests (mock-based, no external tools needed)
+│   ├── test_environment_unit.sh         # environment.sh — 98 tests
+│   ├── test_pipeline_control_unit.sh    # pipeline.sh control flow — 98 tests
+│   └── test_import_unit.sh             # import.sh — 36 tests
 ├── Core Module Tests
 │   ├── test_dicom_analysis.sh           # DICOM analysis module comprehensive testing
 │   ├── test_segmentation.sh             # Brainstem segmentation functionality
 │   └── test_orientation_preservation.sh # Orientation correction methods
-├── Integration Tests  
+├── Integration Tests
 │   ├── test_integration.sh              # Centralized path/error handling integration
 │   ├── test_dicom_mapping_integration.sh # DICOM cluster mapping integration
 │   └── test_reference_space_selection.sh # Critical reference space decision logic
@@ -35,11 +50,141 @@ tests/
 
 The test suite employs several testing patterns:
 
-1. **Assertion-based Testing**: Custom assert functions (`assert_equals`, `assert_file_exists`, etc.)
-2. **Mock Environment Testing**: Isolated test environments with controlled dependencies
+1. **Assertion-based Testing**: Custom assert functions (`assert_equals`, `assert_file_exists`, etc.) — see [test_helpers.sh](#test_helperssh---shared-test-library)
+2. **Mock Environment Testing**: Isolated test environments with mock commands injected via PATH
 3. **Integration Testing**: Real-world workflow validation with actual data
 4. **Performance Benchmarking**: Timing and efficiency measurements
 5. **Error Handling Validation**: Expected failure scenarios and graceful degradation
+
+## test_helpers.sh — Shared Test Library
+
+**Location**: `tests/test_helpers.sh`
+
+A shared library sourced by all unit test files. Provides a consistent framework for writing and running tests without any external dependencies.
+
+**Include guard**: Has `_TEST_HELPERS_LOADED` guard to prevent double-sourcing.
+
+### Suite Lifecycle
+
+```bash
+source tests/test_helpers.sh
+init_test_suite "My Test Suite"       # Reset counters, print header
+setup_test_environment                # Create isolated temp dir, set LOG_DIR/RESULTS_DIR/etc.
+# ... run tests ...
+print_test_summary                    # Print pass/fail counts, return non-zero if failures
+cleanup_test_environment              # Remove temp dir, restore PATH
+```
+
+`setup_test_environment` creates a temporary directory (`$TEMP_TEST_DIR`) and sets `LOG_DIR`, `RESULTS_DIR`, `LOG_FILE`, and `EXTRACT_DIR` to subdirectories within it, so tests never touch real pipeline paths.
+
+### Assertion Functions
+
+| Function | Signature | What it checks |
+|----------|-----------|----------------|
+| `assert_equals` | `expected actual message` | `expected == actual` |
+| `assert_not_equals` | `not_expected actual message` | `not_expected != actual` |
+| `assert_contains` | `haystack needle message` | `needle` is a substring of `haystack` |
+| `assert_not_contains` | `haystack needle message` | `needle` is NOT in `haystack` |
+| `assert_file_exists` | `path message` | `-f path` |
+| `assert_file_not_exists` | `path message` | `! -f path` |
+| `assert_dir_exists` | `path message` | `-d path` |
+| `assert_function_exists` | `name message` | `declare -f name` succeeds |
+| `assert_exit_code` | `expected actual message` | exit codes match (numeric) |
+| `assert_var_set` | `var_name message` | variable is set and non-empty |
+| `assert_matches` | `pattern actual message` | `actual =~ pattern` (regex) |
+
+Each assertion increments `TEST_COUNT`, prints `PASS`/`FAIL`, and records failures for the summary.
+
+### Mock Command Creators
+
+These create executable scripts in `$TEMP_TEST_DIR/mock_bin/` and prepend that directory to `$PATH`, so the module under test uses the mock instead of the real tool.
+
+| Function | Creates mock for | Behavior |
+|----------|-----------------|----------|
+| `create_mock_command` | Any command | Configurable exit code and output |
+| `create_mock_fslinfo` | `fslinfo` | Returns plausible NIfTI header (256x256x176, 1mm iso) |
+| `create_mock_fslstats` | `fslstats` | Returns `100.0 200.0 150.0 25.0` |
+| `create_mock_fslmaths` | `fslmaths` | Copies input to output (or `touch`) |
+| `create_mock_dcm2niix` | `dcm2niix` | Parses `-o` flag, creates fake `.nii.gz` files |
+| `create_mock_dcmdump` | `dcmdump` | Cats the input file (expects mock DICOM content) |
+
+### Data Helpers
+
+| Function | Purpose |
+|----------|---------|
+| `create_fake_nifti path [size_kb]` | Creates a zero-filled file that passes basic size checks |
+| `create_mock_dicom_file path [manufacturer] [model] [software]` | Creates a text file with standard DICOM tag format |
+| `load_environment_module` | Sources `src/modules/environment.sh` with stderr suppressed |
+
+---
+
+## Unit Tests (Mock-Based)
+
+These tests run entirely with mocked external tools — no FSL, ANTs, dcm2niix, or real data needed. They are fast (~2-3 seconds each) and run in CI.
+
+### test_environment_unit.sh
+
+**Tests Module**: `src/modules/environment.sh`
+**Test Count**: 98
+
+**Test Groups**:
+1. **Logging Functions** — `log_message`, `log_formatted`, `log_error`, `log_diagnostic`: timestamp format, LOG_FILE writes, stderr fallback, severity levels, color codes
+2. **Error Code Constants** — All 14 error codes (ERR_DEPENDENCY, ERR_FILE_NOT_FOUND, ERR_PIPELINE, etc.) are non-zero, unique, and integer-valued
+3. **Validation Functions** — `validate_file`: existing/missing/empty files, unreadable (non-root only); `validate_nifti`: fslinfo integration, corrupt file detection, missing file handling, size checks (with platform note — see known issues); `validate_directory`: existing/missing/auto-create
+4. **Path/Directory Utilities** — `get_module_dir`, `create_module_dir`, `get_output_path`: correct path construction, directory creation, naming conventions
+5. **create_directories** — Creates all 14 expected pipeline subdirectories
+6. **check_command** — Returns 0/1 for available/missing commands
+7. **initialize_log_directory / initialize_environment** — Sets LOG_DIR and LOG_FILE, creates directories
+8. **validate_module_execution** — Module self-validation
+9. **Function Availability** — 24 functions verified to exist after module load
+10. **Default Variables** — `RESULTS_DIR`, `LOG_DIR`, `LOG_FILE`, `SRC_DIR` are set
+
+**Usage**:
+```bash
+bash tests/test_environment_unit.sh
+```
+
+### test_pipeline_control_unit.sh
+
+**Tests Module**: `src/pipeline.sh` (control flow functions)
+**Test Count**: 98
+
+> **Design note**: Since `pipeline.sh` calls `main $@` at the bottom, it cannot be safely sourced. Key functions (`get_stage_number`, `parse_arguments`, `load_config`, `validate_step`) are copied into the test file for isolated testing.
+
+**Test Groups**:
+1. **get_stage_number** — All 8 canonical stage names (`import`→1 through `tracking`→8), all aliases (`dicom`, `pre`, `preprocessing`, `brain`, `extract`, `reg`, `register`, `seg`, `segment`, `analyze`, `vis`, `visualize`, `track`, `progress`), numeric strings `"1"`-`"8"`, invalid inputs (empty, `"0"`, `"9"`, `"IMPORT"` uppercase, `"foobar"`, `"10"`, spaces)
+2. **parse_arguments** — Default values (`SRC_DIR`, `RESULTS_DIR`, `QUALITY_PRESET`, `PIPELINE_TYPE`, `VERBOSITY`), short flags (`-i`, `-o`, `-s`, `-q`, `-p`, `-t`), long flags (`--input`, `--output`, `--subject`, `--quality`, `--start-stage`), verbosity modes (`--quiet`, `--verbose`, `--debug`), `--compare-import-options`, `-f` filter, invalid stage rejection, unknown option rejection, subject ID derivation from input path, combined flags
+3. **load_config** — Sources valid config file, fails on missing file
+4. **validate_step** — Documents the always-returns-0 bug (unreachable code after `return 0`)
+5. **Pipeline invocation** — `pipeline.sh --help` runs without error, produces `Usage:` and `Pipeline Stages:`
+6. **Stage number round-trip consistency** — All alias→number mappings agree with canonical names
+
+**Usage**:
+```bash
+bash tests/test_pipeline_control_unit.sh
+```
+
+### test_import_unit.sh
+
+**Tests Module**: `src/modules/import.sh`
+**Test Count**: 36
+
+**Test Groups**:
+1. **Function Availability** — 8 functions verified: `import_dicom_data`, `import_convert_dicom_to_nifti`, `import_extract_metadata`, `import_validate_nifti_files`, `import_validate_dicom_files_new_2`, `import_deduplicate_identical_files`, `import_compare_strategies`, `process_dicom_series`
+2. **import_deduplicate_identical_files** — Verifies disabled-by-design behavior (returns 0 immediately, files untouched)
+3. **import_validate_dicom_files_new_2** — Verifies disabled-by-design behavior
+4. **import_extract_metadata** — Missing directory fallback, directory with `Image*` files, empty directory, `*.dcm` pattern, `IM_*` pattern
+5. **import_convert_dicom_to_nifti** — Mock dcm2niix success, missing dcm2niix failure, error recovery
+6. **import_validate_nifti_files** — Valid `.nii.gz` files pass, empty directory detected, corrupt/small files detected
+7. **import_dicom_data** — End-to-end orchestration with mocked tools
+8. **Module integration** — `IMPORT_MODULE_LOADED` flag, parallel vs sequential path selection
+
+**Usage**:
+```bash
+bash tests/test_import_unit.sh
+```
+
+---
 
 ## Core Module Tests
 
@@ -303,17 +448,28 @@ The following tests require detailed analysis and documentation:
 
 ## Running Tests
 
+### Unit Tests (no external tools needed)
+```bash
+# Run all 3 mock-based unit test suites (232 tests, ~5 seconds)
+bash tests/test_environment_unit.sh
+bash tests/test_pipeline_control_unit.sh
+bash tests/test_import_unit.sh
+```
+
 ### Individual Tests
 ```bash
 # Run specific test
 ./tests/test_dicom_analysis.sh
 
-# Run with specific parameters  
+# Run with specific parameters
 ./tests/test_reference_space_selection.sh --dataset-3dflair /path/to/dicom --expected-3dflair FLAIR
 ```
 
 ### Test Categories
 ```bash
+# Run all unit tests (CI-safe, mock-based)
+for test in tests/test_*_unit.sh; do bash "$test"; done
+
 # Run all integration tests
 for test in tests/test_integration*.sh; do "$test"; done
 
@@ -324,7 +480,7 @@ for test in tests/test_segmentation*.sh tests/run_segmentation*.sh; do "$test"; 
 ### Full Test Suite
 ```bash
 # Run all tests (when available)
-for test in tests/test_*.sh; do 
+for test in tests/test_*.sh; do
     echo "Running $test..."
     "$test" || echo "FAILED: $test"
 done
@@ -359,35 +515,140 @@ done
 - Mock DICOM files generated for DICOM analysis tests
 - Synthetic NIfTI volumes created for processing tests
 
-## Contributing to Tests
+## Writing New Tests
 
 When adding new tests:
 
-1. **Follow Naming Convention**: `test_<module_name>.sh` or `test_<functionality>.sh`
-2. **Use Standard Framework**: Implement `assert_*` functions for consistency
-3. **Include Documentation**: Add comprehensive header comments
-4. **Test Edge Cases**: Include invalid inputs, missing dependencies, etc.
-5. **Cleanup**: Ensure proper cleanup of temporary files/directories
-6. **Update Documentation**: Add entry to this README with full specification
+1. **Source the shared library**: `source tests/test_helpers.sh` — gives you assertions, mocks, and lifecycle management
+2. **Follow naming convention**: `test_<module_name>.sh` for module tests, `test_<module>_unit.sh` for mock-based unit tests
+3. **Use the lifecycle**: `init_test_suite` → `setup_test_environment` → tests → `print_test_summary` → `cleanup_test_environment`
+4. **Mock external tools**: Use `create_mock_fslinfo`, `create_mock_dcm2niix`, etc. rather than requiring real installs
+5. **Test edge cases**: Invalid inputs, missing dependencies, empty directories, permission errors
+6. **Update this document**: Add an entry to the test status table and describe test groups
+
+**Minimal example**:
+```bash
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/test_helpers.sh"
+
+init_test_suite "my_module.sh Unit Tests"
+setup_test_environment
+create_mock_fslinfo
+load_environment_module
+
+# Source module under test
+source "$PROJECT_ROOT/src/modules/my_module.sh" 2>/dev/null || true
+
+begin_test_group "1. Basic Tests"
+assert_function_exists "my_function" "my_function is defined"
+result=$(my_function "input" 2>/dev/null)
+assert_contains "$result" "expected" "my_function produces expected output"
+
+print_test_summary
+cleanup_test_environment
+```
+
+**If adding a CI-safe test** (no external tools): add it to the `unit-tests` job in `.github/workflows/validate-scripts.yml`.
 
 ## Test Status Summary
 
-| Test File | Status | Coverage | Dependencies |
-|-----------|---------|----------|--------------|
-| test_dicom_analysis.sh | ✅ Complete | Comprehensive | dcmdump (mocked) |
-| test_segmentation.sh | ✅ Complete | Core functionality | FSL |
-| test_integration.sh | ✅ Complete | Path/error handling | None |
-| test_reference_space_selection.sh | ✅ Complete | Critical decision logic | FSL, dcm2niix, Real DICOM |
-| test_orientation_preservation.sh | ✅ Complete | Orientation methods | FSL, Real images |
-| test_parallel.sh | ⚠️ Partial | Parallel framework | GNU parallel, FSL |
-| test_smart_standardization.sh | ⚠️ Partial | Standardization | FSL |
-| test_dicom_mapping_integration.sh | ⚠️ Partial | Basic integration | None |
-| test_orientation_fix.sh | 📋 Pending | TBD | TBD |
-| test_original_detection.sh | 📋 Pending | TBD | TBD |
-| test_path_resolution.sh | 📋 Pending | TBD | TBD |
-| test_segmentation_paths.sh | 📋 Pending | TBD | TBD |
-| test_segmentation_qa.sh | 📋 Pending | TBD | TBD |
-| run_reference_space_test.sh | 📋 Pending | TBD | TBD |
-| run_segmentation_tests.sh | 📋 Pending | TBD | TBD |
+| Test File | Tests | Status | Dependencies | CI? |
+|-----------|-------|--------|-------------|-----|
+| test_helpers.sh | — | ✅ Library | None | — |
+| test_environment_unit.sh | 98 | ✅ Complete | None (mocked) | Yes |
+| test_pipeline_control_unit.sh | 98 | ✅ Complete | None (mocked) | Yes |
+| test_import_unit.sh | 36 | ✅ Complete | None (mocked) | Yes |
+| test_dicom_analysis.sh | ~80 | ✅ Complete | dcmdump (mocked) | No |
+| test_segmentation.sh | ~20 | ✅ Complete | FSL | No |
+| test_integration.sh | ~15 | ✅ Complete | None | No |
+| test_reference_space_selection.sh | ~30 | ✅ Complete | FSL, dcm2niix, Real DICOM | No |
+| test_orientation_preservation.sh | ~10 | ✅ Complete | FSL, Real images | No |
+| test_parallel.sh | ~8 | ⚠️ Partial | GNU parallel, FSL | No |
+| test_smart_standardization.sh | ~6 | ⚠️ Partial | FSL | No |
+| test_dicom_mapping_integration.sh | ~5 | ⚠️ Partial | None | No |
+| test_orientation_fix.sh | | 📋 Pending | TBD | TBD |
+| test_original_detection.sh | | 📋 Pending | TBD | TBD |
+| test_path_resolution.sh | | 📋 Pending | TBD | TBD |
+| test_segmentation_paths.sh | | 📋 Pending | TBD | TBD |
+| test_segmentation_qa.sh | | 📋 Pending | TBD | TBD |
+| run_reference_space_test.sh | | 📋 Pending | TBD | TBD |
+| run_segmentation_tests.sh | | 📋 Pending | TBD | TBD |
+
+**Legend**: ✅ Complete | ⚠️ Partial | 📋 Pending Documentation | **CI?** = runs in GitHub Actions without external tools
+
+---
+
+## Continuous Integration
+
+### GitHub Actions Workflow
+
+**File**: `.github/workflows/validate-scripts.yml`
+**Triggers**: Push to any branch, pull requests to `main`
+
+The workflow runs 4 parallel jobs on `ubuntu-latest`:
+
+### Job 1: Bash Syntax Check (`syntax-check`)
+
+Runs `bash -n` on every `.sh` file in the repository. Catches parse errors, unclosed quotes, and invalid syntax. No dependencies needed.
+
+```bash
+# What it does (equivalent local command):
+find . -name '*.sh' -not -path './.git/*' | while read f; do bash -n "$f"; done
+```
+
+**Blocking**: Yes — the workflow fails if any file has a syntax error.
+
+### Job 2: ShellCheck (`shellcheck`)
+
+Runs [ShellCheck](https://www.shellcheck.net/) at `--severity=error` level on all `.sh` files. Uses `.shellcheckrc` at the repo root for persistent exclusions.
+
+**Excluded rules** (via `.shellcheckrc`):
+| Rule | Reason |
+|------|--------|
+| SC1090 | Can't follow non-constant source (dynamic `source` paths) |
+| SC1091 | Not following sourced file (same) |
+| SC2034 | Variable appears unused (cross-module exports) |
+| SC2155 | Declare and assign separately (pervasive pattern) |
+
+**Blocking**: No (`continue-on-error: true`). This job is advisory — it reports issues but doesn't fail the workflow. As the codebase is cleaned up, this can be made blocking.
+
+### Job 3: Unit Tests (`unit-tests`)
+
+Runs the 3 mock-based unit test suites (232 tests total):
+- `tests/test_environment_unit.sh` — 98 tests
+- `tests/test_pipeline_control_unit.sh` — 98 tests
+- `tests/test_import_unit.sh` — 36 tests
+
+No external tools required. Tests use mocked `fslinfo`, `fslstats`, `fslmaths`, `dcm2niix`, and `dcmdump` via PATH injection.
+
+**Blocking**: Yes — the workflow fails if any test suite exits non-zero.
+
+### Job 4: Pipeline Smoke Test (`pipeline-smoke-test`)
+
+Verifies the pipeline loads correctly and fails gracefully when external tools are unavailable. Two steps:
+
+**Step 1**: `pipeline.sh --help` — confirms the help text renders without error and includes expected sections (`Usage:`, `Pipeline Stages:`).
+
+**Step 2**: Full pipeline invocation with `FSLDIR=/tmp/fake_fsl` and `ANTS_PATH=/tmp/fake_ants`. Verifies 9 assertions:
+
+| Assertion | What it proves |
+|-----------|---------------|
+| `Environment module loaded` | `environment.sh` sourced successfully |
+| `Import module loaded` | `import.sh` sourced successfully |
+| `Registration module loaded` | `registration.sh` + dependencies sourced |
+| `Segmentation module loaded` | `segmentation.sh` + joint fusion sourced |
+| `Analysis module loaded` | `analysis.sh` sourced successfully |
+| `Visualization module loaded` | `visualization.sh` sourced successfully |
+| `Arguments parsed:` | `parse_arguments` completed |
+| `Comprehensive Pipeline Dependency Check` | Pipeline reached the dependency check phase |
+| `critical dependencies are missing` | Failed for the RIGHT reason (missing tools, not a crash) |
+
+**Blocking**: Yes — the workflow fails if any assertion is missing from the output.
+
+### Adding the Workflow to Your Fork
+
+The workflow activates automatically when `.github/workflows/validate-scripts.yml` is present. No additional setup is needed — GitHub Actions will run it on the next push.
 
 **Legend**: ✅ Complete | ⚠️ Partial | 📋 Pending Documentation
