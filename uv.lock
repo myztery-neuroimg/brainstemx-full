@@ -25,6 +25,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pydicom" },
+    { name = "pytest" },
     { name = "scikit-learn" },
 ]
 
@@ -43,6 +44,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pydicom", specifier = ">=3.0.1" },
     { name = "pylint", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "scikit-learn", specifier = ">=1.5.0" },
 ]

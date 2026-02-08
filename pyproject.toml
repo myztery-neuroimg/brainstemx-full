@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=2.0.0",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
     "pandas>=2.0.0",        # analyze_multimodal_brainstem.sh (inline Python)
     "pydicom>=3.0.1",       # extract_dicom_metadata.py
+    "pytest>=9.0.2",
     "scikit-learn>=1.5.0",  # gmm_threshold.py (per-region GMM analysis)
 ]
 
