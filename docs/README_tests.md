@@ -582,39 +582,27 @@ cleanup_test_environment
 
 ## Continuous Integration
 
-### GitHub Actions Workflow
+Two GitHub Actions workflows validate the codebase:
+
+### Always-on: Validate Scripts
 
 **File**: `.github/workflows/validate-scripts.yml`
-**Triggers**: Push to any branch, pull requests to `main`
+**Triggers**: Push to `main`, pull requests to `main`
 
-The workflow runs 4 parallel jobs on `ubuntu-latest`:
+Runs 3 parallel jobs on `ubuntu-latest`:
 
-### Job 1: Bash Syntax Check (`syntax-check`)
+#### Job 1: Bash Syntax Check (`syntax-check`)
 
 Runs `bash -n` on every `.sh` file in the repository. Catches parse errors, unclosed quotes, and invalid syntax. No dependencies needed.
 
 ```bash
-# What it does (equivalent local command):
+# Equivalent local command:
 find . -name '*.sh' -not -path './.git/*' | while read f; do bash -n "$f"; done
 ```
 
-**Blocking**: Yes — the workflow fails if any file has a syntax error.
+**Blocking**: Yes — fails the workflow if any file has a syntax error.
 
-### Job 2: ShellCheck (`shellcheck`)
-
-Runs [ShellCheck](https://www.shellcheck.net/) at `--severity=error` level on all `.sh` files. Uses `.shellcheckrc` at the repo root for persistent exclusions.
-
-**Excluded rules** (via `.shellcheckrc`):
-| Rule | Reason |
-|------|--------|
-| SC1090 | Can't follow non-constant source (dynamic `source` paths) |
-| SC1091 | Not following sourced file (same) |
-| SC2034 | Variable appears unused (cross-module exports) |
-| SC2155 | Declare and assign separately (pervasive pattern) |
-
-**Blocking**: No (`continue-on-error: true`). This job is advisory — it reports issues but doesn't fail the workflow. As the codebase is cleaned up, this can be made blocking.
-
-### Job 3: Unit Tests (`unit-tests`)
+#### Job 2: Unit Tests (`unit-tests`)
 
 Runs the 3 mock-based unit test suites (232 tests total):
 - `tests/test_environment_unit.sh` — 98 tests
@@ -623,9 +611,9 @@ Runs the 3 mock-based unit test suites (232 tests total):
 
 No external tools required. Tests use mocked `fslinfo`, `fslstats`, `fslmaths`, `dcm2niix`, and `dcmdump` via PATH injection.
 
-**Blocking**: Yes — the workflow fails if any test suite exits non-zero.
+**Blocking**: Yes — fails the workflow if any test suite exits non-zero.
 
-### Job 4: Pipeline Smoke Test (`pipeline-smoke-test`)
+#### Job 3: Pipeline Smoke Test (`pipeline-smoke-test`)
 
 Verifies the pipeline loads correctly and fails gracefully when external tools are unavailable. Two steps:
 
@@ -643,12 +631,27 @@ Verifies the pipeline loads correctly and fails gracefully when external tools a
 | `Visualization module loaded` | `visualization.sh` sourced successfully |
 | `Arguments parsed:` | `parse_arguments` completed |
 | `Comprehensive Pipeline Dependency Check` | Pipeline reached the dependency check phase |
-| `critical dependencies are missing` | Failed for the RIGHT reason (missing tools, not a crash) |
+| `dependencies are missing` | Failed for the RIGHT reason (missing tools, not a crash) |
 
-**Blocking**: Yes — the workflow fails if any assertion is missing from the output.
+**Blocking**: Yes — fails the workflow if any assertion is missing from the output.
 
-### Adding the Workflow to Your Fork
+### On-demand: ShellCheck
 
-The workflow activates automatically when `.github/workflows/validate-scripts.yml` is present. No additional setup is needed — GitHub Actions will run it on the next push.
+**File**: `.github/workflows/shellcheck-on-demand.yml`
+**Trigger**: Comment `/shellcheck` on any pull request
 
-**Legend**: ✅ Complete | ⚠️ Partial | 📋 Pending Documentation
+Runs [ShellCheck](https://www.shellcheck.net/) at `--severity=error` level on all `.sh` files. Uses `.shellcheckrc` at the repo root for persistent exclusions.
+
+**How to use**: Post a comment containing `/shellcheck` on any PR. The workflow checks out the PR's merge commit and runs shellcheck against it.
+
+**Excluded rules** (via `.shellcheckrc`):
+| Rule | Reason |
+|------|--------|
+| SC1090 | Can't follow non-constant source (dynamic `source` paths) |
+| SC1091 | Not following sourced file (same) |
+| SC2034 | Variable appears unused (cross-module exports) |
+| SC2155 | Declare and assign separately (pervasive pattern) |
+
+### Workflow setup
+
+Both workflows activate automatically when their YAML files are present in `.github/workflows/`. No additional setup is needed.

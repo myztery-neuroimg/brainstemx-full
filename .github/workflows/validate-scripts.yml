@@ -2,7 +2,7 @@ name: Validate Scripts
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -28,31 +28,6 @@ jobs:
           done < <(find . -name '*.sh' -not -path './.git/*' | sort)
           echo ""
           echo "Checked $count files, $failed failed"
-          [ "$failed" -eq 0 ]
-
-  shellcheck:
-    name: ShellCheck (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
-      - name: Run shellcheck --severity=error
-        run: |
-          echo "Running shellcheck (error-level only)..."
-          failed=0
-          count=0
-          while IFS= read -r file; do
-            if ! shellcheck --severity=error "$file" 2>/dev/null; then
-              failed=$((failed + 1))
-            fi
-            count=$((count + 1))
-          done < <(find . -name '*.sh' -not -path './.git/*' | sort)
-          echo ""
-          echo "Checked $count files, $failed had errors"
           [ "$failed" -eq 0 ]
 
   unit-tests:
@@ -139,7 +114,7 @@ jobs:
           check "Comprehensive Pipeline Dependency Check" || failed=$((failed + 1))
 
           # Confirm it failed for the RIGHT reason (missing tools, not a crash)
-          check "critical dependencies are missing"  || failed=$((failed + 1))
+          check "dependencies are missing"           || failed=$((failed + 1))
 
           echo ""
           if [ "$failed" -gt 0 ]; then

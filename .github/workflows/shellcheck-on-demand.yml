@@ -1,0 +1,39 @@
+name: ShellCheck (on-demand)
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    # Only run when:
+    # 1. Comment is on a PR (not a plain issue)
+    # 2. Comment contains /shellcheck
+    if: >
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/shellcheck')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/merge
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck --severity=error
+        run: |
+          echo "ShellCheck triggered by PR comment"
+          echo "Running shellcheck (error-level only)..."
+          failed=0
+          count=0
+          while IFS= read -r file; do
+            if ! shellcheck --severity=error "$file"; then
+              failed=$((failed + 1))
+            fi
+            count=$((count + 1))
+          done < <(find . -name '*.sh' -not -path './.git/*' | sort)
+          echo ""
+          echo "Checked $count files, $failed had errors"
+          [ "$failed" -eq 0 ]
