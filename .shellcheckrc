@@ -1,0 +1,12 @@
+# ShellCheck configuration for BrainStemX-Full
+# See https://www.shellcheck.net/wiki/
+
+# Sourced files can't be resolved statically (dynamic source paths)
+disable=SC1090
+disable=SC1091
+
+# Variables exported for use by other modules
+disable=SC2034
+
+# Declare and assign separately - pervasive pattern throughout codebase
+disable=SC2155
