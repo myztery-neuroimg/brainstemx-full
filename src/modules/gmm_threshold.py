@@ -34,6 +34,7 @@ Exit codes:
 
 import argparse
 import sys
+import traceback
 import warnings
 
 import nibabel as nib
@@ -174,10 +175,15 @@ def fit_gmm(zscore_path, mask_path, cfg):
             n_components=n_components, random_state=42, max_iter=200
         )
         gmm.fit(values_2d)
-    except Exception as e:
+    except ValueError as e:
         log(f"GMM fitting failed: {e}")
         return _emit_fallback(values, cfg)
 
+    return _emit_gmm_results(gmm, values, n_components, cfg)
+
+
+def _emit_gmm_results(gmm, values, n_components, cfg):
+    """Log and emit GMM results to stdout."""
     means = gmm.means_.flatten()
     stds = np.sqrt(gmm.covariances_.flatten())
     weights = gmm.weights_
@@ -256,12 +262,16 @@ def build_parser():
                     help=f"SD multiplier for 2-component model (default: {d['sd_2comp']})")
     g.add_argument("--sd-3comp", type=float, default=d["sd_3comp"],
                     help=f"SD multiplier for 3-component model (default: {d['sd_3comp']})")
-    g.add_argument("--small-weight-cutoff", type=float, default=d["small_weight_cutoff"],
-                    help=f"Weight cutoff for conservative mode (default: {d['small_weight_cutoff']})")
+    g.add_argument("--small-weight-cutoff", type=float,
+                    default=d["small_weight_cutoff"],
+                    help="Weight cutoff for conservative mode"
+                    f" (default: {d['small_weight_cutoff']})")
     g.add_argument("--small-weight-sd", type=float, default=d["small_weight_sd"],
                     help=f"SD multiplier in conservative mode (default: {d['small_weight_sd']})")
-    g.add_argument("--moderate-weight-cutoff", type=float, default=d["moderate_weight_cutoff"],
-                    help=f"Weight cutoff for moderate mode (default: {d['moderate_weight_cutoff']})")
+    g.add_argument("--moderate-weight-cutoff", type=float,
+                    default=d["moderate_weight_cutoff"],
+                    help="Weight cutoff for moderate mode"
+                    f" (default: {d['moderate_weight_cutoff']})")
     g.add_argument("--moderate-weight-sd", type=float, default=d["moderate_weight_sd"],
                     help=f"SD multiplier in moderate mode (default: {d['moderate_weight_sd']})")
     g.add_argument("--floor-percentile", type=float, default=d["floor_percentile"],
@@ -292,15 +302,15 @@ def args_to_cfg(args):
 
 
 def main():
+    """Parse arguments and run GMM threshold estimation."""
     parser = build_parser()
     args = parser.parse_args()
     cfg = args_to_cfg(args)
 
     try:
         sys.exit(fit_gmm(args.zscore_image, args.region_mask, cfg))
-    except Exception as e:
+    except (OSError, ValueError) as e:
         log(f"GMM analysis failed: {e}")
-        import traceback
         traceback.print_exc(file=sys.stderr)
         # Last resort: emit a fallback so bash always gets a threshold
         emit(
