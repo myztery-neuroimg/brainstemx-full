@@ -9,6 +9,8 @@
 # 4. Coordinate space and datatype validation
 #
 
+source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
+
 # Constants for standard MNI template
 MNI_TEMPLATE="${FSLDIR}/data/standard/MNI152_T1_1mm.nii.gz"
 MNI_BRAIN="${FSLDIR}/data/standard/MNI152_T1_1mm_brain.nii.gz"

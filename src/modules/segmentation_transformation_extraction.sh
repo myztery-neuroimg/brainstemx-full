@@ -1,5 +1,5 @@
 #!/bin/bash
-source src/modules/environment.sh
+source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 source config/default_config.sh
 
 # Function to extract full 4x4 transformation matrix from NIfTI header

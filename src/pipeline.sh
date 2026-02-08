@@ -77,7 +77,8 @@ set -e
 set -u
 set -o pipefail
 
-# Source modules
+# Source modules (unset guard to force fresh load each run)
+unset _ENVIRONMENT_LOADED 2>/dev/null || true
 source src/modules/environment.sh
 source src/modules/utils.sh     # Load utilities module with execute_ants_command
 source src/modules/fast_wrapper.sh # Load FAST wrapper with parallel processing

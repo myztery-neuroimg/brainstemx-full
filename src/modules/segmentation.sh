@@ -1,8 +1,8 @@
 #!/bin/bash
 # src/modules/segmentation.sh - Updated to use hierarchical joint fusion
 
+source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 source "config/default_config.sh"
-source "src/modules/environment.sh"
 
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/hierarchical_joint_fusion.sh"
