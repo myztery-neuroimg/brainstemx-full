@@ -19,7 +19,7 @@ packaging==26.0
     # via
     #   nibabel
     #   pytest
-pandas==3.0.0
+pandas==3.0.1
     # via brainstemx-full
 pluggy==1.6.0
     # via pytest
