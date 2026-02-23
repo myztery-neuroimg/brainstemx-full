@@ -33,7 +33,7 @@ python-dateutil==2.9.0.post0
     # via pandas
 scikit-learn==1.8.0
     # via brainstemx-full
-scipy==1.17.0
+scipy==1.17.1
     # via scikit-learn
 six==1.17.0
     # via python-dateutil
