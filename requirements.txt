@@ -6,7 +6,7 @@ iniconfig==2.3.0
     # via pytest
 joblib==1.5.3
     # via scikit-learn
-nibabel==5.3.3
+nibabel==5.4.2
     # via brainstemx-full
 numpy==2.4.2
     # via
