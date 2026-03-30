@@ -529,8 +529,8 @@ run_pipeline() {
     # If we're skipping previous steps, we need to find the bias-corrected files
     if [ $START_STAGE -eq 3 ]; then
       log_message "Looking for bias-corrected files..."
-      t1_file=$(find "$RESULTS_DIR/bias_corrected" -name "*T1*_n4.nii.gz" | head -1)
-      flair_file=$(find "$RESULTS_DIR/bias_corrected" -name "*FLAIR*_n4.nii.gz" | head -1)
+      t1_file=$(find "$RESULTS_DIR/bias_corrected" -iname "*T1*_n4.nii.gz" | head -1)
+      flair_file=$(find "$RESULTS_DIR/bias_corrected" -iname "*FLAIR*_n4.nii.gz" | head -1)
       
       if [ -z "$t1_file" ] || [ -z "$flair_file" ]; then
         log_formatted "ERROR" "Bias-corrected data is missing. Cannot skip to Step $START_STAGE."
@@ -638,8 +638,8 @@ run_pipeline() {
     fi
     
     # Find the standardized files for downstream stages
-    t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
-    flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+    t1_std=$(find "$RESULTS_DIR/standardized" -iname "*T1*_std.nii.gz" | head -1)
+    flair_std=$(find "$RESULTS_DIR/standardized" -iname "*FLAIR*_std.nii.gz" | head -1)
     
     if [ -z "$t1_std" ] || [ -z "$flair_std" ]; then
       log_formatted "ERROR" "Standardized data is missing. Cannot skip to Step $START_STAGE."
@@ -658,8 +658,8 @@ run_pipeline() {
     # If we're skipping previous steps, we need to find the standardized files
     if [ $START_STAGE -eq 4 ]; then
       log_message "Looking for standardized files..."
-      t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
-      flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+      t1_std=$(find "$RESULTS_DIR/standardized" -iname "*T1*_std.nii.gz" | head -1)
+      flair_std=$(find "$RESULTS_DIR/standardized" -iname "*FLAIR*_std.nii.gz" | head -1)
       
       if [ -z "$t1_std" ] || [ -z "$flair_std" ]; then
         log_error "Standardized data is missing. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
@@ -692,7 +692,7 @@ run_pipeline() {
       register_all_modalities "$t1_std" "$(get_module_dir "standardized")" "$reg_dir"
       
       # Find the registered FLAIR file for downstream processing
-      local flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" | head -1)
+      local flair_registered=$(find "$reg_dir" -iname "*FLAIR*Warped.nii.gz" | head -1)
       if [ -z "$flair_registered" ]; then
         log_formatted "WARNING" "No registered FLAIR found after multi-modality registration. Using original FLAIR."
         # Fall back to standard FLAIR registration
@@ -795,8 +795,12 @@ run_pipeline() {
       log_message "All registration is now performed in native subject space."
     fi
     
-    # Validate registration step
-    validate_step "Registration" "t1_to_flairWarped.nii.gz" "registered"
+    # Validate registration step using the known output path
+    if [ ! -f "$moving_registered_file" ]; then
+      log_error "Registration output missing: $moving_registered_file" $ERR_VALIDATION
+      return $ERR_VALIDATION
+    fi
+    log_formatted "SUCCESS" "Step validated: Registration"
     
     # Launch enhanced visual QA for registration (non-blocking) with better error handling
     log_message "DEBUG: About to call enhanced_launch_visual_qa from pipeline.sh"
@@ -832,8 +836,8 @@ run_pipeline() {
     log_message "Checking if standardized data exists..."
     
     # Initialize variables for other stages to use
-    t1_std=$(find "$RESULTS_DIR/standardized" -name "*T1*_std.nii.gz" | head -1)
-    flair_std=$(find "$RESULTS_DIR/standardized" -name "*FLAIR*_std.nii.gz" | head -1)
+    t1_std=$(find "$RESULTS_DIR/standardized" -iname "*T1*_std.nii.gz" | head -1)
+    flair_std=$(find "$RESULTS_DIR/standardized" -iname "*FLAIR*_std.nii.gz" | head -1)
     
     if [ -z "$t1_std" ] || [ -z "$flair_std" ]; then
       log_error "Standardized data is missing. Cannot skip to Stage $START_STAGE." $ERR_DATA_MISSING
@@ -936,13 +940,13 @@ run_pipeline() {
     
     # Check if essential files exist to continue
     local reg_dir=$(get_module_dir "registered")
-    if [ ! -d "$reg_dir" ] || [ $(find "$reg_dir" -name "*Warped.nii.gz" | wc -l) -eq 0 ]; then
+    if [ ! -d "$reg_dir" ] || [ $(find "$reg_dir" -iname "*Warped.nii.gz" | wc -l) -eq 0 ]; then
       log_error "Registration data is missing. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
     
     # Find the registered FLAIR file
-    flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" | head -1)
+    flair_registered=$(find "$reg_dir" -iname "*FLAIR*Warped.nii.gz" | head -1)
     if [ -z "$flair_registered" ]; then
       flair_registered=$(find "$reg_dir" -name "t1_to_flairWarped.nii.gz" | head -1)
     fi
@@ -969,20 +973,20 @@ run_pipeline() {
     # Find original T1 and FLAIR files (needed for space transformation)
     log_message "Looking for original T1 and FLAIR files..."
     # Look for brain-extracted files first, avoid mask files
-    local orig_t1=$(find "${RESULTS_DIR}/brain_extraction" -name "*T1*brain.nii.gz" | head -1)
-    local orig_flair=$(find "${RESULTS_DIR}/brain_extraction" -name "*FLAIR*brain.nii.gz" | head -1)
+    local orig_t1=$(find "${RESULTS_DIR}/brain_extraction" -iname "*T1*brain.nii.gz" | head -1)
+    local orig_flair=$(find "${RESULTS_DIR}/brain_extraction" -iname "*FLAIR*brain.nii.gz" | head -1)
     
     if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
       log_formatted "WARNING" "Brain-extracted files not found, trying bias_corrected directory"
       # Avoid mask files by excluding them explicitly
-      orig_t1=$(find "${RESULTS_DIR}/bias_corrected" -name "*T1*.nii.gz" ! -name "*Mask*" | head -1)
-      orig_flair=$(find "${RESULTS_DIR}/bias_corrected" -name "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
+      orig_t1=$(find "${RESULTS_DIR}/bias_corrected" -iname "*T1*.nii.gz" ! -name "*Mask*" | head -1)
+      orig_flair=$(find "${RESULTS_DIR}/bias_corrected" -iname "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
     fi
     
     if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
       log_formatted "WARNING" "Files not found in bias_corrected, trying extracted directory"
-      orig_t1=$(find "${EXTRACT_DIR}" -name "*T1*.nii.gz" ! -name "*Mask*" | head -1)
-      orig_flair=$(find "${EXTRACT_DIR}" -name "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
+      orig_t1=$(find "${EXTRACT_DIR}" -iname "*T1*.nii.gz" ! -name "*Mask*" | head -1)
+      orig_flair=$(find "${EXTRACT_DIR}" -iname "*FLAIR*.nii.gz" ! -name "*Mask*" | head -1)
     fi
     
     if [[ -z "$orig_t1" || -z "$orig_flair" ]]; then
@@ -1044,7 +1048,7 @@ run_pipeline() {
     # Use qa_verify_all_segmentations function for comprehensive validation
     
     # Find or create registered FLAIR
-    local flair_registered=$(find "$reg_dir" -name "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)
+    local flair_registered=$(find "$reg_dir" -iname "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)
     
     if [ -z "$flair_registered" ]; then
       log_formatted "ERROR" "No registered FLAIR found. Will register now."
@@ -1247,7 +1251,7 @@ run_pipeline() {
     if [ -f "${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz" ]; then
       flair_file="${RESULTS_DIR}/registered/t1_to_flairWarped.nii.gz"
     elif [ -d "${RESULTS_DIR}/standardized" ]; then
-      flair_file=$(find "${RESULTS_DIR}/standardized" -name "*FLAIR*_std.nii.gz" ! -name "*_intensity*" | head -1)
+      flair_file=$(find "${RESULTS_DIR}/standardized" -iname "*FLAIR*_std.nii.gz" ! -name "*_intensity*" | head -1)
     fi
     
     # Generate advanced visualizations if we have the required files
