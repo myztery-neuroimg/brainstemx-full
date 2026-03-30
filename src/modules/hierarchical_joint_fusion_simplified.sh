@@ -53,43 +53,62 @@ prepare_atlas_ensemble() {
 extract_talairach_labels() {
     local input_file="$1"
     local workspace="$2"
-    
-    log_message "Registering and extracting Talairach labels..."
-    
+
+    log_message "Extracting Talairach labels via MNI inverse-transform..."
+
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
     local registration_dir="${workspace}/registration"
     local results_dir="${workspace}/results"
-    
+
     mkdir -p "$registration_dir"
-    
-    # Register Talairach to subject
-    log_message "Registering Talairach atlas to subject space..."
-    local talairach_prefix="${registration_dir}/talairach_to_subject_"
-    
-    antsRegistrationSyN.sh \
-        -d 3 \
-        -f "$input_file" \
-        -m "$talairach_atlas" \
-        -o "$talairach_prefix" \
-        -t s \
-        -j 1 \
-        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
-    
-    local talairach_affine="${talairach_prefix}0GenericAffine.mat"
-    local talairach_warp="${talairach_prefix}1Warp.nii.gz"
-    
-    if [[ ! -f "$talairach_affine" ]] || [[ ! -f "$talairach_warp" ]]; then
-        log_formatted "ERROR" "Talairach registration failed"
+
+    # Register subject T1 → MNI template (intensity-to-intensity)
+    # Then use the inverse transforms to bring atlas labels into subject space.
+    # Direct atlas-to-subject registration is invalid because label images
+    # (integer values 1-50+) have no meaningful intensity correspondence with T1.
+    local mni_brain="${FSLDIR}/data/standard/MNI152_T1_${TEMPLATE_RES}_brain.nii.gz"
+    if [[ ! -f "$mni_brain" ]]; then
+        log_formatted "ERROR" "MNI template not found: $mni_brain"
         return 1
     fi
-    
-    # Warp atlas to subject space
-    log_message "Warping Talairach atlas to subject space..."
+
+    log_message "Registering subject T1 to MNI template..."
+    local reg_prefix="${registration_dir}/subject_to_mni_"
+
+    antsRegistrationSyNQuick.sh \
+        -d 3 \
+        -f "$mni_brain" \
+        -m "$input_file" \
+        -o "$reg_prefix" \
+        -t s \
+        -n "${ANTS_THREADS:-1}"
+
+    local reg_affine="${reg_prefix}0GenericAffine.mat"
+    local reg_warp="${reg_prefix}1Warp.nii.gz"
+    local reg_inverse_warp="${reg_prefix}1InverseWarp.nii.gz"
+
+    if [[ ! -f "$reg_affine" ]] || [[ ! -f "$reg_warp" ]]; then
+        log_formatted "ERROR" "Subject-to-MNI registration failed — missing transforms"
+        return 1
+    fi
+
+    if [[ ! -f "$reg_inverse_warp" ]]; then
+        log_formatted "ERROR" "Subject-to-MNI registration failed — missing inverse warp"
+        return 1
+    fi
+
+    # Apply inverse transforms: MNI → subject space (atlas labels)
+    # Transform order for inverse: [-t InverseWarp] [-t affine^-1]
+    log_message "Warping Talairach atlas to subject space via inverse transforms..."
     local talairach_subject_space="${results_dir}/talairach_in_subject_space.nii.gz"
-    antsApplyTransforms -d 3 -i "$talairach_atlas" -r "$input_file" \
+    antsApplyTransforms -d 3 \
+        -i "$talairach_atlas" \
+        -r "$input_file" \
         -o "$talairach_subject_space" \
-        -t "$talairach_warp" -t "$talairach_affine" -n NearestNeighbor
-    
+        -t "$reg_inverse_warp" \
+        -t "[$reg_affine,1]" \
+        -n NearestNeighbor
+
     if [[ ! -f "$talairach_subject_space" ]]; then
         log_formatted "ERROR" "Failed to warp atlas to subject space"
         return 1
@@ -168,10 +187,11 @@ generate_talairach_subdivisions() {
     log_message "Generating Talairach subdivision masks..."
     
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
-    local talairach_affine="${workspace}/registration/talairach_to_subject_0GenericAffine.mat"
-    local talairach_warp="${workspace}/registration/talairach_to_subject_1Warp.nii.gz"
-    local input_file=$(find "$(dirname "$output_prefix")" -maxdepth 2 -name "*_std.nii.gz" | head -1)
-    
+    local reg_affine="${workspace}/registration/subject_to_mni_0GenericAffine.mat"
+    local reg_inverse_warp="${workspace}/registration/subject_to_mni_1InverseWarp.nii.gz"
+    local input_file
+    input_file=$(find "$(dirname "$output_prefix")" -maxdepth 2 -name "*_std.nii.gz" | head -1)
+
     declare -A TALAIRACH_REGIONS=(
         ["left_medulla"]="5"
         ["right_medulla"]="6"
@@ -180,33 +200,34 @@ generate_talairach_subdivisions() {
         ["left_midbrain"]="215"
         ["right_midbrain"]="216"
     )
-    
+
     local subdivision_dir="$(dirname "$output_prefix")/talairach_subdivisions"
     mkdir -p "$subdivision_dir"
-    
+
     for region in "${!TALAIRACH_REGIONS[@]}"; do
         local index="${TALAIRACH_REGIONS[$region]}"
         local temp_region="${workspace}/temp_${region}.nii.gz"
         local region_mask="${subdivision_dir}/${region}.nii.gz"
-        
-        # Extract from atlas
+
+        # Extract from atlas in MNI space
         fslmaths "$talairach_atlas" -thr "$index" -uthr "$index" -bin "$temp_region"
-        
-        # Transform to subject space
+
+        # Apply inverse transforms: MNI → subject space
         antsApplyTransforms -d 3 -i "$temp_region" -r "$input_file" \
             -o "$region_mask" \
-            -t "$talairach_warp" -t "$talairach_affine" \
-            -n NearestNeighbor 2>/dev/null
-        
-        local voxels=$(fslstats "$region_mask" -V 2>/dev/null | awk '{print $1}')
+            -t "$reg_inverse_warp" -t "[$reg_affine,1]" \
+            -n NearestNeighbor
+
+        local voxels
+        voxels=$(fslstats "$region_mask" -V 2>/dev/null | awk '{print $1}')
         if [[ -z "$voxels" ]]; then voxels=0; fi
-        
+
         if [[ "$voxels" -gt 0 ]]; then
-            log_message "  ✓ ${region}: ${voxels} voxels"
+            log_message "  ${region}: ${voxels} voxels"
         else
             log_formatted "WARNING" "  ${region}: No voxels"
         fi
-        
+
         rm -f "$temp_region"
     done
     
