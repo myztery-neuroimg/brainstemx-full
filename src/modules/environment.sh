@@ -1209,6 +1209,17 @@ initialize_environment() {
   # Initialize error count
   error_count=0
 
+  # Probe for c3d (Convert3D) in common install locations if not already in PATH.
+  # Must happen before check_all_dependencies runs.
+  if ! command -v c3d &>/dev/null; then
+    for _c3d_dir in /opt/homebrew/bin /usr/local/bin "/Applications/ITK-SNAP.app/Contents/bin"; do
+      if [ -x "${_c3d_dir}/c3d" ]; then
+        export PATH="$PATH:${_c3d_dir}"
+        break
+      fi
+    done
+  fi
+
   # Initialize log directory now that RESULTS_DIR is set
   initialize_log_directory
 

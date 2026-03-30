@@ -49,17 +49,6 @@ log_message "USE_ANTS_SYN=$USE_ANTS_SYN"
 export CORES="$(cpuinfo  | grep -i count | sed 's/.* //')"
 export ANTS_THREADS=$CORES  # Use most but not all cores
 
-# Add Convert3D (c3d) to PATH if not already available
-if ! command -v c3d &>/dev/null; then
-  for _c3d_dir in /opt/homebrew/bin /usr/local/bin "/Applications/ITK-SNAP.app/Contents/bin"; do
-    if [ -x "${_c3d_dir}/c3d" ]; then
-      export PATH="$PATH:${_c3d_dir}"
-      log_formatted "INFO" "Added Convert3D to PATH: ${_c3d_dir}"
-      break
-    fi
-  done
-fi
-
 # Add ANTs to PATH if it exists
 if [ -d "$ANTS_BIN" ]; then
   export PATH="$PATH:${ANTS_BIN}"
