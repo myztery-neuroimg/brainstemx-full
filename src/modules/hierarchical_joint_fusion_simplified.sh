@@ -1,9 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # src/modules/hierarchical_joint_fusion_simplified.sh
 # Simplified: Direct Talairach label extraction (no joint fusion voting)
 
 source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
-source ./config/default_config.sh
 TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 
 execute_hierarchical_joint_fusion() {
@@ -108,11 +107,66 @@ extract_talairach_labels() {
         -t "$reg_inverse_warp" \
         -t "[$reg_affine,1]" \
         -n NearestNeighbor
+=======
+    mkdir -p "$registration_dir" "$results_dir"
 
-    if [[ ! -f "$talairach_subject_space" ]]; then
-        log_formatted "ERROR" "Failed to warp atlas to subject space"
+    # The Talairach atlas is in MNI space.  Registering a label image directly
+    # to subject T1 intensities is meaningless (ANTs CC/MI compares intensities).
+    # Correct approach:
+    #   1. Register subject T1 → MNI T1 template (FLIRT, 12 DOF, ~1 min)
+    #   2. Invert the transform
+    #   3. Apply inverse to atlas labels with NearestNeighbor interpolation
+    local mni_template="${FSLDIR}/data/standard/MNI152_T1_${TEMPLATE_RES}_brain.nii.gz"
+    if [[ ! -f "$mni_template" ]]; then
+        mni_template="${FSLDIR}/data/standard/MNI152_T1_1mm_brain.nii.gz"
+    fi
+    if [[ ! -f "$mni_template" ]]; then
+        log_formatted "ERROR" "MNI152 T1 brain template not found under $FSLDIR/data/standard/"
         return 1
     fi
+    log_message "MNI template: $mni_template"
+
+    local t1_to_mni_mat="${registration_dir}/t1_to_mni.mat"
+    local mni_to_t1_mat="${registration_dir}/mni_to_t1.mat"
+
+    log_message "Registering subject T1 to MNI152 (FLIRT 12-DOF)..."
+    if ! flirt -in "$input_file" \
+               -ref "$mni_template" \
+               -omat "$t1_to_mni_mat" \
+               -dof 12 \
+               -cost normmi \
+               -searchrx -30 30 -searchry -30 30 -searchrz -30 30 \
+               2>&1 | while IFS= read -r line; do log_message "  flirt: $line"; done; then
+        log_formatted "ERROR" "FLIRT T1→MNI registration failed"
+        return 1
+    fi
+    if [[ ! -f "$t1_to_mni_mat" ]]; then
+        log_formatted "ERROR" "FLIRT did not produce transform: $t1_to_mni_mat"
+        return 1
+    fi
+
+    log_message "Inverting transform (MNI→subject)..."
+    convert_xfm -omat "$mni_to_t1_mat" -inverse "$t1_to_mni_mat"
+    if [[ ! -f "$mni_to_t1_mat" ]]; then
+        log_formatted "ERROR" "convert_xfm failed to invert transform"
+        return 1
+    fi
+
+    # Warp atlas labels into subject space using the inverted linear transform
+    log_message "Applying inverse transform to Talairach atlas labels..."
+    local talairach_subject_space="${results_dir}/talairach_in_subject_space.nii.gz"
+    flirt -in "$talairach_atlas" \
+          -ref "$input_file" \
+          -applyxfm -init "$mni_to_t1_mat" \
+          -interp nearestneighbour \
+          -out "$talairach_subject_space"
+>>>>>>> 8abe4d2 (Fixes)
+
+    if [[ ! -f "$talairach_subject_space" ]]; then
+        log_formatted "ERROR" "Failed to apply inverse transform to atlas"
+        return 1
+    fi
+    log_formatted "SUCCESS" "Talairach atlas in subject space: $talairach_subject_space"
     
     # Extract individual regions
     log_message "Extracting brainstem regions from warped atlas..."
