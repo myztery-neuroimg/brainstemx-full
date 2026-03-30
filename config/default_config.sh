@@ -7,6 +7,12 @@
 # and passing it to the pipeline using the -c/--config option.
 #
 
+# Include guard — prevent re-sourcing from clobbering user arguments
+if [ -n "${_DEFAULT_CONFIG_LOADED:-}" ]; then
+  return 0 2>/dev/null || true
+fi
+_DEFAULT_CONFIG_LOADED=1
+
 # Moved from environment.sh
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
@@ -247,8 +253,7 @@ export C3D_PADDING_MM=5
 
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
-  log_formatted "ERROR" "FSLDIR not set. Template references may fail."
-  exit 1
+  log_formatted "WARNING" "FSLDIR not set. Template references may fail."
 else
   export TEMPLATE_DIR="${FSLDIR}/data/standard"
 fi
