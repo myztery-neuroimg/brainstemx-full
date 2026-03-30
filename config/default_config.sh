@@ -17,12 +17,12 @@ _DEFAULT_CONFIG_LOADED=1
 # ------------------------------------------------------------------------------
 # Key Environment Variables (Paths & Directories)
 # ------------------------------------------------------------------------------
-export DICOM_PRIMARY_PATTERN='Image"*"'   # Filename pattern for your DICOM files, might be .dcm on some scanners, Image- for Siemens
+export DICOM_PRIMARY_PATTERN='I*'   # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
 export PIPELINE_SUCCESS=true       # Track overall pipeline success
 export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
 
 # Parallelization configuration (defaults, can be overridden by config file)
-export PARALLEL_JOBS=1             # Number of parallel jobs to use
+export PARALLEL_JOBS=0             # Number of parallel jobs (0 = auto-detect)
 export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
 export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
 export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
@@ -43,7 +43,7 @@ export ANTS_BIN="${ANTS_PATH}/bin"
 # Log ANTs paths for debugging
 log_message "ANTs paths: ANTS_PATH=$ANTS_PATH, ANTS_BIN=$ANTS_BIN"
 # Flag to toggle ANTs SyN vs FLIRT linear registration
-export USE_ANTS_SYN="${USE_ANTS_SYN:-false}"
+export USE_ANTS_SYN="${USE_ANTS_SYN:-true}"
 log_message "USE_ANTS_SYN=$USE_ANTS_SYN"
 
 export CORES="$(cpuinfo  | grep -i count | sed 's/.* //')"
@@ -62,15 +62,8 @@ else
   log_formatted "ERROR" "ANTs bin directory not found: $ANTS_BIN"
 fi
 
-# ------------------------------------------------------------------------------
-# Key Environment Variables (Paths & Directories)
-# ------------------------------------------------------------------------------
 export SRC_DIR="${HOME}/DICOM"        # DICOM input directory
-# ANTs configuration
-export ANTS_BIN="${ANTS_PATH}/bin"  # Directory containing ANTs binaries
-export PATH="$PATH:${ANTS_BIN}"
 export LOG_DIR="${RESULTS_DIR}/logs"
-export RESULTS_DIR="../mri_results"
 # ------------------------------------------------------------------------------
 # Pipeline Parameters / Presets
 # ------------------------------------------------------------------------------
@@ -87,9 +80,7 @@ export JOINT_FUSION_PATCH_RADIUS="${JOINT_FUSION_PATCH_RADIUS:-2}"
 export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
 
 # ANTs registration parameters (existing)
-export REG_TRANSFORM_TYPE="${REG_TRANSFORM_TYPE:-2}"  # SyN registration
-# Quality settings (LOW, MEDIUM, HIGH)
-export MAX_CPU_INTENSIVE_JOBS=1
+# REG_TRANSFORM_TYPE is set in the "Registration & motion correction" section below
 # N4 Bias Field Correction presets: "iterations,convergence_threshold,spline_distance_mm,shrink_factor"
 # Spline distance: larger values = coarser fit = faster; smaller values = finer fit = slower
 export N4_PRESET_VERY_LOW="20x20x20,0.0001,1x1x3,2"
@@ -98,8 +89,6 @@ export N4_PRESET_MEDIUM="70x70x70,0.0001,2x2x3,2"
 export N4_PRESET_HIGH="100x100x100,0.00005,2x2x3,2"
 export N4_PRESET_ULTRA="250x250x250x3,0.00001,2x2x3,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # Use more conservative settings for FLAIR
-
-export PARALLEL_JOBS=0
 
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
@@ -185,7 +174,7 @@ export TEMPLATE_WEIGHTS="100x100x100x10"
 export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
 export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality (T1-FLAIR)
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
-export REG_PRECISION=3                 # Registration precision (higher = more accurate but slower)
+export REG_PRECISION=1                 # Registration precision
 
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
@@ -237,20 +226,6 @@ export GMM_FALLBACK_PERCENTILE=97.5     # --fallback-percentile: used when GMM f
 # It defaults to THRESHOLD_WM_SD_MULTIPLIER (above) so there is ONE
 # authoritative fallback value.  Override only if you need them to diverge.
 
-# Tissue segmentation parameters
-export ATROPOS_T1_CLASSES=3
-export ATROPOS_FLAIR_CLASSES=2
-export ATROPOS_CONVERGENCE="1,0.0"
-export ATROPOS_MRF="[0.1,1x1x1]"
-export ATROPOS_INIT_METHOD="kmeans"
-
-# Cropping & padding
-export PADDING_X=5
-export PADDING_Y=5
-export PADDING_Z=5
-export C3D_CROP_THRESHOLD=0.1
-export C3D_PADDING_MM=5
-
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
@@ -259,7 +234,6 @@ else
 fi
 # Template resolutions - these can be automatically selected based on input resolution
 export TEMPLATE_RESOLUTIONS=("1mm" "2mm")
-export DEFAULT_TEMPLATE_RES="1mm"
 
 # Templates for different resolutions
 export EXTRACTION_TEMPLATE_1MM="MNI152_T1_1mm.nii.gz"
@@ -285,8 +259,6 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # ------------------------------------------------------------------------------
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)
 # ------------------------------------------------------------------------------
-# DICOM pattern configuration for different scanner manufacturers
-export DICOM_PRIMARY_PATTERN=I*  # Primary pattern to try first (matches Siemens MAGNETOM Image-00985 format)
 
 # Space-separated list of additional patterns to try for different vendors:
 # - *.dcm: Standard DICOM extension (all vendors)
@@ -348,19 +320,12 @@ export PRESERVE_INTENSITY_IMAGES_DATATYPE=true  # Keep intensity images as FLOAT
 export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
 
 #export ORIGINAL_ACQUISITION_WEIGHT=1000
-export USE_ANTS_SYN=true
 
 # Parse out FLAIR-specific fields
 N4_ITERATIONS_FLAIR=$(echo "$N4_PRESET_FLAIR"  | cut -d',' -f1)
 N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
 N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
 N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
-
-# Registration & motion correction
-export REG_TRANSFORM_TYPE=2  # antsRegistrationSyN.sh: 2 => rigid+affine+syn
-export REG_METRIC_CROSS_MODALITY="MI"
-export REG_METRIC_SAME_MODALITY="CC"
-export REG_PRECISION=1
 
 # White matter guided registration parameters
 export WM_GUIDED_DEFAULT=true  # Default to use white matter guided registration

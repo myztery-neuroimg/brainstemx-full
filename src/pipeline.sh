@@ -301,13 +301,14 @@ run_pipeline() {
   local input_dir="$SRC_DIR"
   local output_dir="$RESULTS_DIR"
 
-  # Load parallel configuration if available
-  #load_parallel_config "config/parallel_config.sh"
-  
-  # Check for GNU parallel
-  #check_parallel
-  load_config "config/default_config.sh"
-  
+  # Config is already loaded by main() using $CONFIG_FILE (respects -c flag).
+
+  # Default reference modality for stage resumability.  Step 2 overrides this
+  # with the adaptive selection result; when skipping step 2 we fall back to T1
+  # (the most common reference space) so that stages 3-5 don't crash on an
+  # unset variable under set -u.
+  export PIPELINE_REFERENCE_MODALITY="${PIPELINE_REFERENCE_MODALITY:-T1}"
+
   # Check for import comparison mode
   if [ "${COMPARE_IMPORT_OPTIONS:-false}" = "true" ]; then
     log_formatted "INFO" "Running import strategy comparison mode"
