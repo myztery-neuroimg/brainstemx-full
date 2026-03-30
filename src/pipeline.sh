@@ -77,26 +77,30 @@ set -e
 set -u
 set -o pipefail
 
+# Resolve the directory this script lives in so module sources work regardless
+# of the caller's working directory.
+PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Source modules (unset guard to force fresh load each run)
 unset _ENVIRONMENT_LOADED 2>/dev/null || true
-source src/modules/environment.sh
-source src/modules/utils.sh     # Load utilities module with execute_ants_command
-source src/modules/fast_wrapper.sh # Load FAST wrapper with parallel processing
-source src/modules/dicom_analysis.sh
-source src/modules/dicom_cluster_mapping.sh  # Add DICOM cluster mapping module
-source src/modules/import.sh
-source src/modules/preprocess.sh
-source src/modules/brain_extraction.sh
-source src/modules/registration.sh
-source src/modules/segmentation.sh
-source src/modules/segmentation_transformation_extraction.sh
-source src/modules/segment_talairach.sh
-source src/modules/analysis.sh
-source src/modules/visualization.sh
-source src/modules/qa.sh
-source src/modules/scan_selection.sh  # Add scan selection module
-source src/modules/reference_space_selection.sh  # Add reference space selection module
-source src/modules/enhanced_registration_validation.sh  # Add enhanced registration validation
+source "${PIPELINE_DIR}/modules/environment.sh"
+source "${PIPELINE_DIR}/modules/utils.sh"
+source "${PIPELINE_DIR}/modules/fast_wrapper.sh"
+source "${PIPELINE_DIR}/modules/dicom_analysis.sh"
+source "${PIPELINE_DIR}/modules/dicom_cluster_mapping.sh"
+source "${PIPELINE_DIR}/modules/import.sh"
+source "${PIPELINE_DIR}/modules/preprocess.sh"
+source "${PIPELINE_DIR}/modules/brain_extraction.sh"
+source "${PIPELINE_DIR}/modules/registration.sh"
+source "${PIPELINE_DIR}/modules/segmentation.sh"
+source "${PIPELINE_DIR}/modules/segmentation_transformation_extraction.sh"
+source "${PIPELINE_DIR}/modules/segment_talairach.sh"
+source "${PIPELINE_DIR}/modules/analysis.sh"
+source "${PIPELINE_DIR}/modules/visualization.sh"
+source "${PIPELINE_DIR}/modules/qa.sh"
+source "${PIPELINE_DIR}/modules/scan_selection.sh"
+source "${PIPELINE_DIR}/modules/reference_space_selection.sh"
+source "${PIPELINE_DIR}/modules/enhanced_registration_validation.sh"
 #source config/default_config.sh
 
 # Debugging: Check if functions are available after sourcing in pipeline.sh
@@ -168,7 +172,7 @@ get_stage_number() {
 # Parse command line arguments
 parse_arguments() {
   # Default values
-  CONFIG_FILE="config/default_config.sh"
+  CONFIG_FILE="${PIPELINE_DIR}/../config/default_config.sh"
   SRC_DIR="../DICOM"
   export RESULTS_DIR="../mri_results"
   SUBJECT_ID=""
@@ -312,7 +316,7 @@ run_pipeline() {
   # Check for import comparison mode
   if [ "${COMPARE_IMPORT_OPTIONS:-false}" = "true" ]; then
     log_formatted "INFO" "Running import strategy comparison mode"
-    source src/modules/import_comparison.sh
+    source "${PIPELINE_DIR}/modules/import_comparison.sh"
     compare_import_strategies "$input_dir"
     # Function will exit pipeline after completion
   fi
