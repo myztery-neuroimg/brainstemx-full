@@ -1,4 +1,4 @@
- #!/usr/bin/env bash
+#!/usr/bin/env bash
 #
 # import.sh - Data import functions for the brain MRI processing pipeline
 #
@@ -574,20 +574,20 @@ import_validate_nifti_files() {
   
   # Find all NIfTI files
   local nifti_files=($(find "$input_dir" -name "*.nii.gz" -type f))
-  if [ $nifti_files[@] -eq 0 ]; then
+  if [ ${#nifti_files[@]} -eq 0 ]; then
     log_formatted "ERROR" "No NIfTI files found in $input_dir"
     return 1
   fi
-  
-  log_message "Found $nifti_files[@] NIfTI files to process"
-  
+
+  log_message "Found ${#nifti_files[@]} NIfTI files to process"
+
   # Process each file
-  for nifti_file in "$nifti_files[@]"; do
+  for nifti_file in "${nifti_files[@]}"; do
     local basename=$(basename "$nifti_file" .nii.gz)
     log_message "Processing $basename"
-    
+
     # Call the processing function with the file and additional arguments
-    "$process_func" "$nifti_file" "$process_args[@]"
+    "$process_func" "$nifti_file" "${process_args[@]}"
     
     # Check if processing was successful
     if [ $? -ne 0 ]; then
