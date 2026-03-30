@@ -332,8 +332,12 @@ run_pipeline() {
     qa_validate_dicom_files "$input_dir"
     import_extract_siemens_metadata "$input_dir"
     qa_validate_nifti_files "$EXTRACT_DIR"
-    # Validate import step
-    validate_step "Import data" "*.nii.gz" "extracted"
+    # Confirm EXTRACT_DIR exists and is non-empty (NIfTI files already validated by qa_validate_nifti_files above)
+    if [ ! -d "$EXTRACT_DIR" ] || [ "$(find "$EXTRACT_DIR" -name "*.nii.gz" | wc -l)" -eq 0 ]; then
+      log_error "Import produced no NIfTI files in $EXTRACT_DIR" $ERR_VALIDATION
+      return $ERR_VALIDATION
+    fi
+    log_formatted "SUCCESS" "Step validated: Import data"
   else
     log_message "Skipping Step 1 (Import and convert data) as requested"
     log_message "Checking if import data exists..."
