@@ -1,205 +1,306 @@
-# Critical Project Review: BrainStemX-Full
+# Critical Project Review: BrainStemX-Full (v2)
 
-**Date:** 2026-02-08
-**Scope:** 95 files, ~35,000 lines across bash (22k), Python (733), tests (6,700), docs (4,500), config (900). 154 commits over 8 months. Single primary developer.
-
----
-
-## VERDICT: Ambitious and knowledgeable, but architecturally fragile
-
-This is clearly the work of someone who understands neuroimaging deeply. The pipeline design — 8 resumable stages, multi-modal MRI integration, GMM-based anomaly detection — is genuinely sophisticated. The documentation is above average for a research pipeline. The Python code (gmm_threshold.py) is the best-written part of the project.
-
-But the bash codebase has accumulated serious structural debt. The problems aren't surface-level — they're architectural. The most critical issue isn't any single bug but rather a **configuration system that actively sabotages itself**.
+**Date:** 2026-03-30
+**Codebase:** 84 files, ~35,000 lines (28k bash, 562 Python, 6.7k tests, 4.6k docs)
+**Commits:** 57 over ~9 months, single primary developer + dependabot
 
 ---
 
-## 1. THE CATASTROPHIC ARCHITECTURE PROBLEM
+## VERDICT: Partially stabilized since last review, but the core architectural problem persists
 
-**Severity: Critical. This is the #1 issue in the project.**
+The commit `ca048b7` ("Add require_env.sh guard, get_file_size helper, fix module re-sourcing") and `9d34e44` ("Fix 5 pipeline bugs") show clear intent to address the issues from the prior review. Include guards were added to `environment.sh` and `import.sh`. The `require_env.sh` guard pattern is a smart lightweight solution. `validate_step()` is no longer dead code. The typo "MEIDUM" was fixed to "MEDIUM".
 
-Already documented in `docs/BUGS_FOUND.md` Issue #4, which tells me the author knows about it but hasn't fixed it. **This should have been fixed before anything else was added.**
+**But the biggest problem was only half-fixed.** The re-sourcing of `default_config.sh` — the catastrophic config-clobbering issue — remains entirely unresolved. And a new regression was introduced: a function was removed from `import.sh` but its call site in `pipeline.sh` was not, creating a guaranteed runtime crash.
 
-`default_config.sh` is sourced 3-4 times per run. `environment.sh` is sourced 5-6 times. Neither has include guards. Every re-source:
+---
 
-- **Clobbers user-supplied arguments** — `RESULTS_DIR`, `QUALITY_PRESET`, `SRC_DIR` reset to hardcoded defaults
-- **Re-runs `cpuinfo`** 3-4 times
-- **Can kill the entire pipeline** — line 249-251 has `exit 1` if `FSLDIR` is unset, which terminates the *caller's* shell
-- **Replaces `parse_arguments()`** — `environment.sh` defines a simpler version that overwrites `pipeline.sh`'s full version
+## 1. THE CONFIG RE-SOURCING PROBLEM: STILL PRESENT
 
-The sourcing chain:
+**Status: UNFIXED. Still the #1 issue.**
+
+`default_config.sh` has **no include guard**. It is still sourced multiple times per pipeline run:
+
 ```
-pipeline.sh → environment.sh (1st)
-  → segmentation.sh → default_config.sh (1st!) → environment.sh (2nd)
-  → hierarchical_joint_fusion.sh → default_config.sh (2nd!) → environment.sh (3rd)
-  → segmentation_transformation_extraction.sh → environment.sh (4th) → default_config.sh (3rd!)
-  → load_config in run_pipeline → default_config.sh (4th!)
+pipeline.sh line 309:  load_config "config/default_config.sh"     ← in run_pipeline()
+pipeline.sh line 1465: source "$CONFIG_FILE"                      ← in main(), CONFIG_FILE defaults to same file
+segmentation.sh line 5: source "config/default_config.sh"         ← at module load time
+hierarchical_joint_fusion.sh line 6: source ./config/default_config.sh  ← at module load time
+hierarchical_joint_fusion_simplified.sh line 6: source ./config/default_config.sh
+segmentation_transformation_extraction.sh line 3: source config/default_config.sh
 ```
 
-This means if a user runs `pipeline.sh -o /my/output -q HIGH`, their values get silently overwritten to `../mri_results` and whatever `cpuinfo` decides. **The CLI arguments are lies.** The pipeline does not respect them reliably.
+**That's 6 source statements** for the same file. `environment.sh` now has an include guard (good), but `default_config.sh` does not. Every re-source:
 
-### Why this is especially damaging
+- Runs `cpuinfo | grep` (line 43) — external process, each time
+- Resets `QUALITY_PRESET` based on CPU count (lines 109-136) — clobbers user's `-q` flag
+- Resets `RESULTS_DIR` to `../mri_results` (line 67) — clobbers user's `-o` flag
+- Resets `SRC_DIR` to `${HOME}/DICOM` (line 62) — clobbers user's `-i` flag
+- Appends to `PATH` (lines 48, 65) — duplicates accumulate
+- Calls `log_message` / `log_formatted` at top-level scope (lines 38, 41, 49) — crashes if sourced before `environment.sh`
+- Can **terminate the pipeline** with `exit 1` if `FSLDIR` is unset (line 251)
 
-- `default_config.sh` line 309 in pipeline.sh hardcodes `load_config "config/default_config.sh"` even if the user passed `-c custom_config.sh`
-- `DICOM_PRIMARY_PATTERN` is defined twice in the same file with different values (line 14 and line 284)
-- The config file calls `log_message` and `log_formatted` at top-level scope — if sourced before `environment.sh`, these functions don't exist yet
+### The clobbering timeline (unchanged from prior review)
 
----
+```
+1. parse_arguments() sets RESULTS_DIR="/custom/output", QUALITY_PRESET="HIGH"
+2. Module sourcing begins:
+   - segmentation.sh sources default_config.sh → RESULTS_DIR reset to "../mri_results"
+   - hierarchical_joint_fusion.sh sources it again → same clobbering
+3. run_pipeline() calls load_config "config/default_config.sh" → clobbered again
+4. main() sources $CONFIG_FILE → clobbered a fourth time
+```
 
-## 2. FUNCTION SIZE: UNMAINTAINABLE
+**User-supplied CLI arguments are silently discarded.** The `-o` and `-q` flags don't work reliably.
 
-Several functions are so long they're untestable:
+### The double config load in pipeline execution
 
-| Function | File | Lines | Problem |
-|----------|------|-------|---------|
-| `register_to_reference()` | registration.sh | **594** | Handles registration, fallbacks, emergency recovery, visualization — all in one |
-| `detect_hyperintensities()` | analysis.sh | **368+** | Brain extraction, tissue segmentation, atlas analysis, cluster filtering |
-| `import_convert_dicom_to_nifti()` | import.sh | **331** | Conversion, fallbacks, emergency recovery, validation |
-| `generate_qc_visualizations()` | visualization.sh | **277** | Should be 5-6 smaller functions |
-| `execute_ants_command()` | environment.sh | **264** | Output filtering, progress tracking, verbosity, error handling all mixed |
-
-A 594-line bash function is not a function — it's a program. You can't unit test it, you can't reason about it, and any change risks breaking something in an unrelated section. `register_to_reference()` alone has 4 nested emergency fallback methods with names like `method1_`, `method2_` — this is a clear sign of accretive debugging rather than designed error handling.
-
----
-
-## 3. CONFIGURATION FILE IS A MESS
-
-`default_config.sh` (405 lines) has **22+ variables exported multiple times with conflicting values**:
+`main()` loads config at line 1463-1465. Then `run_pipeline()` loads it *again* at line 309 with a hardcoded path that ignores the user's `-c` flag:
 
 ```bash
-# Line 19:  export PARALLEL_JOBS=1
-# Line 96:  export PARALLEL_JOBS=0       ← wins (last definition)
-
-# Line 84:  export REG_TRANSFORM_TYPE="${REG_TRANSFORM_TYPE:-2}"
-# Line 179: export REG_TRANSFORM_TYPE=2  ← unconditional, clobbers any user override
-
-# Line 236: export ATROPOS_FLAIR_CLASSES=2
-# Line 394: export ATROPOS_FLAIR_CLASSES=4   ← which is it?
-
-# Line 237: export ATROPOS_CONVERGENCE="1,0.0"
-# Line 395: export ATROPOS_CONVERGENCE="5,0.0"  ← which is it?
+# pipeline.sh line 309 — hardcoded, ignores CONFIG_FILE variable
+load_config "config/default_config.sh"
 ```
 
-The N4 FLAIR parameters are parsed twice (lines 164-167 and 349-352). The config file has **side effects at source time**: `mkdir -p`, `cpuinfo` calls, `echo` to stderr, `PATH` modification, and a fatal `exit 1`. A configuration file should declare values, not execute logic.
+Even if the user passed `-c my_custom_config.sh`, `run_pipeline()` still loads the default config *after* `main()` loaded the custom one, overwriting it.
+
+### The 22+ duplicate variable definitions (unchanged)
+
+Within `default_config.sh` itself, variables are still defined multiple times with conflicting values:
+
+| Variable | Line A | Value A | Line B | Value B | Winner |
+|----------|--------|---------|--------|---------|--------|
+| `PARALLEL_JOBS` | 19 | `1` | 96 | `0` | `0` |
+| `REG_TRANSFORM_TYPE` | 84 | `${:-2}` | 179 | `2` | `2` (unconditional) |
+| `REG_PRECISION` | 182 | `3` | 358 | `1` | `1` |
+| `ATROPOS_FLAIR_CLASSES` | 236 | `2` | 394 | `4` | `4` |
+| `ATROPOS_CONVERGENCE` | 237 | `"1,0.0"` | 395 | `"5,0.0"` | `"5,0.0"` |
+| `DICOM_PRIMARY_PATTERN` | 14 | `'Image"*"'` | 284 | `I*` (unquoted!) | `I*` (glob-expanded at source time) |
+| `ANTS_BIN` | 36 | `${ANTS_PATH}/bin` | 64 | `${ANTS_PATH}/bin` | Same (redundant) |
+| `N4_*_FLAIR` | 164-167 | parsed | 349-352 | parsed again | Redundant |
+| `PADDING_X/Y/Z` | 242-244 | `5` | 400-402 | `5` | Same (redundant) |
+
+Line 284's `DICOM_PRIMARY_PATTERN=I*` is **unquoted** — the glob `I*` expands against the current working directory at source time, producing unpredictable values.
 
 ---
 
-## 4. TESTING: FALSE CONFIDENCE
+## 2. NEW REGRESSION: MISSING FUNCTION CRASH
 
-### What's good
-- The custom bash assertion framework (`test_helpers.sh`, 570 lines) is well-designed
-- `test_gmm_threshold.py` (26 tests) is **excellent** — uses real NIfTI files, tests actual algorithm behavior, good edge case coverage
-- CI pipeline exists and runs syntax checks + ShellCheck + unit tests + smoke test
+**Severity: CRITICAL — pipeline will crash at runtime**
 
-### What's bad
+`pipeline.sh` line 334 calls `import_deduplicate_identical_files "$EXTRACT_DIR"`, but this function **no longer exists anywhere in the codebase**. It was apparently removed from `import.sh` (commit `60cf673` "Many fixes") but its call site was not removed.
 
-**The bash "integration" tests are unit tests in disguise.** They mock every external tool:
-- Mock `dcm2niix` (doesn't convert anything)
-- Mock `fslinfo` (returns canned output)
-- Mock `fslmaths` (just touches files)
-- Mock `dcmdump` (echoes input)
+Under `set -e` (line 76), calling a nonexistent function will immediately terminate the pipeline during Stage 1 (Import). **This is a guaranteed crash for every pipeline run.**
 
-This means tests pass even if the real tools change their output format or integration logic is broken. Example:
+Similarly, `test_import_unit.sh` lines 58, 65-91 still test this nonexistent function — those tests will also crash.
+
+---
+
+## 3. `main $@` — STILL NOT QUOTED (LINE 1493)
+
+**Status: UNFIXED from prior review.**
 
 ```bash
-# test_import_unit.sh — tests that a disabled function returns 0
-import_deduplicate_identical_files "$TEMP_TEST_DIR/dedup_test" 2>/dev/null
-ec=$?
-assert_exit_code 0 "$ec" "import_deduplicate_identical_files returns 0"
+main $@   # Line 1493
 ```
 
-This test passes because the function is a no-op (`return 0` on line 1). It's testing that `return 0` returns 0.
-
-**162 instances of `2>/dev/null`** in test files. While some are legitimate, this pattern risks hiding real errors behind passing tests.
-
-**Most bash tests verify file/directory existence, not functional behavior.** Checking that `mkdir -p` created a directory doesn't tell you the pipeline works.
-
-### ShellCheck is advisory-only (`continue-on-error: true`)
-
-And .shellcheckrc disables SC2155 (declare and assign separately) — a real bug source — and SC2034 (unused variables). These are meaningful warnings being suppressed project-wide rather than addressed.
+Must be `main "$@"`. Without quotes, arguments containing spaces or glob characters will be split/expanded. This is the entry point of the entire pipeline.
 
 ---
 
-## 5. DEAD CODE AND DISABLED FUNCTIONS
+## 4. WHAT WAS ACTUALLY FIXED (credit where due)
 
-Multiple functions have `return 0` as their first line, making them no-ops that still get called:
+| Prior Issue | Status | How Fixed |
+|------------|--------|-----------|
+| `environment.sh` re-sourcing | **FIXED** | Include guard added (line 13): `if [ -n "${_ENVIRONMENT_LOADED:-}" ]; then return 0` |
+| `require_env.sh` guard pattern | **NEW, GOOD** | Lightweight guard for module dependencies |
+| `validate_step()` dead code (return 0) | **FIXED** | Now calls `validate_module_execution` properly (line 288) |
+| `QUALITY_PRESET` typo "MEIDUM" | **FIXED** | Corrected to "MEDIUM" (line 175) |
+| `stat` portability bug | **FIXED** | `get_file_size()` helper added in environment.sh |
+| Module re-sourcing of environment.sh | **PARTIALLY FIXED** | Modules use `require_env.sh` instead of direct sourcing |
+| Python dependencies | **IMPROVED** | Trimmed from 73 to 7 direct deps |
+| CI/CD pipeline | **ADDED** | GitHub Actions with syntax check, ShellCheck, unit tests, smoke test |
 
-- `validate_step()` in pipeline.sh — **all step validation between stages is disabled**
-- `import_validate_dicom_files_new_2()` in import.sh — DICOM validation disabled
-- `import_deduplicate_identical_files()` in import.sh — deduplication disabled
-
-These are still called, exported, and tested (tautologically). This is worse than removing them — it creates the *appearance* of validation while doing nothing.
-
----
-
-## 6. SHELL SCRIPTING ISSUES
-
-**Line 1493 of pipeline.sh: `main $@`** — should be `main "$@"`. This causes word splitting on arguments containing spaces. It's the entry point of the entire pipeline.
-
-**Unquoted command substitutions** throughout: `$(basename $mask_file)` at line 890, among others.
-
-**`eval "$cmd"` in import.sh line 316** — constructing commands as strings and eval'ing them. This is the bash equivalent of SQL injection risk.
-
-**Named pipes in environment.sh** created with `mktemp -u` but no guaranteed cleanup on error — file handle leaks.
-
-**Variables declared with `local` inside conditional branches** (pipeline.sh lines 386-398) — `t1_file` and `flair_file` are only defined in one branch of an if/elif, then used unconditionally after.
+The `require_env.sh` pattern is genuinely well-designed — it's a fast no-op when the environment is loaded, and fails with clear instructions when it isn't. This should be the model for `default_config.sh` too.
 
 ---
 
-## 7. HARDCODED PATHS AND MAGIC NUMBERS
+## 5. FUNCTION SIZE: STILL UNMAINTAINABLE
 
-The pipeline defaults to relative paths `../DICOM` and `../mri_results` — fragile and assumes a specific working directory. Worse, the config file hardcodes `SRC_DIR="${HOME}/DICOM"` at line 62, which *differs* from the pipeline.sh default of `../DICOM`.
+No refactoring of mega-functions has occurred:
 
-Hardcoded scan patterns:
+| Function | File | Lines | Status |
+|----------|------|-------|--------|
+| `run_pipeline()` | pipeline.sh | **~988** | Contains all 8 stages inline. Should be 8 functions. |
+| `register_to_reference()` | registration.sh | **~592** | 4 emergency fallback methods, 5+ nesting levels |
+| `detect_hyperintensities()` | analysis.sh | **~368** | Brain extraction + tissue segmentation + atlas analysis |
+| `import_convert_dicom_to_nifti()` | import.sh | **~332** | Conversion + 3 fallback strategies |
+| `calculate_extended_registration_metrics()` | qa.sh | **~333** | Metrics calculation sprawl |
+| `generate_qc_visualizations()` | visualization.sh | **~277** | Should be 5+ functions |
+| `execute_ants_command()` | environment.sh | **~263** | Output filtering + progress + verbosity mixed |
+
+`run_pipeline()` at 988 lines is essentially the entire application in a single function. Each pipeline stage is a nested block with its own variable setup, file discovery, error handling, and validation. Breaking this into `run_stage_import()`, `run_stage_preprocess()`, etc. would be the single most impactful refactoring.
+
+---
+
+## 6. INCLUDE GUARDS: INCONSISTENT
+
+| Module | Guard | Notes |
+|--------|-------|-------|
+| `environment.sh` | YES | `_ENVIRONMENT_LOADED` check |
+| `import.sh` | YES | `IMPORT_LOADED` flag |
+| `require_env.sh` | YES | Checks `_ENVIRONMENT_LOADED` |
+| `registration.sh` | **NO** | 1,645 lines, no guard |
+| `analysis.sh` | **NO** | 2,888 lines, no guard |
+| `segmentation.sh` | **NO** | 531 lines, no guard |
+| `visualization.sh` | **NO** | 728 lines, no guard |
+| `qa.sh` | **NO** | 1,953 lines, no guard |
+| `brain_extraction.sh` | **NO** | 876 lines, no guard |
+| `preprocess.sh` | **NO** | 466 lines, no guard |
+| `default_config.sh` | **NO** | Most critical missing guard |
+
+Only 3 of 35+ modules have include guards. The most damaging missing guard is `default_config.sh`.
+
+---
+
+## 7. TESTING: IMPROVED BUT STILL HOLLOW
+
+### What improved
+- CI pipeline now runs syntax checks, ShellCheck, unit tests, and smoke tests
+- Smoke test verifies module loading and graceful failure
+- Test framework (`test_helpers.sh`) is well-designed
+
+### What's still wrong
+
+**7a. Tests verify the wrong things**
+
+Tests still primarily check that functions exist and directories were created — not that processing produces correct results:
+
 ```bash
-export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz" #hack
-export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz" #hack
+# test_environment_unit.sh — tests that mkdir works
+assert_dir_exists "$RESULTS_DIR/metadata"   "metadata dir created"
+assert_dir_exists "$RESULTS_DIR/combined"   "combined dir created"
 ```
 
-The `#hack` comments are honest. These are single-patient-specific filenames in a config file meant to be general.
+**7b. "Integration" tests are 100% mocked**
 
-Magic numbers scattered throughout without named constants: `0.15` for thresholds, `0.9` for WM probability, `5` for cluster parameters, `2.0` for anisotropy ratio.
+Every external tool is mocked: `dcm2niix`, `fslinfo`, `fslmaths`, `fslstats`, `dcmdump`. The mocks create fake files and return hardcoded output. This means:
+- Tests pass even if real tools change their output format
+- Tests pass even if command-line arguments are wrong
+- No validation that the pipeline actually processes neuroimaging data
+
+**7c. Tautological test for removed function**
+
+`test_import_unit.sh` lines 63-91 still test `import_deduplicate_identical_files`, which no longer exists. This test will crash (or was it also removed? — checking earlier confirmed it still exists in the test file).
+
+**7d. Error suppression: 162 instances of `2>/dev/null`**
+
+Unchanged from prior review. Real errors are systematically hidden during testing.
+
+**7e. Test stubs diverge from real code**
+
+`test_pipeline_control_unit.sh` copies functions from `pipeline.sh` into the test file for "isolated testing" (lines 39-40). If `pipeline.sh` changes, the test stubs become stale. This already happened — the file tests a `validate_step()` that just returns 0, but the real one was fixed.
+
+**7f. ShellCheck still advisory-only** (`continue-on-error: true`) with SC2155 globally disabled
+
+### The one genuinely good test file
+
+`test_gmm_threshold.py` remains excellent: 27 tests using real NIfTI files, real GMM fitting, real subprocess invocation. This is the model for what the bash tests should aspire to.
 
 ---
 
-## 8. WHAT'S ACTUALLY GOOD
+## 8. EVAL USAGE: SECURITY AND RELIABILITY RISK
 
-Credit where due:
+`eval` is used in at least 12 places across the codebase:
 
-- **GMM threshold estimation** (`gmm_threshold.py`) — clean, well-documented, proper error handling with three distinct exit codes, robust fallback mechanisms. This is the gold standard for the project.
-- **BUGS_FOUND.md** — self-documenting known issues with severity, location, and suggested fixes. Shows engineering maturity.
-- **Pipeline resumability** — the 8-stage checkpoint design is sound in concept.
-- **CI/CD** — having any CI at all for a bash research pipeline is above average.
-- **GMM parameter documentation** in config — the comments explaining *why* values were chosen (with honesty about what's empirical vs literature-backed) are excellent.
-- **Test framework design** — the assertion library is well-built even if the tests using it are too shallow.
-- **Comprehensive documentation** — 13 doc files covering technical overview, improvement plans, bug tracking.
-- **Graceful degradation philosophy** — the fallback-on-failure approach is appropriate for neuroimaging where tools are unreliable.
+| File | Lines | Context |
+|------|-------|---------|
+| `environment.sh` | 90, 1174, 1187, 1198 | Command execution, find command construction |
+| `import.sh` | 316, 457, 646 | dcm2niix command execution |
+| `analysis.sh` | 2275, 2469, 2827 | Visualization command execution |
+| `qa.sh` | 518, 704 | Metrics command execution |
+| `preprocess.sh` | 283 | Python script output execution |
+
+Most of these construct commands as strings and then `eval` them. The safer pattern is to use bash arrays:
+
+```bash
+# Dangerous (current):
+cmd="dcm2niix -z y -f %p_%s -o \"$output_dir\" \"$input_dir\""
+eval "$cmd"
+
+# Safe (recommended):
+cmd=(dcm2niix -z y -f %p_%s -o "$output_dir" "$input_dir")
+"${cmd[@]}"
+```
 
 ---
 
-## 9. PRIORITIZED RECOMMENDATIONS
+## 9. VARIABLE SCOPING IN STAGE RESUMABILITY
 
-### Must fix (blocks reliability)
-1. **Add include guards** to `environment.sh` and `default_config.sh` — this is a one-line fix that prevents the catastrophic re-sourcing
-2. **Remove side effects from `default_config.sh`** — no `exit`, no `mkdir`, no `cpuinfo`, no `echo` at file scope
-3. **Fix `main $@` → `main "$@"`** in pipeline.sh line 1493
-4. **Eliminate duplicate variable definitions** in config — choose one value per variable
-5. **Fix or remove dead functions** — `validate_step()`, `import_validate_dicom_files_new_2()`, `import_deduplicate_identical_files()`
+When resuming from later stages (e.g., `--start-stage 4`), critical variables are uninitialized:
 
-### Should fix (blocks maintainability)
-6. **Break up mega-functions** — `register_to_reference` (594 lines) needs to become 5-6 functions
-7. **Remove duplicate `parse_arguments()`** from environment.sh
-8. **Make ShellCheck non-advisory** in CI and address SC2155 warnings properly
-9. **Add real integration tests** that use actual tools (or at minimum, mark mocked tests as "unit" not "integration")
-10. **Add type hints to Python code** — you require 3.12.8, use its features
+| Variable | Set in Stage | Used in Stage | What happens on resume |
+|----------|-------------|---------------|----------------------|
+| `t1_file` | 2 (line 387) | 3 (line 540) | **Undefined** |
+| `flair_file` | 2 (line 389) | 3 (line 540) | **Undefined** |
+| `t1_brain` | 3 (line 553) | 3-4 (lines 561, 620) | **Undefined** if starting at 4+ |
+| `flair_brain` | 3 (line 554) | 3-4 | **Undefined** if starting at 4+ |
+| `t1_std` | 3 (line 607) | 4-7 | **Undefined** if starting at 4+ |
+| `flair_std` | 3 (line 608) | 4-7 | **Undefined** if starting at 4+ |
+| `PIPELINE_REFERENCE_MODALITY` | 2 (line 401) | 4+ (line 706) | **Undefined** |
+| `PIPELINE_REFERENCE_FILE` | 2 (line 402) | 4+ | **Undefined** |
+| `flair_registered` | 4 (line 744) | 6-7 | **Undefined** if starting at 5+ |
 
-### Nice to have
-11. Replace `eval` command construction with bash arrays
-12. Add upper bounds to Python dependency versions
-13. Consolidate the three `dicom2_*.sh` config files
-14. Remove `hierarchical_joint_fusion.sh` (the non-simplified duplicate)
+The skip-stage blocks (e.g., lines 505-516, 622-645) attempt to find files with `find` commands, but they don't restore all required variables. **Resuming from stage 4+ will likely crash with undefined variable errors** under `set -u`.
+
+---
+
+## 10. WHAT'S GENUINELY GOOD
+
+- **`require_env.sh`** — elegant lightweight guard pattern, well-documented
+- **`gmm_threshold.py`** — clean, well-tested, proper error codes, good fallback design
+- **GMM parameter documentation** — honest about what's empirical vs. literature-backed
+- **`BUGS_FOUND.md`** — tracking known issues with severity and suggested fixes
+- **Pipeline resumability concept** — the 8-stage design is sound even if the implementation has gaps
+- **CI/CD pipeline** — syntax validation, ShellCheck, unit tests, smoke tests
+- **Dependency trimming** — 73 → 7 direct Python deps
+- **Graceful degradation philosophy** — fallback-on-failure appropriate for neuroimaging
+
+---
+
+## 11. PRIORITIZED RECOMMENDATIONS
+
+### P0: Fix before next run (will crash)
+1. **Remove `import_deduplicate_identical_files` call** from `pipeline.sh:334` — function no longer exists, pipeline will crash
+2. **Add include guard to `default_config.sh`** — one line fix that prevents the catastrophic re-sourcing:
+   ```bash
+   [[ -n "${_DEFAULT_CONFIG_LOADED:-}" ]] && return 0
+   _DEFAULT_CONFIG_LOADED=1
+   ```
+3. **Fix `main $@` → `main "$@"`** at `pipeline.sh:1493`
+
+### P1: Fix for reliability
+4. **Remove side effects from `default_config.sh`** — no `exit 1`, no `mkdir`, no `cpuinfo`, no `echo` at file scope. Move these to an `initialize_config()` function.
+5. **Eliminate duplicate variable definitions** — each variable defined exactly once
+6. **Fix `load_config` in `run_pipeline()`** to use `$CONFIG_FILE` instead of hardcoded path (line 309)
+7. **Fix stage resumability** — add variable discovery for all stages when skipping earlier ones
+
+### P2: Fix for maintainability
+8. **Break `run_pipeline()` into stage functions** — 988 lines → 8 functions of ~120 lines each
+9. **Break `register_to_reference()`** — 592 lines → 5-6 functions
+10. **Replace `eval` with bash arrays** — 12 call sites
+11. **Add include guards to remaining 32 modules**
+12. **Make ShellCheck blocking in CI** and address SC2155
+
+### P3: Fix for confidence
+13. **Add real integration tests** (or clearly label mocked tests as "unit")
+14. **Remove error suppression** from tests where possible
+15. **Add type hints to Python code**
+16. **Sync test stubs with real functions** (or test real functions directly)
 
 ---
 
 ## BOTTOM LINE
 
-The domain knowledge here is strong. The pipeline concept is sound. The Python code is good. But the bash architecture has accumulated structural debt that undermines everything else — user arguments get silently clobbered, validation functions are disabled, and the config system fights itself. The project needs a focused stabilization effort before adding more features. Fix the re-sourcing problem first; everything else flows from there.
+The prior review's #1 issue — config re-sourcing causing argument clobbering — remains unfixed. A new regression (missing function crash) was introduced. The `environment.sh` include guard and `require_env.sh` pattern show the right approach, but the same treatment hasn't been applied to the most damaging file (`default_config.sh`). The 988-line `run_pipeline()` function and 592-line `register_to_reference()` remain untouched.
+
+The project has good bones: the pipeline concept, the GMM analysis, the documentation culture, and the CI setup are all above average for a research pipeline. But **the config system is still actively sabotaging the CLI interface**, and now there's a guaranteed crash from a missing function. Fix items P0.1-P0.3 before the next pipeline run.
