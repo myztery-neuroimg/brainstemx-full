@@ -1677,7 +1677,7 @@ run_comprehensive_analysis() {
     for pattern in "${mask_patterns[@]}"; do
         while IFS= read -r -d '' file; do
             # Skip temporary files, intensity files, and duplicates
-            if [[ ! "$file" =~ (temp|tmp|_temp|_tmp|_intensity|_flair_intensity|_t1_intensity) ]] && [[ ! " ${masks[@]} " =~ " ${file} " ]]; then
+            if [[ ! "$file" =~ (temp|tmp|_temp|_tmp|_intensity|_flair_intensity|_t1_intensity) ]] && [[ ! " ${masks[*]} " =~ " ${file} " ]]; then
                 masks+=("$file")
             fi
         done < <(find "$segmentation_dir" -name "$pattern" -type f -print0 2>/dev/null)

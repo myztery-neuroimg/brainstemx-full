@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 date; pwd; df -h; free -m
 cat /proc/cpuinfo | grep "model name"
 wget "https://master.dl.sourceforge.net/project/itk-snap/itk-snap/4.4.0-alpha3/itksnap-4.4.0-alpha3-20250612-Linux-x86_64.tar.gz"
