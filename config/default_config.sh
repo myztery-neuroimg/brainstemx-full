@@ -284,9 +284,9 @@ export RESAMPLE_TO_ISOTROPIC=false
 #   registration_optimized - Prioritize scans with aspect ratios similar to reference
 #   matched_dimensions - Prioritize scans with exact dimensions matching reference
 #   interactive - Show available scans and prompt for manual selection
-export SCAN_SELECTION_MODE="interactive"
-export T1_SELECTION_MODE="interactive"    # For T1, always prefer matched_dimensions
-export FLAIR_SELECTION_MODE="interactive"  # For FLAIR generally prefer ORIGINAL  as we want to eliminate noise from the post-processing of the scanner software for brainstem lesions. Howeverthat post-processing does add valuable resolution, so try different options
+export SCAN_SELECTION_MODE="original"
+export T1_SELECTION_MODE="original"       # Prefer ORIGINAL acquisitions over DERIVED
+export FLAIR_SELECTION_MODE="original"    # Prefer ORIGINAL acquisitions over DERIVED
 
 # Advanced registration options
 
