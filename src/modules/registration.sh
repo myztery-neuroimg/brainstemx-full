@@ -23,29 +23,6 @@ if [ -f "$ENHANCED_REGVAL_MODULE" ]; then
     source "$ENHANCED_REGVAL_MODULE"
 fi
 
-# Check if functions are available after sourcing
-if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
-    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in registration.sh"
-else
-    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in registration.sh"
-fi
-if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
-    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in registration.sh"
-else
-    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in registration.sh"
-fi
-# Check if functions are available after sourcing
-if declare -f calculate_extended_registration_metrics >/dev/null 2>&1; then
-    log_message "DEBUG: calculate_extended_registration_metrics is defined after sourcing in registration.sh"
-else
-    log_formatted "ERROR" "DEBUG: calculate_extended_registration_metrics is NOT defined after sourcing in registration.sh"
-fi
-if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
-    log_message "DEBUG: enhanced_launch_visual_qa is defined after sourcing in registration.sh"
-else
-    log_formatted "ERROR" "DEBUG: enhanced_launch_visual_qa is NOT defined after sourcing in registration.sh"
-fi
-
 # Source the orientation correction module if it exists
 ORIENTATION_MODULE="${SCRIPT_DIR}/orientation_correction.sh"
 if [ -f "$ORIENTATION_MODULE" ]; then
@@ -312,33 +289,27 @@ register_to_reference() {
         log_formatted "INFO" "===== TRANSFORM FORMAT DETECTION AND VALIDATION ====="
         log_message "Analyzing transform file format: $ants_wm_init_matrix"
         
-        # Use explicit error handling to prevent silent termination
-        (
-            set +e  # Disable exit on error for this section
-            local transform_format="unknown"
-            local transform_valid=false
-            
-            if [ ! -f "$ants_wm_init_matrix" ]; then
-                log_formatted "ERROR" "Transform file does not exist: $ants_wm_init_matrix"
-                transform_converted=false
-                return 1
-            elif [ ! -s "$ants_wm_init_matrix" ]; then
-                log_formatted "ERROR" "Transform file is empty: $ants_wm_init_matrix"
-                transform_converted=false
-                return 1
-            fi
-            
-            # Get file size safely
-            local file_size=$(get_file_size "$ants_wm_init_matrix" 2>/dev/null || echo "0")
+        # Detect transform format inline (no subshell — variables must propagate)
+        local transform_format="unknown"
+        local transform_valid=false
+
+        if [ ! -f "$ants_wm_init_matrix" ]; then
+            log_formatted "ERROR" "Transform file does not exist: $ants_wm_init_matrix"
+            transform_converted=false
+        elif [ ! -s "$ants_wm_init_matrix" ]; then
+            log_formatted "ERROR" "Transform file is empty: $ants_wm_init_matrix"
+            transform_converted=false
+        else
+            local file_size
+            file_size=$(get_file_size "$ants_wm_init_matrix" 2>/dev/null || echo "0")
             log_message "Transform file size: $file_size bytes"
-            
-            # Check if it's a text-based FSL format (with error handling)
-            if head -n 5 "$ants_wm_init_matrix" 2>/dev/null | grep -E '^[[:space:]]*[-]?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?[[:space:]]*$' >/dev/null 2>&1; then
+
+            if head -n 5 "$ants_wm_init_matrix" 2>/dev/null | grep -qE '^[[:space:]]*[-]?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?[[:space:]]*$'; then
                 transform_format="FSL"
                 log_message "Detected FSL format transformation matrix (text-based)"
-                
-                # Validate FSL format - should have 4 rows of 4 numbers each
-                local line_count=$(wc -l < "$ants_wm_init_matrix" 2>/dev/null || echo "0")
+
+                local line_count
+                line_count=$(wc -l < "$ants_wm_init_matrix" 2>/dev/null || echo "0")
                 if [ "$line_count" -eq 4 ]; then
                     log_formatted "SUCCESS" "Valid FSL 4x4 transformation matrix detected"
                     transform_valid=true
@@ -346,42 +317,28 @@ register_to_reference() {
                     log_formatted "WARNING" "FSL matrix has $line_count lines (expected 4)"
                     transform_valid=false
                 fi
-                
-            # Check if it's a binary ANTs format (with comprehensive error handling)
-            elif file "$ants_wm_init_matrix" 2>/dev/null | grep -q "data\|binary" 2>/dev/null || [ "$file_size" -gt 100 ]; then
+
+            elif file "$ants_wm_init_matrix" 2>/dev/null | grep -q "data\|binary" || [ "$file_size" -gt 100 ]; then
                 transform_format="ANTs"
                 log_message "Detected ANTs format transformation matrix (binary)"
-                
-                # Use simplified validation to avoid hanging
-                log_message "Using simplified ANTs transform validation"
+
                 if [ "$file_size" -gt 50 ] && [ "$file_size" -lt 50000 ]; then
                     log_formatted "SUCCESS" "ANTs transform file has reasonable size ($file_size bytes)"
                     transform_valid=true
                 else
                     log_formatted "WARNING" "ANTs transform file size unusual: $file_size bytes"
-                    # Still proceed but mark as potentially problematic
                     transform_valid=true
                 fi
-                
+
             else
                 log_formatted "WARNING" "Could not determine transformation matrix format"
-                # Default to assuming ANTs format for compatibility
                 transform_format="ANTs"
                 transform_valid=true
                 log_message "Defaulting to ANTs format assumption"
             fi
-            
-            # Export variables to parent scope
-            export transform_format transform_valid
-            return 0
-            
-        ) # End of error-safe subshell
-        
-        local validation_status=$?
-        
-        # Import variables from subshell (fallback if export didn't work)
-        transform_format="${transform_format:-ANTs}"
-        transform_valid="${transform_valid:-true}"
+        fi
+
+        local validation_status=0
         
         log_message "Transform format: $transform_format, Valid: $transform_valid"
         log_message "Validation completed with status: $validation_status"
@@ -753,10 +710,9 @@ register_to_reference() {
                 log_message "  Available disk space: $(df -h "$(dirname "$out_prefix")" | tail -1 | awk '{print $4}')"
                 log_message "  System load: $(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')"
                 
-                # Create minimal placeholder to prevent pipeline crash
-                log_message "Creating minimal placeholder file to prevent pipeline failure"
-                echo "Emergency registration failed - placeholder file" > "${out_prefix}Warped.nii.gz.txt"
+                log_formatted "ERROR" "Emergency registration exhausted all methods — returning failure"
                 found_warped=false
+                return "${ERR_REGISTRATION:-1}"
             fi
         fi
     fi
