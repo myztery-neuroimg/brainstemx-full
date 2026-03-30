@@ -331,8 +331,6 @@ run_pipeline() {
     qa_validate_dicom_files "$input_dir"
     import_extract_siemens_metadata "$input_dir"
     qa_validate_nifti_files "$EXTRACT_DIR"
-    import_deduplicate_identical_files "$EXTRACT_DIR"
-    
     # Validate import step
     validate_step "Import data" "*.nii.gz" "extracted"
   else
@@ -1490,5 +1488,5 @@ main() {
 }
 
 # Run main function with all arguments
-main $@
+main "$@"
 
