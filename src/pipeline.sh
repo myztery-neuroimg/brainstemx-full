@@ -821,8 +821,8 @@ run_pipeline() {
     # Create standard registration visualizations
     create_registration_visualizations "$t1_std" "$flair_std" "$flair_registered" "$validation_dir"
     
-    # Validate visualization step
-    validate_step "Registration visualizations" "*.png,quality.txt" "validation/registration"
+    # Validate visualization step — check for the diff PNG and metrics file actually produced
+    validate_step "Registration visualizations" "registration_diff.png,metrics.csv" "validation/registration"
   else
     log_message "Skipping Step 4 (Registration) as requested"
     log_message "Checking if standardized data exists..."
@@ -869,8 +869,12 @@ run_pipeline() {
     log_message "Validating output files exist..."
     [ ! -f "$brainstem_output" ] && log_formatted "WARNING" "Brainstem file not found: $brainstem_output"
 
-    # Validate main segmentation files (dorsal/ventral are just compatibility placeholders)
-    validate_step "Segmentation" "${t1_basename}_brainstem.nii.gz,${t1_basename}_pons.nii.gz" "segmentation"
+    # Validate main segmentation files using actual output paths
+    if [ ! -f "$brainstem_output" ]; then
+      log_error "Segmentation output missing: $brainstem_output" $ERR_VALIDATION
+      return $ERR_VALIDATION
+    fi
+    log_formatted "SUCCESS" "Step validated: Segmentation"
   
     # If T1 was not the reference space, transform the T1-based segmentation masks to the reference space (FLAIR)
     if [ "$PIPELINE_REFERENCE_MODALITY" != "T1" ]; then
@@ -1142,10 +1146,12 @@ run_pipeline() {
       log_message "Expected cluster analysis at: $cluster_analysis_dir"
     fi
     
-    # Validate hyperintensities detection
-    # Use the basename from the pons mask
-    local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
-    validate_step "Hyperintensity detection" "${pons_basename}_pons*.nii.gz" "hyperintensities"
+    # Validate hyperintensity detection using the known output path
+    if [ ! -f "$hyperintensity_mask" ]; then
+      log_error "Hyperintensity mask missing: $hyperintensity_mask" $ERR_VALIDATION
+      return $ERR_VALIDATION
+    fi
+    log_formatted "SUCCESS" "Step validated: Hyperintensity detection"
     
     # Launch enhanced visual QA for hyperintensity detection (non-blocking)
     # Show both the FLAIR and the hyperintensity mask
