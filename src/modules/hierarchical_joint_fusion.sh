@@ -21,7 +21,7 @@ execute_hierarchical_joint_fusion() {
     
     prepare_atlas_ensemble "$fusion_workspace" || return 1
     extract_talairach_labels "$input_file" "$fusion_workspace" || return 1
-    generate_segmentation_outputs "$fusion_workspace" "$output_prefix" || return 1
+    generate_segmentation_outputs "$fusion_workspace" "$output_prefix" "$input_file" || return 1
     
     log_formatted "SUCCESS" "Label extraction completed successfully"
     return 0
@@ -122,14 +122,15 @@ extract_talairach_labels() {
 generate_segmentation_outputs() {
     local workspace="$1"
     local output_prefix="$2"
-    
+    local input_file="${3:-}"
+
     log_message "Generating final segmentation outputs..."
-    
+
     local joint_fusion_labels="${workspace}/results/joint_fusion_labels.nii.gz"
     local brainstem_mask="${output_prefix}_brainstem.nii.gz"
-    
+
     fslmaths "$joint_fusion_labels" -bin "$brainstem_mask"
-    
+
     # Generate FLAIR intensity mask if available
     local flair_file=$(find "$(dirname "$output_prefix")" -name "*FLAIR*" -o -name "*flair*" | head -1)
     if [[ -f "$flair_file" ]]; then
@@ -137,10 +138,12 @@ generate_segmentation_outputs() {
         fslmaths "$flair_file" -mul "$brainstem_mask" "$brainstem_flair_intensity"
         log_message "  ✓ FLAIR intensity mask: $brainstem_flair_intensity"
     fi
-    
-    # Generate region subdivisions
-    generate_talairach_subdivisions "$workspace" "$output_prefix" || return 1
-    
+
+    # Generate region subdivisions (non-fatal — these are optional detail masks)
+    generate_talairach_subdivisions "$workspace" "$output_prefix" "$input_file" || {
+        log_formatted "WARNING" "Talairach subdivision generation failed, continuing without subdivisions"
+    }
+
     # Generate hemisphere masks
     generate_hemisphere_masks "$brainstem_mask" "$output_prefix" || return 1
     
@@ -153,13 +156,18 @@ generate_segmentation_outputs() {
 generate_talairach_subdivisions() {
     local workspace="$1"
     local output_prefix="$2"
-    
+    local input_file="${3:-}"
+
     log_message "Generating Talairach subdivision masks..."
-    
+
+    if [[ -z "$input_file" ]] || [[ ! -f "$input_file" ]]; then
+        log_formatted "WARNING" "No input file provided for Talairach subdivisions, skipping"
+        return 1
+    fi
+
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
     local talairach_affine="${workspace}/registration/talairach_to_subject_0GenericAffine.mat"
     local talairach_warp="${workspace}/registration/talairach_to_subject_1Warp.nii.gz"
-    local input_file=$(find "$(dirname "$output_prefix")" -maxdepth 2 -name "*_std.nii.gz" | head -1)
     
     declare -A TALAIRACH_REGIONS=(
         ["left_medulla"]="5"

@@ -999,53 +999,47 @@ run_pipeline() {
     
     # Find segmentation files
     log_message "Looking for segmentation files..."
-    # Use main pons instead of dorsal subdivision (Juelich atlas doesn't provide subdivisions)
-    local pons_mask=$(find "$RESULTS_DIR/segmentation/pons" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" | head -1)
 
-    if [ -z "$pons_mask" ]; then
-      log_formatted "ERROR" "Pons segmentation not found" $ERR_DATA_MISSING
+    # Primary mask: brainstem (always required)
+    local seg_mask="$brainstem_output"
+    if [ -z "$seg_mask" ] || [ ! -f "$seg_mask" ]; then
+      log_formatted "ERROR" "Brainstem segmentation not found" $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
+    log_message "Found brainstem segmentation: $seg_mask"
 
-    log_message "Found pons segmentation: $pons_mask"
-    
+    # Optional: pons subdivision mask (used for legacy fallback only)
+    local pons_mask=$(find "$RESULTS_DIR/segmentation" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" 2>/dev/null | head -1)
+    if [ -n "$pons_mask" ]; then
+      log_message "Found pons segmentation: $pons_mask"
+    else
+      log_formatted "WARNING" "Pons subdivision mask not found — using brainstem mask for analysis"
+      pons_mask="$seg_mask"
+    fi
+
     # Transform segmentation from standard space to original space
     log_message "Transforming segmentation from standard to original space..."
     local orig_space_dir=$(create_module_dir "segmentation/original_space")
     mkdir -p "$orig_space_dir"
-    # Use the basename of the pons mask to create the output filename
-    local pons_orig="${orig_space_dir}/$(basename "$pons_mask" .nii.gz)_orig.nii.gz"
-    
-    transform_segmentation_to_original "$pons_mask" "$orig_flair" "$pons_orig"
-    if [ $? -ne 0 ]; then
-      log_formatted "ERROR" "Failed to transform segmentation to original space" $ERR_PROCESSING
-      return $ERR_PROCESSING
-    fi   
+    local seg_orig="${orig_space_dir}/$(basename "$seg_mask" .nii.gz)_orig.nii.gz"
 
-    
-    if [ ! -f "$pons_orig" ]; then
+    transform_segmentation_to_original "$seg_mask" "$orig_flair" "$seg_orig"
+    if [ $? -ne 0 ] || [ ! -f "$seg_orig" ]; then
       log_formatted "ERROR" "Failed to transform segmentation to original space" $ERR_PROCESSING
       return $ERR_PROCESSING
     fi
-    
-    log_message "Successfully transformed segmentation to original space: $pons_orig"
-    
-    # Note: Intensity mask creation is handled by segmentation module
-    # The segmentation functions should create both T1 and FLAIR intensity versions
-    log_message "Segmentation transformation to original space complete"
-    
+
+    log_message "Successfully transformed segmentation to original space: $seg_orig"
+
     # Run QA validation to ensure all segmentation outputs are properly created
     log_message "Running comprehensive QA validation for all segmentations..."
     if ! qa_verify_all_segmentations "$RESULTS_DIR"; then
       log_formatted "WARNING" "Some segmentation QA checks failed - see reports for details"
     fi
-    
+
     # Verify dimensions consistency
     log_message "Verifying dimensions consistency across pipeline stages..."
-    verify_dimensions_consistency "$orig_flair" "$orig_flair" "$pons_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
-    
-    # Note: Segmentation location verification moved to QA module
-    # Use qa_verify_all_segmentations function for comprehensive validation
+    verify_dimensions_consistency "$orig_flair" "$orig_flair" "$seg_orig" "${RESULTS_DIR}/validation/dimensions_report.txt"
     
     # Find or create registered FLAIR
     local flair_registered=$(find "$reg_dir" -iname "*FLAIR*Warped.nii.gz" -o -name "t1_to_flairWarped.nii.gz" | head -1)
@@ -1083,25 +1077,29 @@ run_pipeline() {
     
     # For backward compatibility, create a link to the traditional hyperintensity mask
     local hyperintensities_dir=$(create_module_dir "hyperintensities")
+    # Look for hyperintensity mask from any region (pons preferred, then brainstem, then any)
     local hyperintensity_mask="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
+    if [ ! -f "$hyperintensity_mask" ]; then
+      hyperintensity_mask="${comprehensive_dir}/hyperintensities/brainstem/hyperintensities_bin.nii.gz"
+    fi
+    if [ ! -f "$hyperintensity_mask" ]; then
+      hyperintensity_mask=$(find "${comprehensive_dir}/hyperintensities" -name "hyperintensities_bin.nii.gz" 2>/dev/null | head -1)
+    fi
     
     if [ -f "$hyperintensity_mask" ]; then
-      # Use the basename from the pons mask
-      local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
-      local legacy_mask="${hyperintensities_dir}/${pons_basename}_pons_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
+      local seg_basename=$(basename "$seg_mask" .nii.gz | sed 's/_brainstem$//')
+      local legacy_mask="${hyperintensities_dir}/${seg_basename}_brainstem_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
       ln -sf "$hyperintensity_mask" "$legacy_mask"
       log_message "Created link to comprehensive analysis result: $legacy_mask"
     else
       log_formatted "WARNING" "Comprehensive analysis didn't produce expected hyperintensity mask"
-      log_message "Falling back to traditional hyperintensity detection using main pons..."
-      
-      # Fall back to traditional hyperintensity detection using main pons
-      # Use the basename from the pons mask, not subject_id
-      local pons_basename=$(basename "$pons_mask" .nii.gz | sed 's/_pons$//')
-      local hyperintensities_prefix="${hyperintensities_dir}/${pons_basename}_pons"
+      log_message "Falling back to traditional hyperintensity detection using brainstem mask..."
+
+      local seg_basename=$(basename "$seg_mask" .nii.gz | sed 's/_brainstem$//')
+      local hyperintensities_prefix="${hyperintensities_dir}/${seg_basename}_brainstem"
       detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"
       hyperintensity_mask="${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
-      analyze_hyperintensity_clusters "$hyperintensity_mask" "$pons_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
+      analyze_hyperintensity_clusters "$hyperintensity_mask" "$seg_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
     fi
     
     # NEW: DICOM Cluster Mapping Integration
@@ -1181,15 +1179,15 @@ run_pipeline() {
       return $ERR_DATA_MISSING
     fi
     
-    # Find key segmentation files (use main pons instead of dorsal subdivision)
-    pons_mask=$(find "$segmentation_dir" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" | head -1)
-    
-    if [ -z "$pons_mask" ]; then
-      log_error "Pons segmentation not found. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
+    # Find brainstem segmentation (pons/midbrain/medulla subdivisions are optional)
+    local brainstem_check=$(find "$segmentation_dir" -name "*brainstem.nii.gz" | head -1)
+
+    if [ -z "$brainstem_check" ]; then
+      log_error "Brainstem segmentation not found. Cannot skip to Step $START_STAGE." $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
-    
-    log_message "Found segmentation data: $pons_mask"
+
+    log_message "Found segmentation data: $brainstem_check"
   fi  # End of Analysis (Step 6)
   
   # Step 7: Visualization
