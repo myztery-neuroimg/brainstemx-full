@@ -25,14 +25,14 @@ extract_brainstem() {
     fi
     
     # Create output directory structure
-    local brainstem_dir="${RESULTS_DIR}/segmentation"
+    local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     mkdir -p "$brainstem_dir"
-    
+
     # Create temporary workspace
     local temp_dir="${RESULTS_DIR}/segmentation"
-    
-    # Set output prefix
-    local output_prefix="${brainstem_dir}"  #/${input_basename}"
+
+    # Set output prefix (directory + basename so files are named correctly)
+    local output_prefix="${brainstem_dir}/${input_basename}"
     
     # Execute hierarchical joint fusion
     if execute_hierarchical_joint_fusion "$input_file" "$output_prefix" "$temp_dir"; then
@@ -223,7 +223,7 @@ extract_brainstem_final() {
     log_message "Using hierarchical joint fusion as primary method"
     
     # Define output directory
-    local brainstem_dir="${RESULTS_DIR}/segmentation"
+    local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     mkdir -p "$brainstem_dir"
     
     # Execute hierarchical joint fusion
@@ -277,7 +277,7 @@ validate_segmentation_outputs() {
     
     log_message "Validating segmentation outputs..."
     
-    local brainstem_file="${RESULTS_DIR}/segmentation/${basename}_brainstem.nii.gz"
+    local brainstem_file="${RESULTS_DIR}/segmentation/brainstem/${basename}_brainstem.nii.gz"
     local validation_passed=true
     
     # Check brainstem
@@ -302,7 +302,7 @@ validate_segmentation_outputs() {
         echo "Date: $(date)"
         echo "Input: $input_file"
         echo "Files created:"
-        ls -la "${RESULTS_DIR}/segmentation/${basename}"*.nii.gz 2>/dev/null || echo "No brainstem files"
+        ls -la "${RESULTS_DIR}/segmentation/brainstem/${basename}"*.nii.gz 2>/dev/null || echo "No brainstem files"
         echo "Validation: $([ "$validation_passed" = "true" ] && echo "PASSED" || echo "WARNINGS")"
     } > "${validation_dir}/segmentation_validation.txt"
     
