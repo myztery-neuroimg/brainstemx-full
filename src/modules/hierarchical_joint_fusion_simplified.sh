@@ -107,7 +107,7 @@ extract_talairach_labels() {
         -t "$reg_inverse_warp" \
         -t "[$reg_affine,1]" \
         -n NearestNeighbor
-=======
+
     mkdir -p "$registration_dir" "$results_dir"
 
     # The Talairach atlas is in MNI space.  Registering a label image directly
