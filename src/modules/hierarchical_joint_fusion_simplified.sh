@@ -160,7 +160,6 @@ extract_talairach_labels() {
           -applyxfm -init "$mni_to_t1_mat" \
           -interp nearestneighbour \
           -out "$talairach_subject_space"
->>>>>>> 8abe4d2 (Fixes)
 
     if [[ ! -f "$talairach_subject_space" ]]; then
         log_formatted "ERROR" "Failed to apply inverse transform to atlas"
