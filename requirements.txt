@@ -15,7 +15,7 @@ numpy==2.4.4
     #   pandas
     #   scikit-learn
     #   scipy
-packaging==26.0
+packaging==26.2
     # via
     #   nibabel
     #   pytest
