@@ -27,7 +27,7 @@ pydicom==3.0.2
     # via brainstemx-full
 pygments==2.20.0
     # via pytest
-pytest==9.0.2
+pytest==9.0.3
     # via brainstemx-full
 python-dateutil==2.9.0.post0
     # via pandas
