@@ -945,33 +945,42 @@ analyze_hyperintensities_in_all_masks() {
         local roi_volume=$(fslstats "$mask" -V | awk '{print $1}')
         local percentage=$(echo "scale=2; 100 * $volume_voxels / $roi_volume" | bc -l)
         
-        # Create cluster analysis with minimum size enforcement
-        local clusters="${mask_output_dir}/clusters.nii.gz"
-        local min_cluster_size="${MIN_HYPERINTENSITY_SIZE:-4}"  # Use environment setting or default to 4
-        log_message "Performing cluster analysis (minimum cluster size: $min_cluster_size voxels) to ${clusters}..."
-        
+        # Cluster analysis
+        local min_cluster_size="${MIN_HYPERINTENSITY_SIZE:-4}"
+
         # CRITICAL FIX: Validate hyperintensity binary file before cluster analysis
         if [ ! -f "$hyperintensity_bin" ]; then
             log_formatted "ERROR" "Hyperintensity binary file not found for cluster analysis: $hyperintensity_bin"
             continue
         fi
-        
+
         if ! fslinfo "$hyperintensity_bin" >/dev/null 2>&1; then
             log_formatted "ERROR" "Invalid hyperintensity binary file for cluster analysis: $hyperintensity_bin"
             continue
         fi
-        
-        # Check if hyperintensity file has any non-zero voxels
-        local max_intensity=$(fslstats "$hyperintensity_bin" -R | awk '{print $2}')
-        if (( $(echo "$max_intensity <= 0" | bc -l) )); then
-            log_formatted "WARNING" "No hyperintensities detected in $mask_name, skipping cluster analysis"
-            # Create empty cluster file
-            touch "${mask_output_dir}/cluster_report.txt"
-            echo "No hyperintensities detected for cluster analysis" > "${mask_output_dir}/cluster_report.txt"
+
+        # For harvard_brainstem, run the full cluster analysis with per-cluster
+        # volumes, center-of-mass coordinates, CSV output, and visualization
+        if [ "$mask_name" = "harvard_brainstem" ] && declare -f analyze_hyperintensity_clusters >/dev/null 2>&1; then
+            log_message "Running detailed cluster analysis for $mask_name..."
+            local cluster_output_dir="${mask_output_dir}/cluster_analysis"
+            if ! analyze_hyperintensity_clusters "$hyperintensity_bin" "$mask" "$t1_file" "$cluster_output_dir" "$min_cluster_size"; then
+                log_formatted "WARNING" "Detailed cluster analysis failed for $mask_name, falling back to basic clustering"
+                local clusters="${mask_output_dir}/clusters.nii.gz"
+                cluster -i "$hyperintensity_bin" -t 0.5 --minextent="$min_cluster_size" -o "$clusters" > "${mask_output_dir}/cluster_report.txt" 2>&1 || true
+            fi
         else
-            if ! cluster -i "$hyperintensity_bin" -t 0.5 --minextent="$min_cluster_size" -o "$clusters" > "${mask_output_dir}/cluster_report.txt" 2>&1; then
-                log_formatted "WARNING" "Cluster analysis failed for $mask_name, continuing without clustering"
-                echo "Cluster analysis failed" > "${mask_output_dir}/cluster_report.txt"
+            # Basic clustering for other masks
+            local clusters="${mask_output_dir}/clusters.nii.gz"
+            local max_intensity=$(fslstats "$hyperintensity_bin" -R | awk '{print $2}')
+            if (( $(echo "$max_intensity <= 0" | bc -l) )); then
+                log_formatted "WARNING" "No hyperintensities detected in $mask_name, skipping cluster analysis"
+                echo "No hyperintensities detected for cluster analysis" > "${mask_output_dir}/cluster_report.txt"
+            else
+                if ! cluster -i "$hyperintensity_bin" -t 0.5 --minextent="$min_cluster_size" -o "$clusters" > "${mask_output_dir}/cluster_report.txt" 2>&1; then
+                    log_formatted "WARNING" "Cluster analysis failed for $mask_name, continuing without clustering"
+                    echo "Cluster analysis failed" > "${mask_output_dir}/cluster_report.txt"
+                fi
             fi
         fi
         
@@ -1046,11 +1055,18 @@ analyze_hyperintensities_in_all_masks() {
             echo "  Percentage of region affected: $percentage%"
             echo ""
             echo "Cluster Analysis:"
-            echo "  See cluster_report.txt for detailed cluster information"
-            echo "  Cluster map: $(basename "$clusters")"
+            if [ -d "${mask_output_dir}/cluster_analysis" ] && [ -f "${mask_output_dir}/cluster_analysis/cluster_report.txt" ]; then
+                echo "  See cluster_analysis/ for detailed per-cluster output:"
+                echo "    cluster_report.txt  — summary with per-cluster volumes and coordinates"
+                echo "    cluster_stats.csv   — machine-readable cluster statistics"
+                echo "    clusters.nii.gz     — indexed cluster map"
+                echo "    view_clusters.sh    — launch freeview visualization"
+            else
+                echo "  See cluster_report.txt for cluster information"
+            fi
             echo ""
             echo "Visualization:"
-            echo "  RGB overlay: $(basename "$overlay")"
+            echo "  RGB overlay: $(basename "${overlay:-overlay.nii.gz}")"
             echo "  PNG slices: hyperintensities_${mask_name}.png"
         } > "${mask_output_dir}/hyperintensity_report.txt"
         
@@ -1084,68 +1100,57 @@ analyze_hyperintensities_in_all_masks() {
     local all_masks="${output_dir}/all_masks_combined.nii.gz"
     log_message "Creating combined visualization of all masks..."
     
-    # CRITICAL FIX: Check if we have any masks before proceeding
-    if [ ${#mask_files[@]} -eq 0 ]; then
-        log_formatted "WARNING" "No mask files available for combined visualization"
+    # Collect existing hyperintensity binary files and their names
+    local hyper_bins=()
+    local hyper_names=()
+    for i in "${!mask_names[@]}"; do
+        local hyper_bin="${output_dir}/${mask_names[$i]}/hyperintensities_bin.nii.gz"
+        if [ -f "$hyper_bin" ] && fslinfo "$hyper_bin" >/dev/null 2>&1; then
+            hyper_bins+=("$hyper_bin")
+            hyper_names+=("${mask_names[$i]}")
+        else
+            log_message "No valid hyperintensity file for ${mask_names[$i]}: $hyper_bin"
+        fi
+    done
+
+    if [ ${#hyper_bins[@]} -eq 0 ]; then
+        log_formatted "WARNING" "No hyperintensity binary files available for combined visualization"
         return 0
     fi
-    
-    # Validate the first mask file exists before using it
-    if [ ! -f "${mask_files[0]}" ]; then
-        log_formatted "ERROR" "First mask file does not exist: ${mask_files[0]}"
-        return 1
-    fi
-    
-    # Start with an empty volume using the first available mask as template
-    log_message "Using template mask: ${mask_files[0]}"
-    
-    # CRITICAL FIX: Validate template mask before creating combined visualization
-    if ! fslinfo "${mask_files[0]}" >/dev/null 2>&1; then
-        log_formatted "ERROR" "Invalid template mask file: ${mask_files[0]}"
-        return 1
-    fi
-    
-    # Use safe_fslmaths if available
+
+    # Create empty template from the first hyperintensity binary so dimensions match
+    log_message "Using template for combined mask: ${hyper_bins[0]} (from ${hyper_names[0]})"
+
     if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
-        if ! safe_fslmaths "Create empty template for combined masks" "${mask_files[0]}" -mul 0 "$all_masks"; then
+        if ! safe_fslmaths "Create empty template for combined masks" "${hyper_bins[0]}" -mul 0 "$all_masks"; then
             log_formatted "ERROR" "Failed to create empty template for combined visualization"
             return 1
         fi
     else
-        if ! fslmaths "${mask_files[0]}" -mul 0 "$all_masks"; then
+        if ! fslmaths "${hyper_bins[0]}" -mul 0 "$all_masks"; then
             log_formatted "ERROR" "Failed to create empty template for combined visualization"
             return 1
         fi
     fi
-    
+
     # Add each hyperintensity map with a different value
-    for i in "${!mask_names[@]}"; do
-        local hyper_bin="${output_dir}/${mask_names[$i]}/hyperintensities_bin.nii.gz"
-        if [ -f "$hyper_bin" ]; then
-            # CRITICAL FIX: Validate hyperintensity binary file before adding
-            if ! fslinfo "$hyper_bin" >/dev/null 2>&1; then
-                log_formatted "WARNING" "Invalid hyperintensity file, skipping: $hyper_bin"
+    for i in "${!hyper_bins[@]}"; do
+        local intensity=$((i+1))
+        local name="${hyper_names[$i]}"
+        local bin="${hyper_bins[$i]}"
+
+        log_message "Adding $name hyperintensities with intensity $intensity"
+
+        if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
+            if ! safe_fslmaths "Add hyperintensities for $name" "$bin" -mul $intensity -add "$all_masks" "$all_masks"; then
+                log_formatted "WARNING" "Failed to add hyperintensities for $name"
                 continue
             fi
-            
-            # Add with different intensity for each mask
-            local intensity=$((i+1))
-            log_message "Adding ${mask_names[$i]} hyperintensities with intensity $intensity"
-            
-            # Use safe_fslmaths if available
-            if ensure_safe_fslmaths && declare -f safe_fslmaths >/dev/null 2>&1; then
-                if ! safe_fslmaths "Add hyperintensities for ${mask_names[$i]}" "$hyper_bin" -mul $intensity -add "$all_masks" "$all_masks"; then
-                    log_formatted "WARNING" "Failed to add hyperintensities for ${mask_names[$i]}"
-                    continue
-                fi
-            else
-                if ! fslmaths "$hyper_bin" -mul $intensity -add "$all_masks" "$all_masks"; then
-                    log_formatted "WARNING" "Failed to add hyperintensities for ${mask_names[$i]}"
-                    continue
-                fi
-            fi
         else
-            log_message "No hyperintensity file found for ${mask_names[$i]}: $hyper_bin"
+            if ! fslmaths "$bin" -mul $intensity -add "$all_masks" "$all_masks"; then
+                log_formatted "WARNING" "Failed to add hyperintensities for $name"
+                continue
+            fi
         fi
     done
     
