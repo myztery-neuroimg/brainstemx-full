@@ -1000,8 +1000,20 @@ run_pipeline() {
     # Find segmentation files
     log_message "Looking for segmentation files..."
 
+    # Recover brainstem_output from disk if not set (e.g. when resuming from analysis stage)
+    if [ -z "${brainstem_output:-}" ]; then
+      # Check reference-space transformed masks first, then standard segmentation dir
+      brainstem_output=$(find "$RESULTS_DIR/segmentation/in_reference_space" -name "*_brainstem.nii.gz" 2>/dev/null | head -1)
+      if [ -z "$brainstem_output" ]; then
+        brainstem_output=$(find "$RESULTS_DIR/segmentation/brainstem" -name "*_brainstem.nii.gz" 2>/dev/null | head -1)
+      fi
+      if [ -n "$brainstem_output" ]; then
+        log_message "Recovered brainstem segmentation from disk: $brainstem_output"
+      fi
+    fi
+
     # Primary mask: brainstem (always required)
-    local seg_mask="$brainstem_output"
+    local seg_mask="${brainstem_output:-}"
     if [ -z "$seg_mask" ] || [ ! -f "$seg_mask" ]; then
       log_formatted "ERROR" "Brainstem segmentation not found" $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
@@ -1077,10 +1089,10 @@ run_pipeline() {
     
     # For backward compatibility, create a link to the traditional hyperintensity mask
     local hyperintensities_dir=$(create_module_dir "hyperintensities")
-    # Look for hyperintensity mask from any region (pons preferred, then brainstem, then any)
-    local hyperintensity_mask="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
+    # Look for hyperintensity mask — harvard_brainstem preferred, then pons, then any
+    local hyperintensity_mask="${comprehensive_dir}/hyperintensities/harvard_brainstem/hyperintensities_bin.nii.gz"
     if [ ! -f "$hyperintensity_mask" ]; then
-      hyperintensity_mask="${comprehensive_dir}/hyperintensities/brainstem/hyperintensities_bin.nii.gz"
+      hyperintensity_mask="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
     fi
     if [ ! -f "$hyperintensity_mask" ]; then
       hyperintensity_mask=$(find "${comprehensive_dir}/hyperintensities" -name "hyperintensities_bin.nii.gz" 2>/dev/null | head -1)
@@ -1110,8 +1122,11 @@ run_pipeline() {
     local dicom_mapping_dir="${RESULTS_DIR}/dicom_cluster_mapping"
     mkdir -p "$dicom_mapping_dir"
     
-    # Find cluster analysis results
-    local cluster_analysis_dir="${hyperintensities_dir}/clusters"
+    # Find cluster analysis results — check comprehensive analysis first, then legacy
+    local cluster_analysis_dir="${comprehensive_dir}/hyperintensities/harvard_brainstem/cluster_analysis"
+    if [ ! -d "$cluster_analysis_dir" ]; then
+      cluster_analysis_dir="${hyperintensities_dir}/clusters"
+    fi
     if [ -d "$cluster_analysis_dir" ] && [ -d "$SRC_DIR" ]; then
       log_message "Running complete cluster-to-DICOM mapping pipeline..."
       log_message "  Cluster analysis: $cluster_analysis_dir"
