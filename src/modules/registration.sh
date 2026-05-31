@@ -1081,10 +1081,12 @@ apply_transformation() {
     local output="$3"
     local transform="$4"
     local interpolation="${5:-Linear}"
+    local direction="${6:-inverse}"  # inverse: atlas/template -> subject; forward: moving -> fixed
     
     log_message "Applying transformation to $input"
     log_message "Transform: $transform"
     log_message "Interpolation: $interpolation"
+    log_message "Direction: $direction"
     
     # Determine ANTs bin path
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
@@ -1115,7 +1117,33 @@ apply_transformation() {
         log_formatted "SUCCESS" "Found SyN transforms with forward warp - will invert for proper direction"
     fi
     
-    if [ "$has_full_syn" = "true" ]; then
+    if [ "$has_full_syn" = "true" ] && [ "$direction" = "forward" ]; then
+        # Apply moving -> fixed transform chain, e.g. T1 segmentation masks into
+        # a FLAIR reference space when FLAIR was selected as pipeline reference.
+        log_message "Applying complete FORWARD SyN transform chain"
+
+        local transform_args=()
+
+        if [ -f "$forward_warp" ]; then
+            transform_args+=("-t" "$forward_warp")
+            log_message "Added forward warp: $forward_warp"
+        fi
+
+        if [ -f "$affine_transform" ]; then
+            transform_args+=("-t" "$affine_transform")
+            log_message "Added forward affine: $affine_transform"
+        fi
+
+        execute_ants_command "apply_forward_syn_transform" "Applying forward SyN transform chain (moving to fixed)" \
+            ${ants_bin}/antsApplyTransforms \
+            -d 3 \
+            -i "$input" \
+            -r "$reference" \
+            -o "$output" \
+            "${transform_args[@]}" \
+            -n "$interpolation"
+
+    elif [ "$has_full_syn" = "true" ]; then
         # Apply FULL SyN transform chain (nonlinear + affine)
         # For MNI -> subject space, we need: inverse_warp + inverted_affine
         log_message "Applying complete SyN transform chain (preserves all deformation)"
@@ -1154,14 +1182,22 @@ apply_transformation() {
         log_message "Consider using full SyN registration for better accuracy"
         
         if [[ "$transform" == *"ants"* || "$transform" == *"Affine"* ]]; then
-            # ANTs .mat transform — likely affine, must be inverted to go MNI -> subject
-            execute_ants_command "apply_inverted_affine" "Applying inverted affine transform (MNI to subject)" \
+            local affine_arg="$transform"
+            local task_name="apply_forward_affine"
+            local task_description="Applying forward affine transform"
+            if [ "$direction" != "forward" ]; then
+                affine_arg="[$transform,1]"
+                task_name="apply_inverted_affine"
+                task_description="Applying inverted affine transform (template to subject)"
+            fi
+
+            execute_ants_command "$task_name" "$task_description" \
                 ${ants_bin}/antsApplyTransforms \
                 -d 3 \
                 -i "$input" \
                 -r "$reference" \
                 -o "$output" \
-                -t "[$transform,1]" \
+                -t "$affine_arg" \
                 -n "$interpolation"
         else
             # FSL .mat transform
