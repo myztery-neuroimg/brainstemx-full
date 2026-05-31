@@ -1255,6 +1255,48 @@ analyze_clusters() {
     return 0
 }
 
+# Function to discover threshold/method outputs for reporting and visualization
+discover_threshold_methods() {
+    local prefix="$1"
+    local -n methods_ref=$2
+    methods_ref=()
+
+    local prefix_base
+    prefix_base=$(basename "$prefix")
+    local numeric_methods=()
+    local named_methods=()
+
+    for thresh_file in "${prefix}_thresh"*"_bin.nii.gz"; do
+        if [ ! -f "$thresh_file" ]; then
+            continue
+        fi
+
+        local method
+        method=$(basename "$thresh_file")
+        method="${method#${prefix_base}_thresh}"
+        method="${method%_bin.nii.gz}"
+
+        if [ -z "$method" ]; then
+            continue
+        fi
+
+        if [[ "$method" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            numeric_methods+=("$method")
+        else
+            named_methods+=("$method")
+        fi
+    done
+
+    if [ ${#numeric_methods[@]} -gt 0 ]; then
+        readarray -t numeric_methods < <(printf '%s\n' "${numeric_methods[@]}" | sort -n)
+    fi
+    if [ ${#named_methods[@]} -gt 0 ]; then
+        readarray -t named_methods < <(printf '%s\n' "${named_methods[@]}" | sort)
+    fi
+
+    methods_ref=("${numeric_methods[@]}" "${named_methods[@]}")
+}
+
 # Function to quantify volumes with enhanced per-threshold cluster analysis
 quantify_volumes() {
     local prefix="$1"
@@ -1265,21 +1307,10 @@ quantify_volumes() {
     # Create enhanced CSV header
     echo "Threshold,Volume (mm³),Volume (voxels),NumClusters,LargestCluster (mm³),MeanClusterSize (mm³),RegionalMethod" > "$output_file"
     
-    # Get threshold values from available files
+    # Get threshold/method values from available files.  These can be numeric
+    # legacy thresholds (1.5, 2.0) or named methods (ATLAS_GMM).
     local available_thresholds=()
-    for thresh_file in "${prefix}_thresh"*"_bin.nii.gz"; do
-        if [ -f "$thresh_file" ]; then
-            # Extract threshold value from filename
-            local thresh=$(basename "$thresh_file" | sed -n 's/.*_thresh\([0-9.]*\)_bin\.nii\.gz/\1/p')
-            if [ -n "$thresh" ]; then
-                available_thresholds+=("$thresh")
-            fi
-        fi
-    done
-    
-    # Sort thresholds numerically
-    IFS=$'\n' available_thresholds=($(sort -n <<<"${available_thresholds[*]}"))
-    unset IFS
+    discover_threshold_methods "$prefix" available_thresholds
     
     log_message "Found ${#available_thresholds[@]} threshold variants: ${available_thresholds[*]}"
     
@@ -1329,19 +1360,19 @@ quantify_volumes() {
             num_clusters=0
             largest_cluster=0
             mean_cluster_size=0
-            log_message "No cluster analysis file found for threshold $mult, computing basic stats"
+            log_message "No cluster analysis file found for threshold/method $mult, computing basic stats"
         fi
         
         # Determine if regional method was used (check for regional stats file)
         local regional_method="No"
-        if [ -f "${prefix}_regional_wm_stats.txt" ]; then
+        if [ -f "${prefix}_regional_wm_stats.txt" ] || [[ "$mult" == *"GMM"* ]]; then
             regional_method="Yes"
         fi
         
         # Add to CSV with enhanced information
         echo "${mult},${total_volume_mm3},${total_volume_voxels},${num_clusters},${largest_cluster},${mean_cluster_size},${regional_method}" >> "$output_file"
         
-        log_message "✓ Threshold ${mult}: ${total_volume_mm3} mm³, ${num_clusters} clusters"
+        log_message "✓ Threshold/method ${mult}: ${total_volume_mm3} mm³, ${num_clusters} clusters"
     done
     
     # Create summary report
@@ -1363,8 +1394,13 @@ quantify_volumes() {
             echo "--------------------"
             while IFS=, read -r thresh vol_mm3 vol_vox nclusters largest mean_size regional; do
                 if [[ "$thresh" != "Threshold" ]]; then  # Skip header
-                    printf "  %.1f SD: %8.1f mm³ (%3d clusters, largest: %6.1f mm³)\n" \
-                           "$thresh" "$vol_mm3" "$nclusters" "$largest"
+                    if [[ "$thresh" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                        printf "  %.1f SD: %8.1f mm³ (%3d clusters, largest: %6.1f mm³)\n" \
+                               "$thresh" "$vol_mm3" "$nclusters" "$largest"
+                    else
+                        printf "  %-10s: %8.1f mm³ (%3d clusters, largest: %6.1f mm³)\n" \
+                               "$thresh" "$vol_mm3" "$nclusters" "$largest"
+                    fi
                 fi
             done < "$output_file"
         fi
@@ -1390,46 +1426,60 @@ create_multi_threshold_comparison() {
         return 1
     fi
     
-    # Define thresholds and colors
-    local thresholds=(1.5 2.0 2.5 3.0)
-    local colors=("red" "orange" "yellow" "green")
+    local thresholds=()
+    discover_threshold_methods "$prefix" thresholds
+    local colors=("red" "orange" "yellow" "green" "blue" "cyan" "magenta")
     
     # Create command for viewing all thresholds together
     local fsleyes_cmd="fsleyes $t2flair"
     
     for i in "${!thresholds[@]}"; do
         local mult="${thresholds[$i]}"
-        local color="${colors[$i]}"
+        local color="${colors[$((i % ${#colors[@]}))]}"
         local hyper="${prefix}_thresh${mult}.nii.gz"
+        local hyper_intensity="${prefix}_thresh${mult}_intensity.nii.gz"
+        local hyper_bin="${prefix}_thresh${mult}_bin.nii.gz"
         
-        if [ -f "$hyper" ]; then
+        if [ -f "$hyper_intensity" ]; then
+            fsleyes_cmd="$fsleyes_cmd $hyper_intensity -cm $color -a 50"
+        elif [ -f "$hyper" ]; then
             fsleyes_cmd="$fsleyes_cmd $hyper -cm $color -a 50"
+        elif [ -f "$hyper_bin" ]; then
+            fsleyes_cmd="$fsleyes_cmd $hyper_bin -cm $color -a 50"
         fi
     done
     
     echo "$fsleyes_cmd" > "${output_dir}/view_all_thresholds.sh"
     chmod +x "${output_dir}/view_all_thresholds.sh"
     
-    # Create a composite image showing all thresholds
-    if [ -f "${prefix}_thresh1.5.nii.gz" ]; then
-        # Start with lowest threshold
-        fslmaths "${prefix}_thresh1.5.nii.gz" -bin -mul 1 "${output_dir}/multi_thresh.nii.gz"
-        
-        # Add higher thresholds with increasing values
-        if [ -f "${prefix}_thresh2.0.nii.gz" ]; then
-            fslmaths "${prefix}_thresh2.0.nii.gz" -bin -mul 2 \
+    # Create a composite image showing all discovered thresholds/methods
+    local composite_created=false
+    local composite_value=1
+    for mult in "${thresholds[@]}"; do
+        local hyper_bin="${prefix}_thresh${mult}_bin.nii.gz"
+        local hyper="${prefix}_thresh${mult}.nii.gz"
+        local source_mask=""
+
+        if [ -f "$hyper_bin" ]; then
+            source_mask="$hyper_bin"
+        elif [ -f "$hyper" ]; then
+            source_mask="$hyper"
+        else
+            continue
+        fi
+
+        if [ "$composite_created" = "false" ]; then
+            fslmaths "$source_mask" -bin -mul "$composite_value" "${output_dir}/multi_thresh.nii.gz"
+            composite_created=true
+        else
+            fslmaths "$source_mask" -bin -mul "$composite_value" \
                      -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
         fi
-        
-        if [ -f "${prefix}_thresh2.5.nii.gz" ]; then
-            fslmaths "${prefix}_thresh2.5.nii.gz" -bin -mul 3 \
-                     -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
-        fi
-        
-        if [ -f "${prefix}_thresh3.0.nii.gz" ]; then
-            fslmaths "${prefix}_thresh3.0.nii.gz" -bin -mul 4 \
-                     -add "${output_dir}/multi_thresh.nii.gz" "${output_dir}/multi_thresh.nii.gz"
-        fi
+
+        composite_value=$((composite_value + 1))
+    done
+
+    if [ "$composite_created" = "true" ]; then
         
         # Create overlay command for multi-threshold visualization
         echo "fsleyes $t2flair ${output_dir}/multi_thresh.nii.gz -cm hot -a 80" > "${output_dir}/view_multi_thresh.sh"
@@ -2875,6 +2925,7 @@ export -f compute_regional_wm_statistics
 export -f create_regional_threshold_map
 export -f apply_regional_threshold
 export -f analyze_clusters
+export -f discover_threshold_methods
 export -f quantify_volumes
 export -f create_multi_threshold_comparison
 export -f create_3d_rendering

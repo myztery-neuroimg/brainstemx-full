@@ -903,8 +903,9 @@ run_pipeline() {
             for mask_file in "$seg_dir/brainstem/"*.nii.gz; do
                 local out_mask="${transformed_seg_dir}/$(basename "$mask_file")"
                 log_message "Transforming $(basename $mask_file) to reference space..."
-                # The reference image for the transformation is the FLAIR image
-                apply_transformation "$mask_file" "$flair_std" "$out_mask" "$transform_warp" "NearestNeighbor" "$transform_affine"
+                # The registration was computed as T1 moving -> FLAIR fixed, so
+                # masks derived from T1 must use the forward transform chain.
+                apply_transformation "$mask_file" "$flair_std" "$out_mask" "$transform_warp" "NearestNeighbor" "forward"
             done
             log_formatted "SUCCESS" "Segmentation masks transformed to reference space."
             # Update brainstem_output to point to the transformed mask for QA and downstream use
@@ -1521,4 +1522,3 @@ main() {
 
 # Run main function with all arguments
 main "$@"
-
