@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATASET_DIR="${DATASET_DIR:-${ROOT_DIR}/mri-brain-examples-ds004199-1.0.6}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/validation_runs/ds004199}"
-START_STAGE="${START_STAGE:-preprocess}"
+START_STAGE="${START_STAGE:-brain_extraction}"
 QUALITY="${QUALITY:-LOW}"
 
 if [ ! -d "$DATASET_DIR" ]; then
@@ -24,6 +24,7 @@ run_subject() {
   local subject_dir="${OUTPUT_ROOT}/${subject}"
   local extract_dir="${subject_dir}/extracted"
   local results_dir="${subject_dir}/results"
+  local bias_dir="${results_dir}/bias_corrected"
   local config_file="${subject_dir}/ds004199_config.sh"
 
   if [ ! -d "$anat_dir" ]; then
@@ -41,9 +42,11 @@ run_subject() {
     return 1
   fi
 
-  mkdir -p "$extract_dir" "$results_dir"
+  mkdir -p "$extract_dir" "$results_dir" "$bias_dir"
   ln -sf "$t1_file" "${extract_dir}/$(basename "$t1_file")"
   ln -sf "$flair_file" "${extract_dir}/$(basename "$flair_file")"
+  cp -f "$t1_file" "${bias_dir}/$(basename "$t1_file" .nii.gz)_n4.nii.gz"
+  cp -f "$flair_file" "${bias_dir}/$(basename "$flair_file" .nii.gz)_n4.nii.gz"
 
   cat > "$config_file" <<EOF
 source "${ROOT_DIR}/config/default_config.sh"
@@ -60,6 +63,7 @@ EOF
   echo "T1:    $(basename "$t1_file")"
   echo "FLAIR: $(basename "$flair_file")"
   echo "Out:   $results_dir"
+  echo "Start: $START_STAGE"
 
   (
     cd "$ROOT_DIR"
