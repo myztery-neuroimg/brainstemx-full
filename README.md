@@ -74,7 +74,7 @@ Use `-t STAGE` to resume from any stage (e.g., `-t 4` or `-t registration`).
 
 ## Project Status
 
-Active development as of February 2026. While functional, improvements are ongoing. For a minimal pure-Python implementation with web UI, see [brainstemx](https://github.com/myztery-neuroimg/brainstemx).
+Active development as of June 2026. While functional, improvements are ongoing. For a minimal bare-bones pure-Python implementation with web UI, see [brainstemx](https://github.com/myztery-neuroimg/brainstemx) - it also needs a lot more work at this moment.
 
 ## Acknowledgments
 
