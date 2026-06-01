@@ -1,6 +1,6 @@
 #!/bin/bash
 # src/modules/hierarchical_joint_fusion.sh - SIMPLIFIED
-# Direct Talairach label extraction (removed complex joint fusion voting)
+# Harvard-Oxford brainstem extraction with optional Talairach subdivisions
 
 source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 source ./config/default_config.sh
@@ -11,7 +11,7 @@ execute_hierarchical_joint_fusion() {
     local output_prefix="$2"
     local temp_dir="$3"
     
-    log_formatted "INFO" "=== SIMPLIFIED TALAIRACH LABEL EXTRACTION ==="
+    log_formatted "INFO" "=== HARVARD-OXFORD BRAINSTEM EXTRACTION ==="
     log_message "Input: $input_file"
     log_message "Output prefix: $output_prefix"
     log_message "Template resolution: $TEMPLATE_RES"
@@ -20,7 +20,7 @@ execute_hierarchical_joint_fusion() {
     mkdir -p "${fusion_workspace}"/{atlases,registration,labels,results}
     
     prepare_atlas_ensemble "$fusion_workspace" || return 1
-    extract_talairach_labels "$input_file" "$fusion_workspace" || return 1
+    extract_harvard_oxford_brainstem "$input_file" "$fusion_workspace" || return 1
     generate_segmentation_outputs "$fusion_workspace" "$output_prefix" "$input_file" || return 1
     
     log_formatted "SUCCESS" "Label extraction completed successfully"
@@ -29,64 +29,100 @@ execute_hierarchical_joint_fusion() {
 
 prepare_atlas_ensemble() {
     local workspace="$1"
-    log_message "Preparing Talairach atlas..."
+    log_message "Preparing Harvard-Oxford and Talairach atlases..."
     
     local talairach_atlas="${FSLDIR}/data/atlases/Talairach/Talairach-labels-${TEMPLATE_RES}.nii.gz"
+    local harvard_oxford_atlas="${FSLDIR}/data/atlases/HarvardOxford/HarvardOxford-sub-maxprob-thr0-${TEMPLATE_RES}.nii.gz"
     
     if [[ ! -f "$talairach_atlas" ]]; then
         log_formatted "ERROR" "Talairach atlas not found: $talairach_atlas"
         return 1
     fi
+    if [[ ! -f "$harvard_oxford_atlas" ]]; then
+        log_formatted "ERROR" "Harvard-Oxford subcortical atlas not found: $harvard_oxford_atlas"
+        return 1
+    fi
     
     cp "$talairach_atlas" "${workspace}/atlases/talairach.nii.gz"
-    log_formatted "SUCCESS" "Atlas prepared"
+    cp "$harvard_oxford_atlas" "${workspace}/atlases/harvard_oxford_subcortical.nii.gz"
+    log_formatted "SUCCESS" "Atlases prepared"
     return 0
 }
 
-extract_talairach_labels() {
+extract_harvard_oxford_brainstem() {
     local input_file="$1"
     local workspace="$2"
     
-    log_message "Registering and extracting Talairach labels..."
+    log_message "Registering and extracting Harvard-Oxford brainstem label..."
     
+    local harvard_oxford_atlas="${workspace}/atlases/harvard_oxford_subcortical.nii.gz"
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
+    local mni_template="${FSLDIR}/data/standard/MNI152_T1_${TEMPLATE_RES}_brain.nii.gz"
     local registration_dir="${workspace}/registration"
     local results_dir="${workspace}/results"
     
     mkdir -p "$registration_dir"
+
+    if [[ ! -f "$mni_template" ]]; then
+        mni_template="${FSLDIR}/data/standard/MNI152_T1_${TEMPLATE_RES}.nii.gz"
+    fi
+    if [[ ! -f "$mni_template" ]]; then
+        log_formatted "ERROR" "MNI template not found for Talairach registration"
+        return 1
+    fi
     
-    log_message "Registering Talairach atlas to subject space..."
-    local talairach_prefix="${registration_dir}/talairach_to_subject_"
+    log_message "Registering MNI template to subject space..."
+    log_message "Template: $mni_template"
+    local atlas_prefix="${registration_dir}/mni_to_subject_"
     
     antsRegistrationSyN.sh \
         -d 3 \
         -f "$input_file" \
-        -m "$talairach_atlas" \
-        -o "$talairach_prefix" \
+        -m "$mni_template" \
+        -o "$atlas_prefix" \
         -t s \
         -j 1 \
         -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
     
-    local talairach_affine="${talairach_prefix}0GenericAffine.mat"
-    local talairach_warp="${talairach_prefix}1Warp.nii.gz"
+    local atlas_affine="${atlas_prefix}0GenericAffine.mat"
+    local atlas_warp="${atlas_prefix}1Warp.nii.gz"
     
-    if [[ ! -f "$talairach_affine" ]] || [[ ! -f "$talairach_warp" ]]; then
-        log_formatted "ERROR" "Talairach registration failed"
+    if [[ ! -f "$atlas_affine" ]] || [[ ! -f "$atlas_warp" ]]; then
+        log_formatted "ERROR" "MNI-to-subject registration failed"
         return 1
     fi
     
-    log_message "Warping Talairach atlas to subject space..."
+    log_message "Warping Harvard-Oxford atlas to subject space..."
+    local harvard_subject_space="${results_dir}/harvard_oxford_in_subject_space.nii.gz"
+    antsApplyTransforms -d 3 -i "$harvard_oxford_atlas" -r "$input_file" \
+        -o "$harvard_subject_space" \
+        -t "$atlas_warp" -t "$atlas_affine" -n NearestNeighbor
+    
+    if [[ ! -f "$harvard_subject_space" ]]; then
+        log_formatted "ERROR" "Failed to warp Harvard-Oxford atlas to subject space"
+        return 1
+    fi
+
+    # Harvard-Oxford XML label index 7 is Brain-Stem; maxprob image stores index+1.
+    local brainstem_mask="${results_dir}/brainstem_mask.nii.gz"
+    fslmaths "$harvard_subject_space" -thr 8 -uthr 8 -bin "$brainstem_mask"
+    local brainstem_voxels=$(fslstats "$brainstem_mask" -V | awk '{print $1}')
+    log_message "  ✓ Harvard-Oxford Brain-Stem: ${brainstem_voxels} voxels"
+
+    if [[ "$brainstem_voxels" -lt 1000 ]]; then
+        log_formatted "ERROR" "Harvard-Oxford brainstem mask is implausibly small: ${brainstem_voxels} voxels"
+        return 1
+    fi
+
+    # Keep Talairach only as optional coarse subdivisions; do not use it as the
+    # primary brainstem mask.
+    log_message "Warping Talairach atlas for optional subdivisions..."
     local talairach_subject_space="${results_dir}/talairach_in_subject_space.nii.gz"
     antsApplyTransforms -d 3 -i "$talairach_atlas" -r "$input_file" \
         -o "$talairach_subject_space" \
-        -t "$talairach_warp" -t "$talairach_affine" -n NearestNeighbor
-    
-    if [[ ! -f "$talairach_subject_space" ]]; then
-        log_formatted "ERROR" "Failed to warp atlas to subject space"
-        return 1
-    fi
-    
-    log_message "Extracting brainstem regions from warped atlas..."
+        -t "$atlas_warp" -t "$atlas_affine" -n NearestNeighbor
+
+    log_message "Extracting optional Talairach coarse subdivisions..."
     
     # Pons (indices 71-72)
     local pons_mask="${results_dir}/pons_mask.nii.gz"
@@ -106,16 +142,10 @@ extract_talairach_labels() {
     local midbrain_voxels=$(fslstats "$midbrain_mask" -V | awk '{print $1}')
     log_message "  ✓ Midbrain: ${midbrain_voxels} voxels"
     
-    # Combined brainstem
-    local brainstem_mask="${results_dir}/brainstem_mask.nii.gz"
-    fslmaths "$pons_mask" -add "$medulla_mask" -add "$midbrain_mask" -bin "$brainstem_mask"
-    local brainstem_voxels=$(fslstats "$brainstem_mask" -V | awk '{print $1}')
-    log_message "  ✓ Combined brainstem: ${brainstem_voxels} voxels"
-    
     # Create joint_fusion_labels for downstream compatibility
     cp "$brainstem_mask" "${results_dir}/joint_fusion_labels.nii.gz"
     
-    log_formatted "SUCCESS" "Label extraction completed"
+    log_formatted "SUCCESS" "Harvard-Oxford brainstem extraction completed"
     return 0
 }
 
@@ -146,10 +176,48 @@ generate_segmentation_outputs() {
 
     # Generate hemisphere masks
     generate_hemisphere_masks "$brainstem_mask" "$output_prefix" || return 1
+    validate_brainstem_mask_geometry "$brainstem_mask" "$output_prefix" || return 1
     
     log_message "  ✓ Primary brainstem mask: $brainstem_mask"
     
     log_formatted "SUCCESS" "Segmentation outputs generated successfully"
+    return 0
+}
+
+validate_brainstem_mask_geometry() {
+    local brainstem_mask="$1"
+    local output_prefix="$2"
+    local qa_file="${output_prefix}_brainstem_geometry_qa.txt"
+
+    log_message "Validating brainstem mask geometry..."
+
+    local voxel_stats
+    voxel_stats=$(fslstats "$brainstem_mask" -V)
+    local voxels=$(echo "$voxel_stats" | awk '{print $1}')
+    local volume_mm3=$(echo "$voxel_stats" | awk '{print $2}')
+    local center_of_mass
+    center_of_mass=$(fslstats "$brainstem_mask" -C)
+    local dims
+    dims="$(fslval "$brainstem_mask" dim1) $(fslval "$brainstem_mask" dim2) $(fslval "$brainstem_mask" dim3)"
+
+    {
+        echo "Brainstem Geometry QA"
+        echo "====================="
+        echo "Mask: $brainstem_mask"
+        echo "Voxels: $voxels"
+        echo "Volume_mm3: $volume_mm3"
+        echo "CenterOfMass_vox: $center_of_mass"
+        echo "Dimensions: $dims"
+    } > "$qa_file"
+
+    if [[ "$voxels" -lt 1000 ]]; then
+        echo "Status: FAIL_TOO_SMALL" >> "$qa_file"
+        log_formatted "ERROR" "Brainstem mask too small: $voxels voxels"
+        return 1
+    fi
+
+    echo "Status: PASS" >> "$qa_file"
+    log_message "  ✓ Brainstem geometry QA: $qa_file"
     return 0
 }
 
@@ -166,8 +234,8 @@ generate_talairach_subdivisions() {
     fi
 
     local talairach_atlas="${workspace}/atlases/talairach.nii.gz"
-    local talairach_affine="${workspace}/registration/talairach_to_subject_0GenericAffine.mat"
-    local talairach_warp="${workspace}/registration/talairach_to_subject_1Warp.nii.gz"
+    local talairach_affine="${workspace}/registration/mni_to_subject_0GenericAffine.mat"
+    local talairach_warp="${workspace}/registration/mni_to_subject_1Warp.nii.gz"
     
     declare -A TALAIRACH_REGIONS=(
         ["left_medulla"]="5"
@@ -235,9 +303,10 @@ generate_hemisphere_masks() {
 
 export -f execute_hierarchical_joint_fusion
 export -f prepare_atlas_ensemble
-export -f extract_talairach_labels
+export -f extract_harvard_oxford_brainstem
 export -f generate_segmentation_outputs
 export -f generate_talairach_subdivisions
 export -f generate_hemisphere_masks
+export -f validate_brainstem_mask_geometry
 
 log_message "Hierarchical joint fusion module loaded (simplified)"
