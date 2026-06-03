@@ -101,7 +101,7 @@ export OMP_NUM_THREADS=$CORES
 export VECLIB_MAXIMUM_THREADS=$CORES
 export OPENBLAS_NUM_THREADS=$CORES
 
-if [[ "$CORES" -le 4 ]]; then  
+if [[ "$CORES" -le 20 ]]; then  
   # VM or container -level optimisations 
   export MACHINE_SPEC="VERY_LOW"
   export QUALITY_PRESET="VERY_LOW"
