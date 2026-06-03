@@ -82,6 +82,7 @@ set -o pipefail
 PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source modules (unset guard to force fresh load each run)
+source ${FSLDIR}/etc/fslconf/fsl.sh
 unset _ENVIRONMENT_LOADED 2>/dev/null || true
 source "${PIPELINE_DIR}/modules/environment.sh"
 source "${PIPELINE_DIR}/modules/utils.sh"
