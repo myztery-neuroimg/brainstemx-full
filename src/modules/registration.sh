@@ -1363,6 +1363,306 @@ register_all_modalities() {
     return 0
 }
 
+# =============================================================================
+# CONTRAST-MATCHED CASCADED REGISTRATION
+# -----------------------------------------------------------------------------
+# Cascade:  T1 (master, ->MNI)  <-  FLAIR  <-  {T2, DWI, SWI}
+# A T2-weighted modality is registered to its same-contrast FLAIR anchor, then
+# its transforms are COMPOSED with the existing FLAIR->T1 transforms so the
+# modality reaches T1 space in a SINGLE antsApplyTransforms application.  Both
+# the composed forward and inverse transform lists are persisted.
+#
+# These functions are NO-OPs unless CONTRAST_MATCHED_REGISTRATION=true is wired
+# in by the caller (pipeline.sh); they never run on the default flag-off path.
+# =============================================================================
+
+# Resolve the contrast anchor modality for a given modality from CONTRAST_ANCHOR_MAP.
+# Echoes the anchor modality (e.g. DWI -> FLAIR, FLAIR -> T1, T1 -> MNI).
+# Falls back to T1 when the modality is not listed in the map.
+resolve_contrast_anchor() {
+    local modality="$1"
+    local entry
+    for entry in "${CONTRAST_ANCHOR_MAP[@]}"; do
+        if [ "${entry%%:*}" = "$modality" ]; then
+            echo "${entry##*:}"
+            return 0
+        fi
+    done
+    # Unlisted modality: default to the T1 master.
+    echo "T1"
+    return 0
+}
+
+# Build the ordered antsApplyTransforms -t argument list for a SyN transform set.
+# Usage: _collect_syn_transform_args <out_array_name> <prefix> <direction>
+#   prefix    : registration output prefix (expects ${prefix}0GenericAffine.mat,
+#               ${prefix}1Warp.nii.gz, ${prefix}1InverseWarp.nii.gz)
+#   direction : "forward" (moving->fixed) or "inverse" (fixed->moving)
+#
+# ANTs applies -t entries RIGHT-TO-LEFT (last listed is applied first).
+#   forward (moving->fixed): -t Warp -t Affine        (affine first, then warp)
+#   inverse (fixed->moving): -t [Affine,1] -t InverseWarp (inverse warp first,
+#                            then inverted affine)
+# Returns 1 if the required transforms are missing.
+_collect_syn_transform_args() {
+    local -n _out_args="$1"
+    local prefix="$2"
+    local direction="$3"
+
+    local affine="${prefix}0GenericAffine.mat"
+    local warp="${prefix}1Warp.nii.gz"
+    local inverse_warp="${prefix}1InverseWarp.nii.gz"
+
+    if [ ! -f "$affine" ]; then
+        log_formatted "ERROR" "Composing transforms: affine not found: $affine"
+        return 1
+    fi
+
+    if [ "$direction" = "forward" ]; then
+        # moving -> fixed: warp listed first, affine second (affine applied first).
+        if [ -f "$warp" ]; then
+            _out_args+=("-t" "$warp")
+        fi
+        _out_args+=("-t" "$affine")
+    else
+        # fixed -> moving: inverted affine listed first, inverse warp second
+        # (inverse warp applied first).
+        _out_args+=("-t" "[${affine},1]")
+        if [ -f "$inverse_warp" ]; then
+            _out_args+=("-t" "$inverse_warp")
+        fi
+    fi
+    return 0
+}
+
+# Register a T2-weighted modality to its FLAIR anchor and compose the resulting
+# transforms with the existing FLAIR->T1 transforms so the modality is resampled
+# into T1 space in a SINGLE antsApplyTransforms application.
+#
+# Usage:
+#   register_contrast_matched_modality \
+#       <modality_image> <modality_name> \
+#       <flair_anchor_image> <flair_to_t1_prefix> \
+#       <t1_reference_image> <output_dir>
+#
+#   flair_to_t1_prefix : prefix of the EXISTING FLAIR->T1 registration outputs
+#                        (FLAIR moving, T1 fixed) — i.e. ${reg_dir}/<flair>_to_<t1>.
+#   t1_reference_image : the T1 (or pipeline reference) grid to resample onto.
+#
+# Persists, under <output_dir>:
+#   <mod>_to_flair*                         modality->FLAIR registration outputs
+#   <mod>_to_t1_composedWarped.nii.gz       modality resampled into T1 space
+#   <mod>_to_t1_forward_transforms.txt      composed forward -t list (mod->T1)
+#   <mod>_to_t1_inverse_transforms.txt      composed inverse -t list (T1->mod)
+#   <mod>_transform_manifest.txt            human-readable provenance manifest
+register_contrast_matched_modality() {
+    local modality_image="$1"
+    local modality_name="$2"
+    local flair_anchor="$3"
+    local flair_to_t1_prefix="$4"
+    local t1_reference="$5"
+    local output_dir="$6"
+
+    log_message "=== Contrast-matched registration: ${modality_name} -> FLAIR -> T1 ==="
+    log_message "Modality image:      $modality_image"
+    log_message "FLAIR anchor:        $flair_anchor"
+    log_message "FLAIR->T1 prefix:    $flair_to_t1_prefix"
+    log_message "T1 reference:        $t1_reference"
+    log_message "Output dir:          $output_dir"
+
+    # Input validation.
+    if [ ! -f "$modality_image" ]; then
+        log_formatted "ERROR" "Contrast-matched: modality image not found: $modality_image"
+        return "${ERR_DATA_MISSING:-1}"
+    fi
+    if [ ! -f "$flair_anchor" ]; then
+        log_formatted "ERROR" "Contrast-matched: FLAIR anchor not found: $flair_anchor"
+        return "${ERR_DATA_MISSING:-1}"
+    fi
+    if [ ! -f "$t1_reference" ]; then
+        log_formatted "ERROR" "Contrast-matched: T1 reference not found: $t1_reference"
+        return "${ERR_DATA_MISSING:-1}"
+    fi
+
+    local flair_to_t1_affine="${flair_to_t1_prefix}0GenericAffine.mat"
+    if [ ! -f "$flair_to_t1_affine" ]; then
+        log_formatted "ERROR" "Contrast-matched: FLAIR->T1 transforms missing (need ${flair_to_t1_affine}); cannot compose"
+        return "${ERR_REGISTRATION:-1}"
+    fi
+
+    mkdir -p "$output_dir"
+
+    local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
+
+    # --- Step 1: register the modality to the FLAIR anchor (same-contrast). -----
+    # Reuse register_to_reference (multi-stage rigid->affine->SyN).  The metric is
+    # chosen inside perform_multistage_registration: same modality name => CC,
+    # otherwise MI.  For the DWI-trace/SWI cases we keep MI by passing the FLAIR
+    # modality name unchanged so the modality differs from the anchor (=> MI),
+    # which is the safe choice configured via CONTRAST_MATCHED_METRIC=MI.
+    local mod_to_flair_prefix="${output_dir}/$(basename "$modality_image" .nii.gz)_to_flair"
+    local mod_to_flair_warped="${mod_to_flair_prefix}Warped.nii.gz"
+
+    if [ -f "$mod_to_flair_warped" ] && [ -s "$mod_to_flair_warped" ]; then
+        log_message "Found existing ${modality_name}->FLAIR registration: $mod_to_flair_warped (skipping)"
+    else
+        log_message "Registering ${modality_name} to FLAIR anchor (same-contrast)..."
+        # Capture status without tripping `set -e` if a caller invokes this
+        # function outside an if/|| context.
+        local reg_status=0
+        register_to_reference "$flair_anchor" "$modality_image" "$modality_name" "$mod_to_flair_prefix" || reg_status=$?
+        if [ "$reg_status" -ne 0 ] || [ ! -f "$mod_to_flair_warped" ]; then
+            log_formatted "ERROR" "${modality_name}->FLAIR registration failed (status $reg_status)"
+            return "${ERR_REGISTRATION:-1}"
+        fi
+    fi
+
+    # --- Step 2: build the COMPOSED forward transform list (modality -> T1). ----
+    # Chain order, applied right-to-left by ANTs:
+    #   modality --(mod->FLAIR)--> FLAIR --(FLAIR->T1)--> T1
+    # so list the FLAIR->T1 stage FIRST, then the mod->FLAIR stage:
+    #   -t FLAIR2T1_warp -t FLAIR2T1_affine -t mod2FLAIR_warp -t mod2FLAIR_affine
+    local forward_args=()
+    if ! _collect_syn_transform_args forward_args "$flair_to_t1_prefix" "forward"; then
+        log_formatted "ERROR" "Could not assemble FLAIR->T1 forward transforms"
+        return "${ERR_REGISTRATION:-1}"
+    fi
+    if ! _collect_syn_transform_args forward_args "$mod_to_flair_prefix" "forward"; then
+        log_formatted "ERROR" "Could not assemble ${modality_name}->FLAIR forward transforms"
+        return "${ERR_REGISTRATION:-1}"
+    fi
+
+    # --- Step 3: build the COMPOSED inverse transform list (T1 -> modality). ----
+    # Reverse the cascade: undo FLAIR->T1 first, then undo mod->FLAIR.  Applied
+    # right-to-left this maps T1 grid points back to the modality:
+    #   -t [mod2FLAIR_affine,1] -t mod2FLAIR_inverseWarp -t [FLAIR2T1_affine,1] -t FLAIR2T1_inverseWarp
+    local inverse_args=()
+    if ! _collect_syn_transform_args inverse_args "$mod_to_flair_prefix" "inverse"; then
+        log_formatted "ERROR" "Could not assemble ${modality_name}->FLAIR inverse transforms"
+        return "${ERR_REGISTRATION:-1}"
+    fi
+    if ! _collect_syn_transform_args inverse_args "$flair_to_t1_prefix" "inverse"; then
+        log_formatted "ERROR" "Could not assemble FLAIR->T1 inverse transforms"
+        return "${ERR_REGISTRATION:-1}"
+    fi
+
+    # --- Step 4: persist the composed transform lists + a provenance manifest. --
+    local forward_list_file="${output_dir}/$(basename "$modality_image" .nii.gz)_to_t1_forward_transforms.txt"
+    local inverse_list_file="${output_dir}/$(basename "$modality_image" .nii.gz)_to_t1_inverse_transforms.txt"
+    local manifest_file="${output_dir}/$(basename "$modality_image" .nii.gz)_transform_manifest.txt"
+
+    printf '%s\n' "${forward_args[@]}" > "$forward_list_file"
+    printf '%s\n' "${inverse_args[@]}" > "$inverse_list_file"
+    {
+        echo "Contrast-matched cascade transform manifest"
+        echo "==========================================="
+        echo "Generated: $(date)"
+        echo "Modality:           $modality_name"
+        echo "Modality image:     $modality_image"
+        echo "FLAIR anchor:       $flair_anchor"
+        echo "T1 reference grid:  $t1_reference"
+        echo ""
+        echo "Cascade: ${modality_name} -> FLAIR -> T1"
+        echo ""
+        echo "FORWARD (${modality_name} -> T1) antsApplyTransforms args:"
+        echo "  ${forward_args[*]}"
+        echo ""
+        echo "INVERSE (T1 -> ${modality_name}) antsApplyTransforms args:"
+        echo "  ${inverse_args[*]}"
+    } > "$manifest_file"
+    log_message "Persisted composed forward transforms: $forward_list_file"
+    log_message "Persisted composed inverse transforms: $inverse_list_file"
+    log_message "Persisted transform manifest:          $manifest_file"
+
+    # --- Step 5: resample the modality into T1 space in ONE application. --------
+    # Intensity image => continuous interpolation (avoids the double interpolation
+    # of warping mod->FLAIR then FLAIR->T1 separately).
+    local composed_warped="${output_dir}/$(basename "$modality_image" .nii.gz)_to_t1_composedWarped.nii.gz"
+    local interp="${CONTRAST_MATCHED_INTENSITY_INTERP:-Linear}"
+
+    local apply_status=0
+    execute_ants_command "contrast_matched_${modality_name}_to_t1" \
+        "Composed ${modality_name}->FLAIR->T1 resample (single application)" \
+        "${ants_bin}/antsApplyTransforms" \
+        -d 3 \
+        -i "$modality_image" \
+        -r "$t1_reference" \
+        -o "$composed_warped" \
+        "${forward_args[@]}" \
+        -n "$interp" || apply_status=$?
+
+    if [ "$apply_status" -ne 0 ] || [ ! -f "$composed_warped" ]; then
+        log_formatted "ERROR" "Composed ${modality_name}->T1 resample failed (status $apply_status)"
+        return "${ERR_REGISTRATION:-1}"
+    fi
+
+    log_formatted "SUCCESS" "✅ Contrast-matched ${modality_name} resampled into T1 space: $composed_warped"
+    return 0
+}
+
+# Orchestrate contrast-matched registration for all present T2-weighted modalities.
+#
+# Usage:
+#   register_contrast_matched_cascade \
+#       <t1_reference> <flair_anchor> <flair_to_t1_prefix> \
+#       <output_dir> <modality_spec> [<modality_spec> ...]
+#
+#   modality_spec : "NAME=path" (e.g. "DWI=/path/dwi_std.nii.gz").  Only specs
+#                   whose path exists AND whose resolved anchor is FLAIR are
+#                   processed; everything else is skipped (logged, non-fatal).
+#
+# Returns 0 if every present T2-weighted modality registered successfully (or if
+# none were present); non-zero if any attempted modality failed.
+register_contrast_matched_cascade() {
+    local t1_reference="$1"
+    local flair_anchor="$2"
+    local flair_to_t1_prefix="$3"
+    local output_dir="$4"
+    shift 4
+    local specs=("$@")
+
+    log_message "=== Contrast-matched cascade: registering T2-weighted modalities to FLAIR -> T1 ==="
+
+    if [ ${#specs[@]} -eq 0 ]; then
+        log_message "No T2-weighted modality specs supplied; nothing to do"
+        return 0
+    fi
+
+    mkdir -p "$output_dir"
+
+    local overall_status=0
+    local processed=0
+    local spec name path anchor
+    for spec in "${specs[@]}"; do
+        name="${spec%%=*}"
+        path="${spec#*=}"
+
+        if [ -z "$path" ] || [ ! -f "$path" ]; then
+            log_message "Skipping ${name}: image not present ($path)"
+            continue
+        fi
+
+        anchor="$(resolve_contrast_anchor "$name")"
+        if [ "$anchor" != "FLAIR" ]; then
+            log_message "Skipping ${name}: anchor is '${anchor}', not FLAIR (handled by the standard T1 path)"
+            continue
+        fi
+
+        processed=$((processed + 1))
+        if register_contrast_matched_modality \
+                "$path" "$name" "$flair_anchor" "$flair_to_t1_prefix" \
+                "$t1_reference" "$output_dir"; then
+            log_formatted "SUCCESS" "Contrast-matched ${name} complete"
+        else
+            log_formatted "WARNING" "Contrast-matched ${name} failed (continuing with remaining modalities)"
+            overall_status=1
+        fi
+    done
+
+    log_message "Contrast-matched cascade processed ${processed} T2-weighted modality(ies)"
+    return $overall_status
+}
+
 # Export functions
 export -f perform_multistage_registration
 export -f register_to_reference
@@ -1371,6 +1671,9 @@ export -f validate_registration
 export -f apply_transformation
 export -f register_multiple_to_reference
 export -f register_all_modalities
+export -f resolve_contrast_anchor
+export -f register_contrast_matched_modality
+export -f register_contrast_matched_cascade
 
 # Helper function to prepare white matter segmentation
 prepare_wm_segmentation() {
