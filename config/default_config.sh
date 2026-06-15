@@ -408,6 +408,53 @@ export SAMSEG_LESION_MASK_PATTERN="0 1" # one number per input (T1 FLAIR): 0=no 
 export SAMSEG_LESION_LABEL=99          # lesion label value in SAMSEG seg.mgz
 export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recommended when FLAIR shows pallidum)
 
+# ===========================================================================
+# Deep-learning WMH detection - MARS-WMH        (src/modules/wmh_mars.sh)
+# ===========================================================================
+# MARS-WMH (Gesierich et al., Cereb Circ Cogn Behav 2025;9:100393,
+# DOI 10.1016/j.cccb.2025.100393) is an nnU-Net / MD-GRU deep-learning WMH
+# segmentation tool from MIAC. It is the best-validated WMH tool in the
+# literature for scan-rescan, inter-scanner, and longitudinal robustness.
+# Inputs co-registered FLAIR + T1; produces a whole-brain WMH mask. The module
+# intersects that mask with the brainstem ROI (a MARS-brainstem ROI if available,
+# else the pipeline's *brainstem*mask*.nii.gz) for a brainstem-restricted burden.
+#
+# !! NON-COMMERCIAL LICENSE !!  MARS-WMH and MARS-brainstem
+# (https://github.com/miac-research/MARS-WMH, .../dl-brainstem) ship as prebuilt
+# Docker/Apptainer containers under a NON-COMMERCIAL license. They are NOT part
+# of the core dependency set and NOT installed by `uv sync`. Obtaining/running
+# them is the operator's responsibility, subject to that license.
+#
+# DEFAULT OFF: with no container/CLI present the module logs a clear warning and
+# skips gracefully (non-fatal). Enable only after pulling the container.
+#
+# Entry point: run_mars_wmh <flair.nii.gz> <t1.nii.gz> [<out_dir>]
+export WMH_MARS_ENABLED=false             # master switch; true = run MARS-WMH
+
+# --- Back-end selection / images --------------------------------------------
+# "auto" tries Docker image, then an Apptainer .sif, then a native CLI.
+# Force a single back-end with "docker" | "apptainer" | "cli".
+export MARS_WMH_BACKEND="auto"
+export MARS_WMH_DOCKER_IMAGE="miac/mars-wmh:latest"  # Docker image tag (adjust to your pull)
+export MARS_WMH_SIF=""                    # path to an Apptainer/Singularity .sif image
+export MARS_WMH_CLI="mars-wmh"            # native CLI name on PATH (if installed)
+export MARS_WMH_DOCKER_OPTS=""            # extra `docker run` opts (e.g. "--gpus all")
+export MARS_WMH_APPTAINER_OPTS=""         # extra apptainer/singularity run opts (e.g. "--nv")
+
+# --- Thresholding ------------------------------------------------------------
+export MARS_WMH_THRESHOLD=0.5             # prob-map threshold -> binary WMH mask (0-1)
+
+# --- Optional MARS-brainstem ROI (preferred over the pipeline brainstem mask) -
+# When enabled and available, MARS-brainstem defines the brainstem ROI used for
+# the WMH intersection; otherwise the module falls back to the pipeline mask.
+export MARS_BRAINSTEM_ENABLED=false       # true = try MARS-brainstem to build the ROI
+export MARS_BRAINSTEM_ROI=""              # explicit pre-computed brainstem ROI (takes precedence)
+export MARS_BRAINSTEM_DOCKER_IMAGE="miac/dl-brainstem:latest"  # MARS-brainstem Docker image
+export MARS_BRAINSTEM_SIF=""              # path to a MARS-brainstem Apptainer .sif image
+export MARS_BRAINSTEM_CLI="mars-brainstem"  # native MARS-brainstem CLI name on PATH
+export MARS_BRAINSTEM_DOCKER_OPTS=""      # extra `docker run` opts for MARS-brainstem
+export MARS_BRAINSTEM_APPTAINER_OPTS=""   # extra apptainer/singularity run opts for MARS-brainstem
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
