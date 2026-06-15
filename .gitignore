@@ -1,6 +1,7 @@
 DICOM
 mri-brain-examples-ds004199-1.0.6/
 validation_runs/
+test_output/
 .DS_Store
 .git
 *.nii.gz

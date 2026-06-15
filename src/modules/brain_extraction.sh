@@ -4,7 +4,11 @@
 #
 # This module contains:
 # - Multi-axial integration
-# - Brain extraction
+# - Brain extraction: SynthStrip primary (FreeSurfer mri_synthstrip,
+#   contrast-agnostic; Hoopes 2022) with an automatic SynthStrip -> ANTs(Otsu)
+#   -> BET (Smith 2002) fallback chain, a shared robustfov FOV/neck-removal
+#   pre-step, modality-specific BET -f, and a posterior-fossa coverage QC gate
+#   (selected via BRAIN_EXTRACTION_METHOD)
 # - Dimension standardization
 # - Cropping with padding
 # - Parallel processing for all of the above
