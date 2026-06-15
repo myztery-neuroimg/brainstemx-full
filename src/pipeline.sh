@@ -1405,62 +1405,50 @@ run_pipeline() {
       fi
     fi
 
-    # DICOM Cluster Mapping Integration (STOPGAP: gated OFF by default).
-    # The cluster-to-DICOM coordinate mapping stage is known-broken and pending a
-    # separate rewrite, so it is skipped unless RUN_DICOM_MAPPING=true.
-    if [ "${RUN_DICOM_MAPPING:-false}" != "true" ]; then
-      log_formatted "INFO" "Skipping DICOM cluster mapping (RUN_DICOM_MAPPING != true; stage pending rewrite)"
+    # DICOM Cluster Mapping Integration (functional; ON by default).
+    # Maps each detected cluster back to its source DICOM slice. Opt out with
+    # RUN_DICOM_MAPPING=false. Non-fatal: a failure here never aborts the run.
+    if [ "${RUN_DICOM_MAPPING:-true}" != "true" ]; then
+      log_formatted "INFO" "Skipping DICOM cluster mapping (RUN_DICOM_MAPPING != true)"
     else
-    log_formatted "INFO" "===== MAPPING CLUSTERS TO DICOM SPACE ====="
-    log_message "Performing cluster-to-DICOM coordinate mapping for medical viewer compatibility"
+    log_formatted "INFO" "===== MAPPING CLUSTERS TO DICOM ====="
+    log_message "Mapping detected clusters back to their source DICOM slices"
 
     # Create DICOM mapping directory
     local dicom_mapping_dir="${RESULTS_DIR}/dicom_cluster_mapping"
     mkdir -p "$dicom_mapping_dir"
 
-    # Find cluster analysis results — check comprehensive analysis first, then legacy
-    local cluster_analysis_dir="${comprehensive_dir}/hyperintensities/harvard_brainstem/cluster_analysis"
-    if [ ! -d "$cluster_analysis_dir" ]; then
-      cluster_analysis_dir="${hyperintensities_dir}/clusters"
+    # The input contract is the cluster INDEX volume (clusters.nii.gz) the
+    # analysis writes; perform_cluster_to_dicom_mapping discovers it under the
+    # given directory. Prefer the modern hyperintensities clusters dir, fall
+    # back to the legacy comprehensive cluster_analysis dir.
+    local cluster_analysis_dir="${hyperintensities_dir}/clusters"
+    if [ ! -f "${cluster_analysis_dir}/clusters.nii.gz" ]; then
+      cluster_analysis_dir="${comprehensive_dir}/hyperintensities/harvard_brainstem/cluster_analysis"
     fi
-    if [ -d "$cluster_analysis_dir" ] && [ -d "$SRC_DIR" ]; then
-      log_message "Running complete cluster-to-DICOM mapping pipeline..."
-      log_message "  Cluster analysis: $cluster_analysis_dir"
+
+    if [ -f "${cluster_analysis_dir}/clusters.nii.gz" ] && [ -d "$SRC_DIR" ]; then
+      log_message "Running cluster-to-DICOM mapping..."
+      log_message "  Cluster index dir: $cluster_analysis_dir"
       log_message "  Results directory: $RESULTS_DIR"
-      log_message "  DICOM directory: $SRC_DIR"
-      log_message "  Output directory: $dicom_mapping_dir"
-      
-      # Perform the complete mapping
+      log_message "  DICOM directory:   $SRC_DIR"
+      log_message "  Output directory:  $dicom_mapping_dir"
+
       if perform_cluster_to_dicom_mapping "$cluster_analysis_dir" "$RESULTS_DIR" "$SRC_DIR" "$dicom_mapping_dir"; then
-        log_formatted "SUCCESS" "Cluster-to-DICOM mapping completed successfully"
-        log_message "Medical imaging viewers can now display cluster locations"
-        log_message "Mapping results: $dicom_mapping_dir"
-        
-        # Create summary of mapped clusters
-        local summary_file="${dicom_mapping_dir}/mapping_summary.txt"
-        {
-          echo "DICOM Cluster Mapping Summary"
-          echo "============================"
-          echo "Generated: $(date)"
-          echo ""
-          echo "Mapped cluster files:"
-          find "$dicom_mapping_dir" -name "*_dicom_mapping.txt" -exec basename {} \; | sort
-          echo ""
-          echo "Total clusters mapped:"
-          find "$dicom_mapping_dir" -name "*_dicom_mapping.txt" -exec cat {} \; | tail -n +7 | grep -v "NO_MATCH" | wc -l
-          echo ""
-          echo "Clusters successfully matched to DICOM files:"
-          find "$dicom_mapping_dir" -name "*_dicom_mapping.txt" -exec cat {} \; | tail -n +7 | grep -v "NO_MATCH" | grep -v "UNKNOWN" | wc -l
-        } > "$summary_file"
-        
-        log_message "Mapping summary created: $summary_file"
+        log_formatted "SUCCESS" "Cluster-to-DICOM mapping completed"
+        log_message "Per-cluster mapping (CSV + TXT): $dicom_mapping_dir"
+        # Count clusters whose nearest source slice is WITHIN tolerance. The
+        # WithinTolerance flag is the LAST CSV column (yes/no, comma-free), so
+        # $NF is reliable even if an earlier quoted field contains a comma.
+        local within
+        within=$(find "$dicom_mapping_dir" -name "*_dicom_mapping.csv" -exec awk -F',' 'NR>1 && $NF=="yes"' {} \; 2>/dev/null | wc -l | tr -d ' ')
+        log_message "Clusters matched within tolerance to a source DICOM slice: ${within}"
       else
-        log_formatted "WARNING" "Cluster-to-DICOM mapping encountered issues"
-        log_message "Check mapping logs for details"
+        log_formatted "WARNING" "Cluster-to-DICOM mapping encountered issues - see log"
       fi
     else
-      log_formatted "WARNING" "Cluster analysis directory not found - skipping DICOM mapping"
-      log_message "Expected cluster analysis at: $cluster_analysis_dir"
+      log_formatted "WARNING" "No cluster index volume or DICOM directory - skipping DICOM mapping"
+      log_message "Expected cluster index at: ${cluster_analysis_dir}/clusters.nii.gz"
     fi
     fi  # end RUN_DICOM_MAPPING gate
 

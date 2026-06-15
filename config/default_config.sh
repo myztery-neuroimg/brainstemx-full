@@ -1011,11 +1011,20 @@ export  SUBJECT_LIST=""  # Path to subject list file for batch processing
 # ------------------------------------------------------------------------------
 # DICOM cluster-to-coordinate mapping stage (Step 6 tail)
 # ------------------------------------------------------------------------------
-# STOPGAP (default OFF): the cluster-to-DICOM coordinate mapping stage
-# (dicom_cluster_mapping.sh, invoked at the tail of Step 6 in pipeline.sh) is
-# known-broken and pending a separate rewrite. It is gated OFF by default so a
-# normal run skips it; set RUN_DICOM_MAPPING=true to opt back in once fixed.
-export RUN_DICOM_MAPPING=false
+# Maps each detected hyperintensity cluster back to its source DICOM slice
+# (dicom_cluster_mapping.sh, invoked at the tail of Step 6 in pipeline.sh):
+# cluster index volume -> native FLAIR grid (antsApplyTransforms GenericLabel
+# through the persisted inverse chain) -> world mm (NIfTI sform) -> DICOM LPS
+# patient mm (RAS->LPS flip) -> nearest source DICOM slice by
+# ImagePositionPatient/ImageOrientationPatient (pydicom; dcmdump fallback),
+# emitting InstanceNumber + SOPInstanceUID + SliceLocation per cluster.
+# Functional and ON by default; set RUN_DICOM_MAPPING=false to opt out.
+export RUN_DICOM_MAPPING=true
+
+# Tolerance (mm) for reporting a cluster's nearest source DICOM slice. The
+# nearest slice is always reported; clusters whose nearest slice exceeds this
+# distance are flagged in the log (not dropped).
+export DICOM_MATCH_TOLERANCE_MM=5.0
 
 # ------------------------------------------------------------------------------
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)

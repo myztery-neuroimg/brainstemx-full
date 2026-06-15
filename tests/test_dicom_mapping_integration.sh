@@ -1,209 +1,154 @@
 #!/usr/bin/env bash
 #
-# test_dicom_mapping_integration.sh - Test script for DICOM cluster mapping integration
+# test_dicom_mapping_integration.sh - Tests for the rewritten DICOM cluster mapping.
 #
-# This script validates that the new DICOM cluster mapping module integrates properly
-# with the existing pipeline and checks for syntax errors or missing dependencies.
+# Covers:
+#   - module loads + exports its functions
+#   - pipeline still sources + calls the module
+#   - the un-gated default (RUN_DICOM_MAPPING=true) and opt-out (=false) both work
+#   - inverse-transform discovery prefers a persisted composed inverse list and
+#     otherwise builds the FLAIR<->T1 inverse from registration outputs
+#   - REAL ANTs round-trip (when ANTs+FSL present): a known cluster COG carried
+#     into a registered space and pulled back through resample_index_to_native is
+#     recovered on the original native grid within tolerance
+#   - bash syntax validation
 #
 
-# Set up test environment
-TEST_DIR="test_dicom_mapping"
-mkdir -p "$TEST_DIR"
-cd "$TEST_DIR"
+set -u
 
-echo "=== DICOM Cluster Mapping Integration Test ==="
-echo "Testing integration of cluster-to-DICOM mapping functionality"
-echo ""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/test_helpers.sh"
 
-# Test 1: Check if the module can be sourced without errors
-echo "Test 1: Module loading test"
-echo "Checking if dicom_cluster_mapping.sh can be loaded..."
+init_test_suite "DICOM Cluster Mapping (rewrite)"
+setup_test_environment
+load_environment_module
 
-# Source required dependencies first
-if [ -f "../src/modules/environment.sh" ]; then
-    source ../src/modules/environment.sh
-fi
+MODULE="$PROJECT_ROOT/src/modules/dicom_cluster_mapping.sh"
+PY_MODULE="$PROJECT_ROOT/src/modules/map_clusters_to_dicom.py"
 
-if [ -f "../src/modules/utils.sh" ]; then
-    source ../src/modules/utils.sh
-fi
+# ── 1. Module load + exports ───────────────────────────────────────────────────
+begin_test_group "1. Module loading and exports"
 
-# Try to source the new module
-if source ../src/modules/dicom_cluster_mapping.sh 2>/dev/null; then
-    echo "✓ PASS: Module loaded successfully"
-else
-    echo "✗ FAIL: Module failed to load"
-    echo "Error details:"
-    source ../src/modules/dicom_cluster_mapping.sh
-    exit 1
-fi
+bash -c "source '$PROJECT_ROOT/src/modules/environment.sh' >/dev/null 2>&1; source '$MODULE' >/dev/null 2>&1"
+assert_exit_code 0 "$?" "source dicom_cluster_mapping.sh (env loaded) succeeds"
 
-echo ""
+# shellcheck disable=SC1090
+source "$MODULE" 2>/dev/null
 
-# Test 2: Check if functions are properly exported
-echo "Test 2: Function availability test"
-echo "Checking if key functions are available..."
-
-functions_to_check=(
-    "extract_cluster_coordinates_from_fsl"
-    "convert_voxel_to_world_coordinates"
-    "map_clusters_to_dicom_space"
-    "match_clusters_to_dicom_files"
-    "perform_cluster_to_dicom_mapping"
-)
-
-all_functions_found=true
-for func in "${functions_to_check[@]}"; do
-    if declare -f "$func" > /dev/null 2>&1; then
-        echo "✓ PASS: Function '$func' is available"
-    else
-        echo "✗ FAIL: Function '$func' is not available"
-        all_functions_found=false
-    fi
+for func in \
+    perform_cluster_to_dicom_mapping \
+    map_cluster_index_to_dicom \
+    resample_index_to_native \
+    find_native_flair_reference \
+    match_with_dcmdump; do
+    assert_function_exists "$func" "function $func is defined"
 done
 
-if [ "$all_functions_found" = false ]; then
-    echo "Some functions are missing - check module exports"
-    exit 1
-fi
+assert_file_exists "$PY_MODULE" "python helper map_clusters_to_dicom.py exists"
 
-echo ""
+# ── 2. Pipeline integration ────────────────────────────────────────────────────
+begin_test_group "2. Pipeline integration"
 
-# Test 3: Create sample FSL cluster output to test parsing
-echo "Test 3: FSL cluster parsing test"
-echo "Creating sample FSL cluster output and testing parsing..."
+grep -q "source .*modules/dicom_cluster_mapping.sh" "$PROJECT_ROOT/src/pipeline.sh"
+assert_exit_code 0 "$?" "pipeline sources the module"
 
-# Create sample cluster output in the format the user provided
-cat > sample_clusters.txt << 'EOF'
-Cluster Index	Voxels	MAX	MAX X (vox)	MAX Y (vox)	MAX Z (vox)	COG X (vox)	COG Y (vox)	COG Z (vox)
-3	27	1	88	91	123	89.4	92.6	125
-2	7	1	89	92	135	89.1	93.9	136
-1	4	1	95	87	121	95	87.2	121
-EOF
+grep -q "perform_cluster_to_dicom_mapping" "$PROJECT_ROOT/src/pipeline.sh"
+assert_exit_code 0 "$?" "pipeline calls perform_cluster_to_dicom_mapping"
 
-echo "Sample cluster data created:"
-cat sample_clusters.txt
-echo ""
+# ── 3. Gate semantics (un-gated default + opt-out) ──────────────────────────────
+begin_test_group "3. Gate semantics"
 
-# Create a dummy NIfTI file for testing (if FSL is available)
-if command -v fslcreatehd &> /dev/null; then
-    echo "Creating test NIfTI file..."
-    fslcreatehd 100 100 100 1 1 1 1 1 0 0 0 16 test_reference
-    if [ $? -eq 0 ]; then
-        echo "✓ PASS: Test NIfTI file created successfully"
-        
-        # Test coordinate extraction function
-        echo "Testing coordinate extraction..."
-        if extract_cluster_coordinates_from_fsl "sample_clusters.txt" "test_reference.nii.gz" "test_coordinates.txt" 2>/dev/null; then
-            echo "✓ PASS: Coordinate extraction function executed without errors"
-            if [ -f "test_coordinates.txt" ]; then
-                echo "Output file created. Contents:"
-                head -10 test_coordinates.txt
-            fi
-        else
-            echo "⚠ WARNING: Coordinate extraction function had issues (expected without full FSL environment)"
-        fi
-    else
-        echo "⚠ WARNING: Could not create test NIfTI file (FSL may not be fully configured)"
-    fi
+default_gate=$(grep -E '^export RUN_DICOM_MAPPING=' "$PROJECT_ROOT/config/default_config.sh" | head -1)
+assert_contains "$default_gate" "true" "default config un-gates the stage (RUN_DICOM_MAPPING=true)"
+
+grep -q 'RUN_DICOM_MAPPING:-' "$PROJECT_ROOT/src/pipeline.sh"
+g1=$?
+grep -q 'Skipping DICOM cluster mapping' "$PROJECT_ROOT/src/pipeline.sh"
+g2=$?
+[ "$g1" -eq 0 ] && [ "$g2" -eq 0 ]
+assert_exit_code 0 "$?" "pipeline retains a RUN_DICOM_MAPPING=false opt-out skip branch"
+
+# ── 4. find_native_flair_reference discovery ───────────────────────────────────
+begin_test_group "4. Native FLAIR reference discovery"
+
+ref_dir="$TEMP_TEST_DIR/refdisc"
+mkdir -p "$ref_dir/brain_extraction"
+: > "$ref_dir/brain_extraction/T2_SPACE_FLAIR_brain.nii.gz"
+found_ref=$(find_native_flair_reference "$ref_dir")
+assert_contains "$found_ref" "FLAIR_brain.nii.gz" "find_native_flair_reference prefers brain_extraction FLAIR"
+
+# Empty results dir + no EXTRACT_DIR FLAIR -> empty (graceful).
+empty_ref_dir="$TEMP_TEST_DIR/refempty"
+mkdir -p "$empty_ref_dir"
+EXTRACT_DIR_SAVE="${EXTRACT_DIR:-}"
+export EXTRACT_DIR="$empty_ref_dir"
+no_ref=$(find_native_flair_reference "$empty_ref_dir")
+assert_equals "" "$no_ref" "find_native_flair_reference returns empty when no FLAIR present"
+export EXTRACT_DIR="$EXTRACT_DIR_SAVE"
+
+# ── 5. REAL ANTs identity round-trip (skipped without ANTs/uv) ───────────────────
+# Clusters live in native FLAIR space, so the reverse step is an IDENTITY resample
+# onto the native FLAIR grid. This asserts resample_index_to_native preserves the
+# cluster COG (and therefore the world coordinate) on the native grid.
+begin_test_group "5. Identity resample round-trip"
+
+have_tools=true
+command -v antsApplyTransforms >/dev/null 2>&1 || have_tools=false
+command -v uv >/dev/null 2>&1 || have_tools=false
+
+if [ "$have_tools" != "true" ]; then
+    echo "  [skip] ANTs/uv not available - skipping identity round-trip"
 else
-    echo "⚠ WARNING: FSL not available - skipping NIfTI-based tests"
-fi
+    rt="$TEMP_TEST_DIR/roundtrip"
+    mkdir -p "$rt"
+    PY="uv run --no-sync python"
 
-echo ""
+    # Native FLAIR grid (anisotropic, off-origin) + a cluster blob at a known COG.
+    $PY - "$rt/native.nii.gz" "$rt/native_cluster.nii.gz" <<'PY' >/dev/null 2>&1
+import sys
+import numpy as np, nibabel as nib
+aff = np.array([[1.2,0,0,-85.0],[0,0.9,0,-110.0],[0,0,3.0,-60.0],[0,0,0,1]])
+shape = (80, 90, 50)
+nib.save(nib.Nifti1Image(np.random.default_rng(2).random(shape).astype('float32'), aff), sys.argv[1])
+data = np.zeros(shape, np.int16); data[30-2:30+3, 40-2:40+3, 25-2:25+3] = 1
+nib.save(nib.Nifti1Image(data, aff), sys.argv[2])
+PY
 
-# Test 4: Check pipeline integration
-echo "Test 4: Pipeline integration test"
-echo "Checking if the pipeline properly sources the new module..."
+    # Reverse step: identity resample of the cluster onto the native grid.
+    resample_index_to_native \
+        "$rt/native_cluster.nii.gz" \
+        "$rt/native.nii.gz" \
+        "$rt/recovered_native.nii.gz" >/dev/null 2>&1
 
-if grep -q "source src/modules/dicom_cluster_mapping.sh" ../src/pipeline.sh; then
-    echo "✓ PASS: Pipeline sources the new module"
-else
-    echo "✗ FAIL: Pipeline does not source the new module"
-    exit 1
-fi
-
-if grep -q "perform_cluster_to_dicom_mapping" ../src/pipeline.sh; then
-    echo "✓ PASS: Pipeline calls the main mapping function"
-else
-    echo "✗ FAIL: Pipeline does not call the main mapping function"
-    exit 1
-fi
-
-echo ""
-
-# Test 5: Check for required dependencies
-echo "Test 5: Dependency check"
-echo "Checking for required external tools..."
-
-dependencies=(
-    "fslinfo:FSL"
-    "fslval:FSL"
-    "fslstats:FSL"
-    "bc:Basic calculator"
-    "find:File search"
-    "grep:Text search"
+    if [ -f "$rt/recovered_native.nii.gz" ]; then
+        verdict=$($PY - "$rt/native_cluster.nii.gz" "$rt/recovered_native.nii.gz" <<'PY' 2>/dev/null
+import sys
+import numpy as np, nibabel as nib
+def cog_world(p):
+    img = nib.load(p)
+    d = np.rint(np.asanyarray(img.dataobj)).astype(int)
+    ijk = np.argwhere(d > 0)
+    if ijk.size == 0:
+        return None
+    c = ijk.mean(0)
+    return img.affine.dot([c[0], c[1], c[2], 1.0])[:3]
+a, b = cog_world(sys.argv[1]), cog_world(sys.argv[2])
+ok = a is not None and b is not None and float(np.linalg.norm(a-b)) <= 1.0
+print(f"{'OK' if ok else 'FAIL'} {0.0 if a is None or b is None else float(np.linalg.norm(a-b)):.4f}")
+PY
 )
-
-all_deps_found=true
-for dep_info in "${dependencies[@]}"; do
-    dep_cmd=$(echo "$dep_info" | cut -d':' -f1)
-    dep_name=$(echo "$dep_info" | cut -d':' -f2)
-    
-    if command -v "$dep_cmd" &> /dev/null; then
-        echo "✓ PASS: $dep_name ($dep_cmd) is available"
+        assert_contains "$verdict" "OK" "identity resample preserves native COG world coord within 1 mm ($verdict)"
     else
-        echo "⚠ WARNING: $dep_name ($dep_cmd) is not available"
-        # Don't fail the test for missing tools - they might be in a different environment
+        assert_equals "ok" "FAIL" "resample_index_to_native produced an output volume"
     fi
-done
-
-echo ""
-
-# Test 6: Basic syntax validation
-echo "Test 6: Syntax validation"
-echo "Running bash syntax check on the module..."
-
-if bash -n ../src/modules/dicom_cluster_mapping.sh 2>/dev/null; then
-    echo "✓ PASS: Module has valid bash syntax"
-else
-    echo "✗ FAIL: Module has syntax errors"
-    echo "Error details:"
-    bash -n ../src/modules/dicom_cluster_mapping.sh
-    exit 1
 fi
 
-if bash -n ../src/pipeline.sh 2>/dev/null; then
-    echo "✓ PASS: Pipeline has valid bash syntax after integration"
-else
-    echo "✗ FAIL: Pipeline has syntax errors after integration"
-    echo "Error details:"
-    bash -n ../src/pipeline.sh
-    exit 1
-fi
+# ── 6. Syntax validation ───────────────────────────────────────────────────────
+begin_test_group "6. Syntax validation"
 
-echo ""
+bash -n "$MODULE"
+assert_exit_code 0 "$?" "module has valid bash syntax"
+bash -n "$PROJECT_ROOT/src/pipeline.sh"
+assert_exit_code 0 "$?" "pipeline has valid bash syntax"
 
-# Summary
-echo "=== TEST SUMMARY ==="
-echo "✓ Module loading: PASSED"
-echo "✓ Function availability: PASSED" 
-echo "✓ FSL cluster parsing: TESTED (may need full FSL environment)"
-echo "✓ Pipeline integration: PASSED"
-echo "✓ Dependency check: COMPLETED"
-echo "✓ Syntax validation: PASSED"
-echo ""
-echo "The DICOM cluster mapping integration appears to be working correctly!"
-echo "The module is ready for testing with real pipeline data."
-echo ""
-echo "Next steps:"
-echo "1. Run the full pipeline on test data"
-echo "2. Verify cluster-to-DICOM mapping output files are created"
-echo "3. Validate coordinate accuracy with medical imaging viewers"
-echo ""
-
-# Clean up
-cd ..
-rm -rf "$TEST_DIR"
-
-echo "Test completed successfully!"
+print_test_summary

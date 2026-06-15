@@ -13,7 +13,7 @@ An end-to-end neuroimaging pipeline for analyzing T2/FLAIR hyperintensity and T1
 - **Full FreeSurfer recon harvest** (aseg/wmparc/aparc stats, eTIV, optional thalamic/hypothalamic/hippo-amygdala subregions) plus extra ML methods (SynthSeg+, SynthSR, sclimbic)
 - **8-stage resumable pipeline** with intelligent checkpoint detection
 - **Canonical results tree + reporting layer** — per-method/cluster/multi-modal visualizations, CSV/HTML summary tables, and a top-level `reports/brainstemx_report.html` dashboard
-- **DICOM backtrace capability** for clinical validation in native scanner format (cluster→source mapping is currently gated off pending a rewrite — `RUN_DICOM_MAPPING=false`)
+- **DICOM backtrace capability** for clinical validation in native scanner format — each detected cluster is mapped back to its source DICOM slice (`InstanceNumber`/`SOPInstanceUID`/`SliceLocation`) via a real inverse-transform reverse chain + pydicom `ImagePositionPatient` matching (on by default; `RUN_DICOM_MAPPING=true`)
 - **Adaptive processing** handles both high-end research and routine clinical protocols
 - **Optional multi-atlas brainstem nuclei labeling** (Bianciardi/CIT168/AAL3) warped into subject space
 - **Optional supervised/DL WMH modules** (BIANCA, LST-AI/SAMSEG, segcsvdWMH, SHIVA-WMH, MARS-WMH, WMH-SynthSeg) — exploratory; none validated in the brainstem

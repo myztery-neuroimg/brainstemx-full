@@ -199,7 +199,7 @@ This section situates BrainStem X against the 2024–2026 literature and records
 #### DICOM Integration & Clinical Validation (dicom_analysis.sh, dicom_cluster_mapping.sh)
 - **Vendor-agnostic DICOM metadata extraction** analyzes scanner parameters, acquisition settings, and sequence characteristics for optimal processing
 - **Clinical coordinate backtrace** maps processed results back to original DICOM coordinate system for PACS viewer compatibility
-- **Cluster-to-DICOM mapping** (`dicom_cluster_mapping.sh`) creates coordinate lookup tables enabling medical imaging viewer navigation to identified clusters — **currently gated off** (`RUN_DICOM_MAPPING=false`) pending a rewrite; a normal run skips it
+- **Cluster-to-DICOM mapping** (`dicom_cluster_mapping.sh`) maps every detected hyperintensity cluster back to its source DICOM slice (cluster index volume resampled onto the native FLAIR grid → COG → world mm via the NIfTI sform → DICOM LPS patient mm → nearest `ImagePositionPatient`/`ImageOrientationPatient` slice via pydicom), emitting `InstanceNumber`/`SOPInstanceUID`/`SliceLocation` per cluster for medical-viewer navigation. **On by default** (`RUN_DICOM_MAPPING=true`; set `false` to opt out)
 - **Scanner-specific optimization** automatically detects Siemens, Philips, and GE scanners and applies vendor-specific processing parameters
 
 #### Intelligent Reference Space Selection (reference_space_selection.sh)
@@ -370,14 +370,14 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Quality assessment** validates DICOM integrity and performs initial sequence classification
 
 #### Stage 2: Preprocessing (Modality-Aware Denoising + N4 Bias Correction)
-- **Adaptive reference space selection** analyzes scan quality and chooses optimal T1/FLAIR combination using [`select_optimal_reference_space()`](src/modules/reference_space_selection.sh:1)
+- **Adaptive reference space selection** analyzes scan quality and chooses optimal T1/FLAIR combination using [`select_optimal_reference_space()`](../src/modules/reference_space_selection.sh:1)
 - **Registration-optimized scan selection** with multiple modes: `original`, `highest_resolution`, `registration_optimized`, `matched_dimensions`
 - **Modality-aware denoising** routes T1/T2/FLAIR to Rician NLM, DWI to MP-PCA (`dwidenoise`), skips SWI/TOF; a full DWI path (`dwi_preprocess.sh`) is gated by `PROCESS_DWI`
 - **Enhanced N4 bias correction** where field strength tunes the b-spline mesh / spline distance (`-b`); FLAIR uses a gentler, lesion-aware preset
 - **Orientation consistency validation** performs detailed sform/qform matrix comparison with comprehensive error reporting
 
 #### Stage 3: Brain Extraction, Standardization & Cropping
-- **Smart resolution detection** via [`detect_optimal_resolution()`](src/modules/brain_extraction.sh:214) analyzes voxel dimensions across sequences
+- **Smart resolution detection** via [`detect_optimal_resolution()`](../src/modules/brain_extraction.sh:214) analyzes voxel dimensions across sequences
 - **Reference grid standardization** ensures T1 and FLAIR have identical matrix dimensions while preserving highest resolution
 - **SynthStrip-primary brain extraction** (FreeSurfer `mri_synthstrip`, contrast-agnostic) with an automatic SynthStrip → ANTs(Otsu) → BET fallback chain, a shared `robustfov` neck-removal pre-step, modality-specific BET `-f`, and a posterior-fossa QC gate (`BRAIN_EXTRACTION_METHOD`)
 - **3D isotropic sequence detection** prevents quality degradation from unnecessary multi-axial combination
@@ -406,7 +406,7 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Cross-modal corroboration** samples each co-registered secondary (SWI/DWI-trace/ADC/T2) inside every primary FLAIR cluster and flags DWI restriction (→ acute), SWI hypointensity (→ hemorrhage), and T2 hyperintensity (→ corroborates) — on top of, never altering, the primary detection
 - **Optional supervised / DL WMH** BIANCA, LST-AI + SAMSEG, WMH-SynthSeg, segcsvdWMH, SHIVA-WMH, MARS-WMH modules (each self-gated, no-op until its tool/data is present), intersected with the brainstem mask; optional `fp_filter.sh` post-detection FP suppression
 - **Native-to-standard space mapping** enables analysis in both subject native and standardized coordinates
-- **DICOM cluster backtrace** — the cluster→DICOM-source mapping (`dicom_cluster_mapping.sh`) is currently **gated off** (`RUN_DICOM_MAPPING=false`) pending a rewrite, so a normal run skips it
+- **DICOM cluster backtrace** — the cluster→DICOM-source mapping (`dicom_cluster_mapping.sh`) maps each cluster back to its nearest source DICOM slice (real inverse-transform reverse chain + pydicom `ImagePositionPatient`/`ImageOrientationPatient` matching), emitting `InstanceNumber`/`SOPInstanceUID`/`SliceLocation`. On by default (`RUN_DICOM_MAPPING=true`)
 
 #### Stage 7: Advanced Visualization & Reporting
 - **3D volume rendering** with customizable opacity and color mapping for hyperintensity clusters
@@ -427,26 +427,26 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Discovers** outputs wherever modules wrote them; gated/graceful/idempotent (`REPORTING_ENABLED`). See [docs/output_structure.md](output_structure.md)
 
 **Complete Module Implementation:**
-- Core Pipeline → [`src/pipeline.sh`](src/pipeline.sh:1)
-- Environment & Configuration → [`src/modules/environment.sh`](src/modules/environment.sh:1), [`src/modules/utils.sh`](src/modules/utils.sh:1)
-- DICOM Import & Data Management → [`src/modules/import.sh`](src/modules/import.sh:1)
-- DICOM Analysis & Clinical Integration → [`src/modules/dicom_analysis.sh`](src/modules/dicom_analysis.sh:1), [`src/modules/dicom_cluster_mapping.sh`](src/modules/dicom_cluster_mapping.sh:1)
-- Intelligent Scan Selection → [`src/modules/scan_selection.sh`](src/modules/scan_selection.sh:1)
-- Reference Space Optimization → [`src/modules/reference_space_selection.sh`](src/modules/reference_space_selection.sh:1)
-- Advanced Brain Extraction & Standardization → [`src/modules/brain_extraction.sh`](src/modules/brain_extraction.sh:1)
-- Preprocessing → [`src/modules/preprocess.sh`](src/modules/preprocess.sh:1)
-- Registration → [`src/modules/registration.sh`](src/modules/registration.sh:1)
-- Brainstem Segmentation (HO gross extent + FreeSurfer substructures) → [`src/modules/segmentation.sh`](src/modules/segmentation.sh:1), [`src/modules/brainstem_freesurfer.sh`](src/modules/brainstem_freesurfer.sh:1)
-- Multi-Atlas Labeling (Bianciardi/CIT168/AAL3) → [`src/modules/multi_atlas.sh`](src/modules/multi_atlas.sh:1)
-- FreeSurfer Recon Harvest + ML methods (SynthSeg+/SynthSR/sclimbic) → [`src/modules/freesurfer_harvest.sh`](src/modules/freesurfer_harvest.sh:1)
-- Comprehensive Analysis → [`src/modules/analysis.sh`](src/modules/analysis.sh:1), [`src/modules/gmm_threshold.py`](src/modules/gmm_threshold.py:1)
-- Cross-Modal Corroboration → [`src/modules/cross_modal_analysis.sh`](src/modules/cross_modal_analysis.sh:1), [`src/modules/cross_modal_sample.py`](src/modules/cross_modal_sample.py:1)
-- Optional WMH Modules (default add-ons) → [`src/modules/wmh_bianca.sh`](src/modules/wmh_bianca.sh:1), [`src/modules/wmh_lst_samseg.sh`](src/modules/wmh_lst_samseg.sh:1), [`src/modules/wmh_synthseg.sh`](src/modules/wmh_synthseg.sh:1), [`src/modules/wmh_segcsvd.sh`](src/modules/wmh_segcsvd.sh:1), [`src/modules/wmh_shiva.sh`](src/modules/wmh_shiva.sh:1), [`src/modules/wmh_mars.sh`](src/modules/wmh_mars.sh:1), [`src/modules/brainstem_aanseg.sh`](src/modules/brainstem_aanseg.sh:1), [`src/modules/fp_filter.sh`](src/modules/fp_filter.sh:1)
-- Enhanced Registration Validation → [`src/modules/enhanced_registration_validation.sh`](src/modules/enhanced_registration_validation.sh:1)
-- Advanced Visualization → [`src/modules/visualization.sh`](src/modules/visualization.sh:1)
-- Aggregation & Reporting Layer → [`src/modules/reporting.sh`](src/modules/reporting.sh:1), [`src/modules/reporting_tables.py`](src/modules/reporting_tables.py:1)
-- Quality Assurance → [`src/modules/qa.sh`](src/modules/qa.sh:1)
-- Parallel Processing → [`src/modules/fast_wrapper.sh`](src/modules/fast_wrapper.sh:1)
+- Core Pipeline → [`src/pipeline.sh`](../src/pipeline.sh:1)
+- Environment & Configuration → [`src/modules/environment.sh`](../src/modules/environment.sh:1), [`src/modules/utils.sh`](../src/modules/utils.sh:1)
+- DICOM Import & Data Management → [`src/modules/import.sh`](../src/modules/import.sh:1)
+- DICOM Analysis & Clinical Integration → [`src/modules/dicom_analysis.sh`](../src/modules/dicom_analysis.sh:1), [`src/modules/dicom_cluster_mapping.sh`](../src/modules/dicom_cluster_mapping.sh:1)
+- Intelligent Scan Selection → [`src/modules/scan_selection.sh`](../src/modules/scan_selection.sh:1)
+- Reference Space Optimization → [`src/modules/reference_space_selection.sh`](../src/modules/reference_space_selection.sh:1)
+- Advanced Brain Extraction & Standardization → [`src/modules/brain_extraction.sh`](../src/modules/brain_extraction.sh:1)
+- Preprocessing → [`src/modules/preprocess.sh`](../src/modules/preprocess.sh:1)
+- Registration → [`src/modules/registration.sh`](../src/modules/registration.sh:1)
+- Brainstem Segmentation (HO gross extent + FreeSurfer substructures) → [`src/modules/segmentation.sh`](../src/modules/segmentation.sh:1), [`src/modules/brainstem_freesurfer.sh`](../src/modules/brainstem_freesurfer.sh:1)
+- Multi-Atlas Labeling (Bianciardi/CIT168/AAL3) → [`src/modules/multi_atlas.sh`](../src/modules/multi_atlas.sh:1)
+- FreeSurfer Recon Harvest + ML methods (SynthSeg+/SynthSR/sclimbic) → [`src/modules/freesurfer_harvest.sh`](../src/modules/freesurfer_harvest.sh:1)
+- Comprehensive Analysis → [`src/modules/analysis.sh`](../src/modules/analysis.sh:1), [`src/modules/gmm_threshold.py`](../src/modules/gmm_threshold.py:1)
+- Cross-Modal Corroboration → [`src/modules/cross_modal_analysis.sh`](../src/modules/cross_modal_analysis.sh:1), [`src/modules/cross_modal_sample.py`](../src/modules/cross_modal_sample.py:1)
+- Optional WMH Modules (default add-ons) → [`src/modules/wmh_bianca.sh`](../src/modules/wmh_bianca.sh:1), [`src/modules/wmh_lst_samseg.sh`](../src/modules/wmh_lst_samseg.sh:1), [`src/modules/wmh_synthseg.sh`](../src/modules/wmh_synthseg.sh:1), [`src/modules/wmh_segcsvd.sh`](../src/modules/wmh_segcsvd.sh:1), [`src/modules/wmh_shiva.sh`](../src/modules/wmh_shiva.sh:1), [`src/modules/wmh_mars.sh`](../src/modules/wmh_mars.sh:1), [`src/modules/brainstem_aanseg.sh`](../src/modules/brainstem_aanseg.sh:1), [`src/modules/fp_filter.sh`](../src/modules/fp_filter.sh:1)
+- Enhanced Registration Validation → [`src/modules/enhanced_registration_validation.sh`](../src/modules/enhanced_registration_validation.sh:1)
+- Advanced Visualization → [`src/modules/visualization.sh`](../src/modules/visualization.sh:1)
+- Aggregation & Reporting Layer → [`src/modules/reporting.sh`](../src/modules/reporting.sh:1), [`src/modules/reporting_tables.py`](../src/modules/reporting_tables.py:1)
+- Quality Assurance → [`src/modules/qa.sh`](../src/modules/qa.sh:1)
+- Parallel Processing → [`src/modules/fast_wrapper.sh`](../src/modules/fast_wrapper.sh:1)
 
 ## Installation
 
