@@ -1723,7 +1723,9 @@ enhanced_launch_visual_qa() {
         echo "echo \"\""
         echo ""
         echo "# Launch freeview with proper arguments"
-        echo "freeview -v \"$image1\" \"$image2\"$opts -$orientation"
+        # freeview selects the initial view with '-viewport <sagittal|coronal|axial|3d>',
+        # NOT a bare '-<orientation>' (which errors with "Option '<orientation>' not recognized").
+        echo "freeview -v \"$image1\" \"$image2\"$opts -viewport $orientation"
     } > "$qa_script"
     
     chmod +x "$qa_script"

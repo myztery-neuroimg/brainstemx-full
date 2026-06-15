@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>BrainStemX — Interactive Viewer</title>
+<style>
+  :root { --bg:#101418; --panel:#1a2129; --ink:#e6edf3; --muted:#8b98a5; --accent:#4ea1ff; --line:#2a333d; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+              font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif; }
+  #app { display:flex; height:100vh; }
+  #side { width:320px; min-width:320px; background:var(--panel); border-right:1px solid var(--line);
+          overflow-y:auto; padding:12px; }
+  #main { flex:1; position:relative; display:flex; flex-direction:column; }
+  #toolbar { display:flex; gap:6px; align-items:center; padding:8px; background:var(--panel);
+             border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  #gl { flex:1; width:100%; height:100%; }
+  h1 { font-size:15px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:11px; margin-bottom:10px; }
+  .group { margin-bottom:14px; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .group > .gh { background:#222c36; padding:6px 9px; font-weight:600; font-size:12px;
+                 display:flex; justify-content:space-between; cursor:pointer; }
+  .group .body { padding:6px 9px; }
+  .layer { display:flex; align-items:center; gap:7px; padding:3px 0; }
+  .layer label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .layer input[type=range] { width:78px; }
+  .swatch { width:11px; height:11px; border-radius:2px; border:1px solid #0006; flex:none; }
+  button, select { background:#243039; color:var(--ink); border:1px solid var(--line);
+                   border-radius:5px; padding:5px 9px; font-size:12px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); color:#06243f; border-color:var(--accent); }
+  .pill { color:var(--muted); font-size:11px; }
+  #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+         text-align:center; padding:30px; color:var(--muted); pointer-events:none; }
+  #regrow { display:none; align-items:center; gap:6px; }
+  code { background:#0006; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <h1>BrainStemX Viewer</h1>
+    <div class="sub" id="subjline">loading…</div>
+    <div id="groups"></div>
+    <div class="sub" style="margin-top:12px">
+      Tip: served via <code>serve_viewer.sh</code>. Without a server, drag <code>.nii.gz</code> files onto the canvas.
+    </div>
+  </div>
+  <div id="main">
+    <div id="toolbar">
+      <span class="pill">View:</span>
+      <button data-view="3" class="on">Multiplanar</button>
+      <button data-view="0">Axial</button>
+      <button data-view="1">Coronal</button>
+      <button data-view="2">Sagittal</button>
+      <button data-view="4">3D Render</button>
+      <span style="flex:1"></span>
+      <span id="regrow"><span class="pill">FLAIR↔T1 blend</span>
+        <input id="regblend" type="range" min="0" max="100" value="50"/></span>
+    </div>
+    <canvas id="gl"></canvas>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<script src="niivue.umd.js" onerror="window.__needCDN=true"></script>
+<script>
+(async function () {
+  const $ = (s, r=document) => r.querySelector(s);
+  const msg = (t) => { const m=$('#msg'); m.innerHTML=t; m.style.display = t? 'flex':'none'; };
+
+  // Load NiiVue (vendored first, CDN fallback).
+  if (window.__needCDN || !(window.niivue && window.niivue.Niivue)) {
+    msg('Loading viewer engine…');
+    await new Promise((res, rej) => {
+      const s=document.createElement('script');
+      s.src='https://unpkg.com/@niivue/niivue/dist/niivue.umd.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    }).catch(()=>{});
+  }
+  const NV = window.niivue && (window.niivue.Niivue || window.niivue);
+  if (!NV) { msg('Could not load NiiVue (no vendored copy and no internet).'); return; }
+
+  const nv = new NV({ backColor:[0.06,0.08,0.10,1], show3Dcrosshair:true, crosshairColor:[0.9,0.4,0.2,0.8] });
+  await nv.attachTo('gl');
+  nv.setSliceType(nv.sliceTypeMultiplanar);
+
+  // ---- state ----
+  let bg = null;                          // active background descriptor
+  const exclusive = {};                   // groupId -> active descriptor (radio groups)
+  const multi = new Map();                // url -> descriptor (checkbox groups)
+  const EXCLUSIVE_GROUPS = new Set(['background','atlases','hyperintensity']);
+
+  async function rebuild() {
+    const vols = [];
+    if (bg) vols.push({ url: bg.url, colormap: bg.colormap || 'gray', opacity: 1 });
+    for (const id of Object.keys(exclusive)) {
+      const d = exclusive[id]; if (d && (!bg || d.url !== bg.url)) vols.push(volSpec(d));
+    }
+    for (const d of multi.values()) vols.push(volSpec(d));
+    try { await nv.loadVolumes(vols); } catch(e){ console.error(e); }
+    syncOpacities();
+  }
+  const volSpec = (d) => ({ url:d.url, colormap:d.colormap||'hot', opacity: d.opacity ?? 0.6,
+                            cal_min: d.cal_min, cal_max: d.cal_max });
+  function findVol(url){ return nv.volumes.find(v => v.url === url); }
+  function syncOpacities(){
+    const all = [bg, ...Object.values(exclusive), ...multi.values()].filter(Boolean);
+    for (const d of all){ const v=findVol(d.url); if (v && d.opacity!=null){ nv.setOpacity(nv.volumes.indexOf(v), d.opacity);} }
+  }
+
+  // ---- build sidebar from manifest ----
+  function addGroup(g){
+    const wrap=document.createElement('div'); wrap.className='group';
+    const head=document.createElement('div'); head.className='gh';
+    head.innerHTML=`<span>${g.label}</span><span class="pill">${g.layers.length}</span>`;
+    const body=document.createElement('div'); body.className='body';
+    head.onclick=()=> body.style.display = body.style.display==='none'?'block':'none';
+    const radio = EXCLUSIVE_GROUPS.has(g.id);
+    g.layers.forEach((d, i) => {
+      d._group=g.id;
+      const row=document.createElement('div'); row.className='layer';
+      const cb=document.createElement('input'); cb.type = radio?'radio':'checkbox'; cb.name='grp_'+g.id;
+      const sw=document.createElement('span'); sw.className='swatch'; sw.style.background=cmColor(d.colormap);
+      const lab=document.createElement('label'); lab.textContent=d.name; lab.title=d.url;
+      const op=document.createElement('input'); op.type='range'; op.min=0; op.max=100;
+      op.value=Math.round((d.opacity ?? (g.id==='background'?100:60)));
+      d.opacity = op.value/100;
+      cb.onchange = async () => {
+        if (radio){
+          if (g.id==='background'){ bg = cb.checked? d : bg; }
+          else { exclusive[g.id] = cb.checked? d : null; }
+        } else {
+          if (cb.checked) multi.set(d.url, d); else multi.delete(d.url);
+        }
+        if (g.id==='registration') updateRegRow();
+        await rebuild();
+      };
+      op.oninput = () => { d.opacity = op.value/100; const v=findVol(d.url);
+        if (v) nv.setOpacity(nv.volumes.indexOf(v), d.opacity); };
+      // default-on: first background; first hyperintensity; first segmentation set
+      if ((g.id==='background' && i===0) ){ cb.checked=true; bg=d; }
+      row.append(cb, sw, lab, op); body.append(row);
+    });
+    wrap.append(head, body); $('#groups').append(wrap);
+  }
+
+  // crude colormap -> swatch color
+  function cmColor(cm){ return ({gray:'#bbb',hot:'#ff5a2c',warm:'#ffb000',red:'#e5484d',
+    green:'#46c46a',blue:'#4ea1ff',jet:'#2bd',random:'#a36bff',winter:'#27e',lut:'#a36bff'})[cm]||'#4ea1ff'; }
+
+  function updateRegRow(){
+    const has = !!(manifest.groups.find(g=>g.id==='registration')); // show blend if any reg layer toggled
+    const anyReg = [...multi.values()].some(d=>d._group==='registration');
+    $('#regrow').style.display = (has && anyReg) ? 'flex':'none';
+  }
+
+  // toolbar
+  document.querySelectorAll('#toolbar [data-view]').forEach(b=>{
+    b.onclick=()=>{ document.querySelectorAll('#toolbar [data-view]').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); nv.setSliceType(parseInt(b.dataset.view,10)); };
+  });
+  $('#regblend').oninput = (e)=>{ // blend last two registration layers (T1 vs FLAIR)
+    const regs=[...multi.values()].filter(d=>d._group==='registration');
+    if (regs.length>=1){ const top=regs[regs.length-1]; const v=findVol(top.url);
+      if (v){ top.opacity=e.target.value/100; nv.setOpacity(nv.volumes.indexOf(v), top.opacity);} }
+  };
+
+  // ---- load manifest ----
+  let manifest=null;
+  try {
+    const r = await fetch('manifest.json', {cache:'no-store'});
+    if (!r.ok) throw new Error('manifest '+r.status);
+    manifest = await r.json();
+  } catch (e) {
+    $('#subjline').textContent='no manifest — drag-and-drop mode';
+    msg('No <code>manifest.json</code> found (opened via file://?).<br>'+
+        'Run <code>serve_viewer.sh</code> and open the localhost URL,<br>or drag <code>.nii.gz</code> files onto this window.');
+    return;
+  }
+  $('#subjline').textContent = 'subject: '+(manifest.subject||'?')+' · '+(manifest.groups||[]).reduce((n,g)=>n+g.layers.length,0)+' layers';
+  (manifest.groups||[]).forEach(g => { if (g.layers && g.layers.length) addGroup(g); });
+  msg('');
+  await rebuild();
+})();
+</script>
+</body>
+</html>

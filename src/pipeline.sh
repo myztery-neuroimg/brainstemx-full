@@ -99,6 +99,7 @@ source "${PIPELINE_DIR}/modules/multi_atlas.sh"
 source "${PIPELINE_DIR}/modules/segmentation_transformation_extraction.sh"
 source "${PIPELINE_DIR}/modules/analysis.sh"
 source "${PIPELINE_DIR}/modules/visualization.sh"
+source "${PIPELINE_DIR}/modules/visualization_viewer.sh"
 source "${PIPELINE_DIR}/modules/reporting.sh"
 source "${PIPELINE_DIR}/modules/qa.sh"
 source "${PIPELINE_DIR}/modules/scan_selection.sh"
@@ -327,6 +328,88 @@ validate_step() {
   return 0
 }
 
+
+# ---------------------------------------------------------------------------
+# run_contrast_matched_cascade_stage <t1_std> <flair_std> <reg_dir>
+#
+# Bring the SECONDARY T2-weighted modalities (T2 / SWI / DWI-trace / ADC) into the
+# analysis space so the cross-modal step can corroborate FLAIR clusters. Two prior
+# bugs left these unregistered:
+#   1. The cascade lived only inside the Step-4 RUN branch, so a `-t` resume past
+#      registration never ran it. This helper is called from BOTH the run branch
+#      and the Step-4 skip branch.
+#   2. It was hard-guarded to T1-as-reference. The reference is now DETECTED from
+#      the on-disk transforms (robust across resumes, where PIPELINE_REFERENCE_
+#      MODALITY may be stale):
+#        - FLAIR->T1 transforms present  => T1 is reference  => compose mod->FLAIR->T1
+#        - T1->FLAIR transforms present  => FLAIR is reference => analysis space IS
+#          FLAIR, so register each secondary straight to FLAIR (-> <base>_to_flair
+#          Warped.nii.gz), exactly what cross_modal_analysis.sh consumes.
+# Gated by CONTRAST_MATCHED_REGISTRATION; graceful no-op when off / no secondaries.
+# ---------------------------------------------------------------------------
+run_contrast_matched_cascade_stage() {
+  local t1_std="$1" flair_std="$2" reg_dir="$3"
+
+  [ "${CONTRAST_MATCHED_REGISTRATION:-false}" = "true" ] || return 0
+  if [ -z "$t1_std" ] || [ -z "$flair_std" ] || [ ! -f "$t1_std" ] || [ ! -f "$flair_std" ]; then
+    log_formatted "WARNING" "Contrast-matched cascade: standardized T1/FLAIR unavailable; skipping"
+    return 0
+  fi
+
+  log_formatted "INFO" "===== CONTRAST-MATCHED CASCADED REGISTRATION ====="
+
+  local t1b flairb
+  t1b="$(basename "$t1_std" .nii.gz)"; flairb="$(basename "$flair_std" .nii.gz)"
+  local flair_to_t1_prefix="${reg_dir}/${flairb}_to_${t1b}"
+  local t1_to_flair_prefix="${reg_dir}/${t1b}_to_${flairb}"
+
+  # Discover present secondary modalities (raw imported series live in EXTRACT_DIR).
+  local cm_specs=() cm_spec
+  if declare -f discover_secondary_modality_specs >/dev/null 2>&1; then
+    while IFS= read -r cm_spec; do
+      [ -n "$cm_spec" ] || continue
+      log_message "Contrast-matched: secondary modality spec: $cm_spec"
+      cm_specs+=("$cm_spec")
+    done < <(discover_secondary_modality_specs "$EXTRACT_DIR" "$flair_std")
+  fi
+  if [ ${#cm_specs[@]} -eq 0 ]; then
+    log_message "No secondary T2-weighted modalities present; nothing to do (T1+FLAIR-only behaviour unchanged)"
+    return 0
+  fi
+
+  local cm_dir="${reg_dir}/${CONTRAST_MATCHED_SUBDIR:-contrast_matched}"
+  mkdir -p "$cm_dir"
+
+  if [ -f "${flair_to_t1_prefix}0GenericAffine.mat" ]; then
+    log_message "Detected T1 reference (FLAIR->T1 transforms present); composing secondaries mod->FLAIR->T1"
+    register_contrast_matched_cascade \
+      "$t1_std" "$flair_std" "$flair_to_t1_prefix" "$cm_dir" "${cm_specs[@]}" \
+      || log_formatted "WARNING" "Contrast-matched cascade reported issues (non-fatal)"
+  elif [ -f "${t1_to_flair_prefix}0GenericAffine.mat" ]; then
+    log_message "Detected FLAIR reference (T1->FLAIR transforms present); registering secondaries directly to FLAIR (analysis space)"
+    local spec name path anchor base prefix
+    for spec in "${cm_specs[@]}"; do
+      name="${spec%%=*}"; path="${spec#*=}"
+      [ -n "$path" ] && [ -f "$path" ] || { log_message "Skipping ${name}: image not present ($path)"; continue; }
+      if declare -f resolve_contrast_anchor >/dev/null 2>&1; then
+        anchor="$(resolve_contrast_anchor "$name")"
+        [ "$anchor" = "FLAIR" ] || { log_message "Skipping ${name}: anchor '${anchor}' != FLAIR (standard path)"; continue; }
+      fi
+      base="$(basename "$path" .nii.gz)"
+      prefix="${cm_dir}/${base}_to_flair"
+      if [ -f "${prefix}Warped.nii.gz" ] && [ -s "${prefix}Warped.nii.gz" ]; then
+        log_message "Found existing ${name}->FLAIR: ${prefix}Warped.nii.gz (skipping)"
+        continue
+      fi
+      log_message "Registering ${name} -> FLAIR (analysis space): $path"
+      register_to_reference "$flair_std" "$path" "$name" "$prefix" \
+        || log_formatted "WARNING" "${name}->FLAIR registration failed (non-fatal)"
+    done
+  else
+    log_formatted "WARNING" "Neither FLAIR->T1 nor T1->FLAIR transforms found under ${reg_dir}; cannot place secondaries — skipping cascade"
+  fi
+  return 0
+}
 
 # Run the pipeline
 run_pipeline() {
@@ -856,55 +939,11 @@ run_pipeline() {
     # ───────────────────────────────────────────────────────────────────────
     # CONTRAST-MATCHED CASCADED REGISTRATION  (default OFF; no-op when disabled)
     # ───────────────────────────────────────────────────────────────────────
-    # Register each present T2-weighted modality (T2, DWI, SWI) to the FLAIR
-    # anchor (same-contrast), then COMPOSE with the existing FLAIR->T1 transforms
-    # so the modality reaches T1 space in a single antsApplyTransforms call.
-    # Persists composed forward + inverse transform lists for downstream use
-    # (incl. the future DICOM cluster->source mapping).  This block runs only
-    # when CONTRAST_MATCHED_REGISTRATION=true, leaving the default path unchanged.
-    if [ "${CONTRAST_MATCHED_REGISTRATION:-false}" = "true" ]; then
-      log_formatted "INFO" "===== CONTRAST-MATCHED CASCADED REGISTRATION ====="
-      # The cascade treats T1 as the master.  It composes onto the existing
-      # FLAIR->T1 forward transforms, which only exist when T1 is the reference
-      # (moving=FLAIR, fixed=T1).  When FLAIR is the reference the transforms run
-      # the other way; skip cleanly rather than compose in the wrong direction.
-      if [ "$PIPELINE_REFERENCE_MODALITY" != "T1" ]; then
-        log_formatted "WARNING" "Contrast-matched cascade requires T1 as reference (PIPELINE_REFERENCE_MODALITY=$PIPELINE_REFERENCE_MODALITY) - skipping"
-      else
-        # The main registration above produced FLAIR(moving)->T1(fixed) transforms
-        # under this prefix; recover it from the standardized filenames.
-        local flair_to_t1_prefix="${reg_dir}/$(basename "$flair_std" .nii.gz)_to_$(basename "$t1_std" .nii.gz)"
-        if [ ! -f "${flair_to_t1_prefix}0GenericAffine.mat" ]; then
-          log_formatted "WARNING" "FLAIR->T1 transforms not found at ${flair_to_t1_prefix} - skipping contrast-matched cascade"
-        else
-          local cm_dir="${reg_dir}/${CONTRAST_MATCHED_SUBDIR:-contrast_matched}"
-          mkdir -p "$cm_dir"
-
-          # Locate present SECONDARY T2-weighted modalities (T2/SWI/DWI-trace/ADC)
-          # via the modality-aware scan selector. These are not standardized like
-          # T1/FLAIR, so selection runs over EXTRACT_DIR (raw imported series).
-          # Absent modalities are skipped (graceful); a T1+FLAIR-only study yields
-          # no specs and the cascade is a no-op. ADC is registered alongside the
-          # DWI trace so the cross-modal step can read restriction (trace+ADC).
-          local cm_specs=()
-          if declare -f discover_secondary_modality_specs >/dev/null 2>&1; then
-            while IFS= read -r cm_spec; do
-              [ -n "$cm_spec" ] || continue
-              log_message "Contrast-matched: secondary modality spec: $cm_spec"
-              cm_specs+=("$cm_spec")
-            done < <(discover_secondary_modality_specs "$EXTRACT_DIR" "$flair_std")
-          fi
-
-          if [ ${#cm_specs[@]} -eq 0 ]; then
-            log_message "No secondary T2-weighted modalities present; contrast-matched cascade has nothing to do (T1+FLAIR-only behaviour unchanged)"
-          else
-            register_contrast_matched_cascade \
-              "$t1_std" "$flair_std" "$flair_to_t1_prefix" "$cm_dir" "${cm_specs[@]}" \
-              || log_formatted "WARNING" "Contrast-matched cascade reported issues (non-fatal)"
-          fi
-        fi
-      fi
-    fi
+    # Bring secondary T2-weighted modalities (T2/SWI/DWI-trace/ADC) into analysis
+    # space for cross-modal corroboration. Implemented in a shared helper so it
+    # also runs on a `-t` resume (Step-4 skip branch) and handles both T1- and
+    # FLAIR-reference studies. No-op when CONTRAST_MATCHED_REGISTRATION!=true.
+    run_contrast_matched_cascade_stage "$t1_std" "$flair_std" "$reg_dir"
 
     # Launch enhanced visual QA for registration (non-blocking) with better error handling
     log_message "DEBUG: About to call enhanced_launch_visual_qa from pipeline.sh"
@@ -951,6 +990,14 @@ run_pipeline() {
     log_message "Found standardized data:"
     log_message "T1: $t1_std"
     log_message "FLAIR: $flair_std"
+
+    # Even when Step 4 is skipped (resumed run), make sure the secondary T2-weighted
+    # modalities are co-registered for the cross-modal step — the cascade used to
+    # run only in the Step-4 RUN branch, so a `-t analysis`/later resume produced
+    # no co-registered SWI/DWI/T2. The helper is cached + graceful + reference-aware.
+    local reg_dir
+    reg_dir=$(get_module_dir "registered" 2>/dev/null || echo "$RESULTS_DIR/registered")
+    run_contrast_matched_cascade_stage "$t1_std" "$flair_std" "$reg_dir"
   fi  # End of Registration (Step 4)
   
   # Step 5: Segmentation
@@ -1572,6 +1619,12 @@ run_pipeline() {
     if declare -f generate_report_visualizations >/dev/null 2>&1; then
       generate_report_visualizations "$subject_id" "$RESULTS_DIR" "${hyperintensity_mask:-}" || \
         log_formatted "WARNING" "generate_report_visualizations reported a non-fatal failure"
+    fi
+    # Interactive NiiVue web viewer over all outputs (segmentations, atlases,
+    # hyperintensity×threshold, consensus, registration) + 3D-renderable .nii.gz.
+    if declare -f generate_interactive_viewer >/dev/null 2>&1; then
+      generate_interactive_viewer "$subject_id" "$RESULTS_DIR" || \
+        log_formatted "WARNING" "generate_interactive_viewer reported a non-fatal failure"
     fi
   else
     log_message 'Skipping Step 7.5 (Advanced Visualization) as requested'

@@ -1189,3 +1189,9 @@ export C3D_PADDING_MM=5
 export REPORTING_ENABLED=true     # master switch for the reporting stage
 # Note: reporting also reuses CROSS_MODAL_SUBDIR (cross-modal table location)
 # and SKIP_VISUALIZATION (skip the report visualizations) from the blocks above.
+
+# Interactive web viewer (visualization_viewer.sh): a self-contained NiiVue page
+# (reports/viewer/index.html) over all NIfTI outputs — segmentations, per-atlas
+# nuclei, hyperintensity×threshold, consensus/agreement, registration — with a
+# 3D-render mode. Honours SKIP_VISUALIZATION. Serve via reports/viewer/serve_viewer.sh.
+export VIEWER_ENABLED=true        # master switch for the interactive NiiVue viewer
