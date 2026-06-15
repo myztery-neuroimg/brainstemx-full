@@ -848,50 +848,71 @@ calculate_extended_registration_metrics() {
     local jacobian_std="N/A"
     local quality="UNKNOWN"
     
-    # 1. Calculate Dice coefficient between T1 brain and FLAIR brain
+    # 1. Calculate Dice coefficient between fixed and warped tissue masks.
     log_message "Calculating Dice coefficient between brains"
     if [ -f "$fixed" ] && [ -f "$warped" ]; then
         # Create tissue-specific masks for more accurate Dice calculation
-        local temp_dir=$(mktemp -d)
-        
-        # Segment fixed image (T1)
+        local temp_dir
+        temp_dir=$(mktemp -d)
+
+        # FAST often cannot segment low-contrast / already-brain-extracted images
+        # (DWI trace, SWI, etc.): it aborts with "Not enough classes detected to
+        # init KMeans" and never writes the *_pve_* maps.  Run it defensively and
+        # only compute Dice if BOTH segmentations produced their PVE outputs;
+        # otherwise skip gracefully (dice stays N/A) instead of letting fslmaths
+        # abort on a missing file (which previously hung the safe_fslmaths watchdog
+        # and emitted bc "Parse error: bad token" on the empty result).
+        local dice_ok=true
+
         log_message "Segmenting fixed image for Dice calculation..."
-        fast -t 1 -n 3 -o "${temp_dir}/fixed_seg" "$fixed"
-        # Combine GM and WM for a brain tissue mask
-        fslmaths "${temp_dir}/fixed_seg_pve_1.nii.gz" -add "${temp_dir}/fixed_seg_pve_2.nii.gz" -thr 0.5 -bin "${temp_dir}/fixed_tissue_mask.nii.gz"
-
-        # Segment warped image (FLAIR)
-        log_message "Segmenting warped image for Dice calculation..."
-        fast -t 2 -n 3 -o "${temp_dir}/warped_seg" "$warped"
-        # Combine GM and WM for a brain tissue mask
-        fslmaths "${temp_dir}/warped_seg_pve_1.nii.gz" -add "${temp_dir}/warped_seg_pve_2.nii.gz" -thr 0.5 -bin "${temp_dir}/warped_tissue_mask.nii.gz"
-
-        # Calculate intersection and union volumes of the tissue masks
-        fslmaths "${temp_dir}/fixed_tissue_mask.nii.gz" -mul "${temp_dir}/warped_tissue_mask.nii.gz" "${temp_dir}/intersection.nii.gz"
-        
-        local vol_fixed=$(fslstats "${temp_dir}/fixed_tissue_mask.nii.gz" -V | awk '{print $1}')
-        local vol_warped=$(fslstats "${temp_dir}/warped_tissue_mask.nii.gz" -V | awk '{print $1}')
-        local vol_intersection=$(fslstats "${temp_dir}/intersection.nii.gz" -V | awk '{print $1}')
-        
-        # Calculate Dice coefficient
-        if [ "$vol_fixed" != "0" ] && [ "$vol_warped" != "0" ]; then
-            dice=$(echo "scale=4; 2 * $vol_intersection / ($vol_fixed + $vol_warped)" | bc)
-            log_message "Dice coefficient: $dice"
-            
-            # Assess quality based on Dice (adjusted thresholds for inter-modality registration)
-            if (( $(echo "$dice > 0.8" | bc -l) )); then
-                quality="EXCELLENT"
-            elif (( $(echo "$dice > 0.6" | bc -l) )); then
-                quality="GOOD"
-            elif (( $(echo "$dice > 0.4" | bc -l) )); then
-                quality="ACCEPTABLE"
-            else
-                quality="POOR"
-            fi
-        else
-            log_formatted "WARNING" "Cannot calculate Dice coefficient (zero volume detected)"
+        if ! fast -t 1 -n 3 -o "${temp_dir}/fixed_seg" "$fixed" >"${temp_dir}/fixed_fast.log" 2>&1 \
+           || [ ! -f "${temp_dir}/fixed_seg_pve_1.nii.gz" ] \
+           || [ ! -f "${temp_dir}/fixed_seg_pve_2.nii.gz" ]; then
+            log_formatted "WARNING" "FAST could not segment the fixed image (low contrast / brain-extracted) - skipping Dice"
+            dice_ok=false
         fi
-        
+
+        if [ "$dice_ok" = true ]; then
+            log_message "Segmenting warped image for Dice calculation..."
+            if ! fast -t 2 -n 3 -o "${temp_dir}/warped_seg" "$warped" >"${temp_dir}/warped_fast.log" 2>&1 \
+               || [ ! -f "${temp_dir}/warped_seg_pve_1.nii.gz" ] \
+               || [ ! -f "${temp_dir}/warped_seg_pve_2.nii.gz" ]; then
+                log_formatted "WARNING" "FAST could not segment the warped image (low contrast / brain-extracted) - skipping Dice"
+                dice_ok=false
+            fi
+        fi
+
+        if [ "$dice_ok" = true ]; then
+            # Combine GM and WM into brain tissue masks, then intersect.
+            fslmaths "${temp_dir}/fixed_seg_pve_1.nii.gz" -add "${temp_dir}/fixed_seg_pve_2.nii.gz" -thr 0.5 -bin "${temp_dir}/fixed_tissue_mask.nii.gz"
+            fslmaths "${temp_dir}/warped_seg_pve_1.nii.gz" -add "${temp_dir}/warped_seg_pve_2.nii.gz" -thr 0.5 -bin "${temp_dir}/warped_tissue_mask.nii.gz"
+            fslmaths "${temp_dir}/fixed_tissue_mask.nii.gz" -mul "${temp_dir}/warped_tissue_mask.nii.gz" "${temp_dir}/intersection.nii.gz"
+
+            local vol_fixed vol_warped vol_intersection
+            vol_fixed=$(fslstats "${temp_dir}/fixed_tissue_mask.nii.gz" -V | awk '{print $1}')
+            vol_warped=$(fslstats "${temp_dir}/warped_tissue_mask.nii.gz" -V | awk '{print $1}')
+            vol_intersection=$(fslstats "${temp_dir}/intersection.nii.gz" -V | awk '{print $1}')
+
+            # Guard against empty/zero volumes before any bc arithmetic.
+            if [ -n "$vol_fixed" ] && [ -n "$vol_warped" ] && [ "$vol_fixed" != "0" ] && [ "$vol_warped" != "0" ]; then
+                dice=$(echo "scale=4; 2 * ${vol_intersection:-0} / ($vol_fixed + $vol_warped)" | bc)
+                log_message "Dice coefficient: $dice"
+
+                # Assess quality based on Dice (inter-modality-adjusted thresholds).
+                if [ -n "$dice" ] && (( $(echo "$dice > 0.8" | bc -l) )); then
+                    quality="EXCELLENT"
+                elif [ -n "$dice" ] && (( $(echo "$dice > 0.6" | bc -l) )); then
+                    quality="GOOD"
+                elif [ -n "$dice" ] && (( $(echo "$dice > 0.4" | bc -l) )); then
+                    quality="ACCEPTABLE"
+                else
+                    quality="POOR"
+                fi
+            else
+                log_formatted "WARNING" "Cannot calculate Dice coefficient (zero/empty volume detected)"
+            fi
+        fi
+
         # Clean up
         rm -rf "$temp_dir"
     else

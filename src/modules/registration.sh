@@ -1490,6 +1490,18 @@ register_contrast_matched_modality() {
         return "${ERR_REGISTRATION:-1}"
     fi
 
+    # Refuse 4D / multi-volume inputs.  A raw DWI stack (b0+trace, trace+ADC,
+    # multi-b) is not a single-contrast 3D image: registering/resampling it as one
+    # modality is meaningless and antsApplyTransforms -d 3 aborts on it.  The
+    # cascade filters these out before calling; this is a defensive guard for
+    # direct callers.  The derived 3D trace/ADC come through as their own specs.
+    local mod_nvol
+    mod_nvol=$(fslval "$modality_image" dim4 2>/dev/null | tr -d ' ')
+    if [ "${mod_nvol:-1}" -gt 1 ] 2>/dev/null; then
+        log_formatted "WARNING" "Contrast-matched: ${modality_name} is 4D (${mod_nvol} volumes); skipping (use the derived 3D trace/ADC instead)"
+        return "${ERR_DATA_MISSING:-1}"
+    fi
+
     mkdir -p "$output_dir"
 
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
@@ -1632,7 +1644,7 @@ register_contrast_matched_cascade() {
 
     local overall_status=0
     local processed=0
-    local spec name path anchor
+    local spec name path anchor nvol
     for spec in "${specs[@]}"; do
         name="${spec%%=*}"
         path="${spec#*=}"
@@ -1645,6 +1657,16 @@ register_contrast_matched_cascade() {
         anchor="$(resolve_contrast_anchor "$name")"
         if [ "$anchor" != "FLAIR" ]; then
             log_message "Skipping ${name}: anchor is '${anchor}', not FLAIR (handled by the standard T1 path)"
+            continue
+        fi
+
+        # Refuse 4D / multi-volume inputs (raw DWI stack: b0+trace, trace+ADC,
+        # multi-b).  These are not single-contrast 3D images, so registering them
+        # as one modality is meaningless and antsApplyTransforms -d 3 aborts.  The
+        # derived 3D trace/ADC, if present, come through as their own specs.
+        nvol="$(fslval "$path" dim4 2>/dev/null | tr -d ' ')"
+        if [ "${nvol:-1}" -gt 1 ] 2>/dev/null; then
+            log_formatted "WARNING" "Skipping ${name}: 4D/multi-volume image (${nvol} vols) is not a single-contrast 3D modality"
             continue
         fi
 
