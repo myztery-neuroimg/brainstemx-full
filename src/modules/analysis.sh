@@ -894,11 +894,18 @@ apply_gaussian_mixture_thresholding() {
 
 
 
-# Build a binary CSF exclusion mask (in the target/FLAIR space) from the FSL FAST
-# CSF PVE map.  The CSF map is region-independent, so this is computed ONCE per
-# subject and reused for every region (avoids re-resampling the whole-brain PVE
-# map per region).  Posterior-fossa CSF (4th ventricle, basal cisterns) is the
-# dominant FALSE-POSITIVE source for brainstem FLAIR.
+# Build a binary CSF exclusion mask (in the target/FLAIR space).  The CSF map is
+# region-independent, so this is computed ONCE per subject and reused for every
+# region (avoids re-resampling the whole-brain map per region).  Posterior-fossa
+# CSF (4th ventricle, basal cisterns) is the dominant FALSE-POSITIVE source for
+# brainstem FLAIR.
+#
+# CSF SOURCE PREFERENCE (#135 FreeSurfer harvest, task B):
+#   When available AND CSF_USE_FREESURFER_MASK=true, prefer the FreeSurfer aseg
+#   (or SynthSeg) 4th-ventricle / CSF mask harvested by freesurfer_harvest.sh
+#   (fs_harvest_find_csf_mask) — it delineates the posterior-fossa CSF far better
+#   than the FAST CSF PVE for the brainstem pseudolesion problem. Fall back to the
+#   FAST CSF PVE (<csf_prob>) when no FreeSurfer/SynthSeg mask is present.
 #
 # Usage: build_csf_exclusion_mask <csf_prob_map> <reference_image> <output_mask>
 # Returns 0 on success (output written), 1 if no usable exclusion mask could be
@@ -908,14 +915,48 @@ build_csf_exclusion_mask() {
     local reference_image="$2"
     local output_mask="$3"
 
+    local csf_pve_threshold="${CSF_PVE_THRESHOLD:-0.5}"
+
+    # Prefer the FreeSurfer/SynthSeg aseg CSF mask (already binary) when present.
+    # fs_harvest_find_csf_mask returns the best available aseg/synthseg csf_all
+    # (CSF + ventricles) mask, empty if none. Gated so the legacy FAST-PVE
+    # behaviour can be restored with CSF_USE_FREESURFER_MASK=false.
+    if [ "${CSF_USE_FREESURFER_MASK:-true}" = "true" ] && declare -f fs_harvest_find_csf_mask >/dev/null 2>&1; then
+        local fs_csf_mask
+        fs_csf_mask="$(fs_harvest_find_csf_mask)"
+        if [ -n "$fs_csf_mask" ] && [ -f "$fs_csf_mask" ]; then
+            log_message "Building CSF exclusion mask from FreeSurfer/SynthSeg aseg CSF mask (preferred over FAST PVE for posterior-fossa): $fs_csf_mask"
+            local work_dir_fs
+            work_dir_fs=$(mktemp -d)
+            local fs_resampled="$fs_csf_mask"
+            if ! _analysis_same_space "$reference_image" "$fs_csf_mask"; then
+                fs_resampled="${work_dir_fs}/fs_csf_resampled.nii.gz"
+                log_message "Resampling FreeSurfer CSF mask to reference space..."
+                if ! flirt -in "$fs_csf_mask" -ref "$reference_image" -out "$fs_resampled" -applyxfm -usesqform -interp nearestneighbour; then
+                    log_formatted "WARNING" "FreeSurfer CSF mask resampling failed; falling back to FAST CSF PVE"
+                    rm -rf "$work_dir_fs"
+                    fs_resampled=""
+                fi
+            fi
+            # The harvested mask is already binary; -bin guards against any
+            # interpolation residue introduced by a (nearest-neighbour) resample.
+            if [ -n "$fs_resampled" ] && safe_fslmaths "Build CSF exclusion mask (FreeSurfer aseg)" \
+                    "$fs_resampled" -bin "$output_mask"; then
+                rm -rf "$work_dir_fs"
+                log_message "✓ CSF exclusion mask built from FreeSurfer/SynthSeg aseg CSF"
+                return 0
+            fi
+            rm -rf "$work_dir_fs" 2>/dev/null || true
+            log_formatted "WARNING" "Could not use FreeSurfer CSF mask; falling back to FAST CSF PVE"
+        fi
+    fi
+
     log_message "Building CSF exclusion mask from FAST CSF PVE map..."
 
     if [ -z "$csf_prob" ] || [ ! -f "$csf_prob" ]; then
         log_formatted "WARNING" "CSF PVE map not available ($csf_prob); CSF subtraction will be skipped"
         return 1
     fi
-
-    local csf_pve_threshold="${CSF_PVE_THRESHOLD:-0.5}"
 
     local work_dir
     work_dir=$(mktemp -d)

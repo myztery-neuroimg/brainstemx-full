@@ -27,6 +27,10 @@ fi
 _BRAINSTEM_FS_LOADED=1
 
 source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
+# Full-recon harvest + FreeSurfer ML methods (aseg CSF masks, stats, subregions,
+# SynthSeg+/SynthSR/sclimbic). Sourced here so extract_brainstem_freesurfer can
+# harvest everything from the SAME recon-all (no second recon).
+source "$(dirname "${BASH_SOURCE[0]}")/freesurfer_harvest.sh"
 
 # FreeSurfer brainstemSsLabels label values (FreeSurferColorLUT.txt):
 #   173 = Midbrain, 174 = Pons, 175 = Medulla, 178 = SCP
@@ -665,6 +669,17 @@ extract_brainstem_freesurfer() {
     if ! run_recon_all "$recon_input" "$subjects_dir" "$subject_id"; then
         log_formatted "WARNING" "recon-all failed — falling back to atlas/HO gross mask"
         return 1
+    fi
+
+    # Harvest the FULL recon (aseg CSF/ventricle masks + stats + gated subregions)
+    # from the SAME recon-all — NO second recon. This runs regardless of the
+    # brainstem-parcel agreement gate below, because the aseg CSF masks (the
+    # FP-exclusion win) and the volumetric stats are valuable independent of the
+    # brainstem-substructure confidence. Always non-fatal. The pipeline input
+    # geometry ($input_file) is used as the resample reference.
+    if declare -f fs_harvest_recon >/dev/null 2>&1; then
+        fs_harvest_recon "$subjects_dir" "$subject_id" "$input_file" || \
+            log_formatted "WARNING" "FreeSurfer recon harvest reported a non-fatal issue"
     fi
 
     local fs_labels

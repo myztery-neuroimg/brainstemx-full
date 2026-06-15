@@ -183,6 +183,7 @@ test_function_availability() {
     # Source modules
     source "$MODULES_DIR/segmentation.sh" 2>/dev/null
     source "$MODULES_DIR/brainstem_freesurfer.sh" 2>/dev/null
+    source "$MODULES_DIR/freesurfer_harvest.sh" 2>/dev/null
 
     # Test core segmentation functions (live FreeSurfer/Harvard-Oxford path;
     # Talairach brainstem subdivision has been removed)
@@ -192,6 +193,88 @@ test_function_availability() {
     assert_function_exists "extract_brainstem_freesurfer" "extract_brainstem_freesurfer function exists"
     assert_function_exists "extract_brainstem_ants" "extract_brainstem_ants function exists"
     assert_function_exists "validate_segmentation" "validate_segmentation function exists"
+
+    # FreeSurfer full-recon harvest + ML methods (freesurfer_harvest.sh)
+    assert_function_exists "fs_harvest_recon" "fs_harvest_recon function exists"
+    assert_function_exists "fs_harvest_extract_csf_masks" "fs_harvest_extract_csf_masks function exists"
+    assert_function_exists "fs_harvest_find_csf_mask" "fs_harvest_find_csf_mask function exists"
+    assert_function_exists "fs_harvest_stats" "fs_harvest_stats function exists"
+    assert_function_exists "fs_harvest_subregions" "fs_harvest_subregions function exists"
+    assert_function_exists "run_synthseg" "run_synthseg function exists"
+    assert_function_exists "run_synthsr" "run_synthsr function exists"
+    assert_function_exists "run_sclimbic" "run_sclimbic function exists"
+    assert_function_exists "_seg_append_freesurfer_harvest_report" "_seg_append_freesurfer_harvest_report function exists"
+}
+
+# Test: FreeSurfer harvest gating + CSF mask extraction/discovery (task A/B/C)
+test_freesurfer_harvest() {
+    test_log "$YELLOW" "Testing FreeSurfer harvest (gating, CSF mask extraction, discovery)..."
+
+    source "$MODULES_DIR/freesurfer_harvest.sh" 2>/dev/null
+    source "$MODULES_DIR/analysis.sh" 2>/dev/null
+
+    # Gating: disabled toggles => graceful skip (return 0, no work).
+    local skip_out
+    skip_out=$(SEG_RUN_SYNTHSEG=false run_synthseg "$TEST_IMAGE" 2>&1)
+    if echo "$skip_out" | grep -qi "disabled"; then
+        test_log "$GREEN" "PASS: run_synthseg gated by SEG_RUN_SYNTHSEG=false"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        test_log "$RED" "FAIL: run_synthseg not gated by SEG_RUN_SYNTHSEG=false"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    skip_out=$(FS_HARVEST_SCLIMBIC=false run_sclimbic "$TEST_IMAGE" 2>&1)
+    if echo "$skip_out" | grep -qi "disabled"; then
+        test_log "$GREEN" "PASS: run_sclimbic gated by FS_HARVEST_SCLIMBIC=false"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        test_log "$RED" "FAIL: run_sclimbic not gated by FS_HARVEST_SCLIMBIC=false"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    # Functional CSF-extraction test (requires real FSL + mri_convert + a label
+    # volume). mri_synthseg gives us a label volume cheaply on the test image when
+    # available; otherwise we skip the functional portion (still non-fatal). The
+    # harvest writes into RESULTS_DIR/freesurfer/harvest/csf_masks, which
+    # fs_harvest_find_csf_mask discovers, so we run the whole test under a clean
+    # RESULTS_DIR and restore it afterwards.
+    if command -v fslmaths >/dev/null 2>&1 && command -v fslstats >/dev/null 2>&1 \
+       && command -v mri_convert >/dev/null 2>&1 && command -v mri_synthseg >/dev/null 2>&1 \
+       && [ -f "$TEST_IMAGE" ]; then
+        local fh_root="${TEST_TEMP_DIR:-/tmp}/fsharvest_test_$$"
+        mkdir -p "$fh_root"
+        local seg_out="${fh_root}/seg.nii.gz"
+        if mri_synthseg --i "$TEST_IMAGE" --o "$seg_out" --robust --threads 2 --cpu >/dev/null 2>&1 && [ -f "$seg_out" ]; then
+            local prev_results="${RESULTS_DIR:-}"
+            export RESULTS_DIR="$fh_root"
+            local csf_dir="${RESULTS_DIR}/freesurfer/harvest/csf_masks"
+            if fs_harvest_extract_csf_masks "$seg_out" "$TEST_IMAGE" "$csf_dir" "synthseg" >/dev/null 2>&1; then
+                assert_file_exists "${csf_dir}/synthseg_csf_all.nii.gz" "SynthSeg CSF/ventricle union mask produced"
+                # Discovery: fs_harvest_find_csf_mask should locate the mask.
+                local found
+                found=$(fs_harvest_find_csf_mask)
+                if [ -n "$found" ] && [ -f "$found" ]; then
+                    test_log "$GREEN" "PASS: fs_harvest_find_csf_mask discovered $found"
+                    TESTS_PASSED=$((TESTS_PASSED + 1))
+                else
+                    test_log "$RED" "FAIL: fs_harvest_find_csf_mask found nothing"
+                    TESTS_FAILED=$((TESTS_FAILED + 1))
+                fi
+                TESTS_RUN=$((TESTS_RUN + 1))
+            else
+                test_log "$YELLOW" "INFO: fs_harvest_extract_csf_masks did not produce masks (non-fatal)"
+            fi
+            export RESULTS_DIR="$prev_results"
+        else
+            test_log "$YELLOW" "INFO: mri_synthseg failed on the tiny synthetic test image; skipping functional CSF test (non-fatal)"
+        fi
+        rm -rf "$fh_root" 2>/dev/null || true
+    else
+        test_log "$YELLOW" "INFO: FSL/mri_convert/mri_synthseg not all available; skipping functional CSF-extraction test"
+    fi
 }
 
 # Test 3: Dependencies
@@ -342,6 +425,7 @@ main() {
     test_function_availability
     test_dependencies
     test_basic_functionality
+    test_freesurfer_harvest
     test_integration
     
     # Cleanup and results

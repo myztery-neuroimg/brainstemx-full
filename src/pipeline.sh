@@ -1288,10 +1288,19 @@ run_pipeline() {
     # Operates on the detected lesion mask. No-op (pass-through) unless
     # FP_FILTER_ENABLED=true, so default behaviour is unchanged.
     if declare -f run_fp_filter >/dev/null 2>&1 && [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ]; then
-      # CSF probability map written by detect_hyperintensities (FSL FAST PVE 0).
+      # CSF map for the CSF-distance stage. Prefer the FreeSurfer/SynthSeg aseg
+      # CSF mask harvested by freesurfer_harvest.sh (better posterior-fossa CSF
+      # for the brainstem pseudolesion problem) when present and enabled; fall
+      # back to the FSL FAST CSF PVE (PVE 0) detect_hyperintensities wrote.
       # `|| true` keeps a transient find failure from aborting under set -e.
       local fp_csf_prob=""
-      fp_csf_prob=$(find "$hyperintensities_dir" -name "*_csf_prob.nii.gz" 2>/dev/null | head -1 || true)
+      if [ "${CSF_USE_FREESURFER_MASK:-true}" = "true" ] && declare -f fs_harvest_find_csf_mask >/dev/null 2>&1; then
+        fp_csf_prob=$(fs_harvest_find_csf_mask || true)
+        [ -n "$fp_csf_prob" ] && log_message "FP filter CSF source: FreeSurfer/SynthSeg aseg CSF mask ($fp_csf_prob)"
+      fi
+      if [ -z "$fp_csf_prob" ]; then
+        fp_csf_prob=$(find "$hyperintensities_dir" -name "*_csf_prob.nii.gz" 2>/dev/null | head -1 || true)
+      fi
       # Whole-brain mask for the brain-edge erosion stage. Prefer the brain mask
       # detect_hyperintensities emitted (already in the lesion mask's space);
       # fall back to the brain-extraction mask. NOT the brainstem segmentation
