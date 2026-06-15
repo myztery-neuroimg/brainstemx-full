@@ -57,7 +57,7 @@ perform_multistage_registration() {
     log_message "Fixed: $fixed_image"
     log_message "Moving: $moving_image"
     log_message "Output: $output_prefix"
-    
+
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
 
     # Winsorize intensity tails to suppress outliers (antsRegistrationSyN.sh standard).
@@ -79,7 +79,7 @@ perform_multistage_registration() {
         "--initialize-transforms-per-stage" "0"
         "--verbose" "1"
     )
-    
+
     # Add initial transform if provided
     if [ -n "$initial_transform" ] && [ -f "$initial_transform" ]; then
         ants_cmd+=("--initial-moving-transform" "$initial_transform")
@@ -87,19 +87,19 @@ perform_multistage_registration() {
     else
         ants_cmd+=("--initial-moving-transform" "[${fixed_image},${moving_image},1]")
     fi
-    
+
     # Add masks if provided
     if [ -n "$mask" ] && [ -f "$mask" ]; then
         ants_cmd+=("--masks" "[${mask},NULL]")
         log_message "Using registration mask: $mask"
     fi
-    
+
     # Set registration parameters based on QUALITY_PRESET
     local quality_preset="${QUALITY_PRESET:-HIGH}"
     local rigid_convergence="[1000x500x250x100,1e-6,10]"
     local affine_convergence="[1000x500x250x100,1e-6,10]"
     local syn_convergence="[100x70x50x20,1e-6,10]"
-    
+
     case "$quality_preset" in
         "ULTRA")
             rigid_convergence="[2000x1000x500x250,1e-8,15]"
@@ -122,11 +122,94 @@ perform_multistage_registration() {
             syn_convergence="[25x20x15x10,1e-4,5]"
             ;;
     esac
-    
-    # Stage 1: Rigid registration
-    local rigid_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
+
+    # ---------------------------------------------------------------------------
+    # WITHIN-SUBJECT REGISTRATION PRESETS  (Unit B — longitudinal, same-subject)
+    # ---------------------------------------------------------------------------
+    # When WITHIN_SUBJECT_REGISTRATION=true the brain is the SAME anatomy across
+    # sessions.  Morphometry must be PRESERVED, not warped away by full SyN.
+    #
+    #   Same-modality (fixed == moving modality, e.g. T1<->T1):
+    #     Rigid-only (6 DOF).  The affine-scaling and large-deformation SyN stages
+    #     are SKIPPED entirely to prevent any shape change between sessions.
+    #
+    #   Cross-modal (e.g. FLAIR->T1, contrast-T1->T1):
+    #     Rigid initialization with MI + a CONSTRAINED low-deformation SyN stage
+    #     (small gradient step 0.05, tight update-field sigma 0.5 vox, total-field
+    #     sigma 0 = off, few iterations 20x10x5x2) instead of full default SyN.
+    #     This corrects EPI / susceptibility distortion and contrast mis-registration
+    #     without morphing the anatomy.
+    #
+    # The entire within-subject block is guarded by [ "$within_subject" = "true" ]
+    # so the default-off (false) path falls through to the UNCHANGED rigid->affine->
+    # SyN cascade below — byte-identical behaviour to before Unit B.
+    # ---------------------------------------------------------------------------
+    local within_subject="${WITHIN_SUBJECT_REGISTRATION:-false}"
     local shrink_factors="${TEMPLATE_SHRINK_FACTORS:-6x4x2x1}"
     local smoothing_sigmas="${TEMPLATE_SMOOTHING_SIGMAS:-3x2x1x0}"
+
+    if [ "$within_subject" = "true" ]; then
+        local mi_bins_ws="${REG_MI_BINS:-32}"
+        local ws_mi_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
+        local is_same_modality=false
+        if [ -n "$fixed_modality" ] && [ -n "$moving_modality" ] && \
+           [ "$fixed_modality" = "$moving_modality" ]; then
+            is_same_modality=true
+        fi
+
+        if [ "$is_same_modality" = "true" ]; then
+            # Same-modality within-subject: rigid-only (6 DOF).
+            # MI is used rather than CC because field-strength or sequence
+            # parameters may differ between sessions of the same subject, making
+            # MI more robust than the intensity-correlation-dependent CC.
+            log_message "Within-subject same-modality: rigid-only (6 DOF, MI)"
+            ants_cmd+=(
+                "--transform" "Rigid[0.1]"
+                "--metric" "${ws_mi_metric}[${fixed_image},${moving_image},1,${mi_bins_ws},Regular,0.25]"
+                "--convergence" "$rigid_convergence"
+                "--shrink-factors" "$shrink_factors"
+                "--smoothing-sigmas" "${smoothing_sigmas}vox"
+            )
+            log_message "Within-subject registration command: ${ants_cmd[*]}"
+            execute_ants_command "multistage_registration" \
+                "Within-subject rigid-only registration (6 DOF)" "${ants_cmd[@]}"
+        else
+            # Cross-modal within-subject: rigid + MI + constrained SyN.
+            # SyN[gradientStep,updateFieldSigmaInVoxels,totalFieldSigmaInVoxels]:
+            #   gradientStep=0.05  (half the default 0.1) limits deformation magnitude
+            #   updateFieldSigma=0.5 vox  tight regularization of per-iteration updates
+            #   totalFieldSigma=0  disables additional smoothing of the velocity field
+            # Iteration schedule 20x10x5x2 is far fewer than the default 100x70x50x20
+            # — enough for cross-modal alignment without anatomical distortion.
+            log_message "Within-subject cross-modal: rigid + MI + constrained SyN"
+            local ws_syn_convergence="${WITHIN_SUBJECT_SYN_CONVERGENCE:-[20x10x5x2,1e-6,10]}"
+            # Stage 1: Rigid with MI
+            ants_cmd+=(
+                "--transform" "Rigid[0.1]"
+                "--metric" "${ws_mi_metric}[${fixed_image},${moving_image},1,${mi_bins_ws},Regular,0.25]"
+                "--convergence" "$rigid_convergence"
+                "--shrink-factors" "$shrink_factors"
+                "--smoothing-sigmas" "${smoothing_sigmas}vox"
+            )
+            # Stage 2: Constrained low-deformation SyN with MI
+            ants_cmd+=(
+                "--transform" "SyN[0.05,0.5,0]"
+                "--metric" "${ws_mi_metric}[${fixed_image},${moving_image},1,${mi_bins_ws},Regular,0.25]"
+                "--convergence" "$ws_syn_convergence"
+                "--shrink-factors" "$shrink_factors"
+                "--smoothing-sigmas" "${smoothing_sigmas}vox"
+            )
+            log_message "Within-subject registration command: ${ants_cmd[*]}"
+            execute_ants_command "multistage_registration" \
+                "Within-subject cross-modal registration (rigid + constrained SyN)" "${ants_cmd[@]}"
+        fi
+    else
+    # ---------------------------------------------------------------------------
+    # DEFAULT PATH: rigid → affine → SyN  (unchanged from before Unit B)
+    # ---------------------------------------------------------------------------
+
+    # Stage 1: Rigid registration
+    local rigid_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
     ants_cmd+=(
         "--transform" "Rigid[0.1]"
         "--metric" "${rigid_metric}[${fixed_image},${moving_image},1,32,Regular,0.25]"
@@ -134,7 +217,7 @@ perform_multistage_registration() {
         "--shrink-factors" "$shrink_factors"
         "--smoothing-sigmas" "${smoothing_sigmas}vox"
     )
-    
+
     # Stage 2: Affine registration
     local affine_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
     ants_cmd+=(
@@ -144,7 +227,7 @@ perform_multistage_registration() {
         "--shrink-factors" "$shrink_factors"
         "--smoothing-sigmas" "${smoothing_sigmas}vox"
     )
-    
+
     # Stage 3: SyN registration
     # Select the SyN metric the same way the rigid/affine stages do: CC assumes
     # correlated intensities, which only holds for same-modality pairs.  For a
@@ -171,11 +254,13 @@ perform_multistage_registration() {
         "--shrink-factors" "$shrink_factors"
         "--smoothing-sigmas" "${smoothing_sigmas}vox"
     )
-    
+
     log_message "Multi-stage registration command: ${ants_cmd[*]}"
-    
+
     # Execute the multi-stage registration
     execute_ants_command "multistage_registration" "Multi-stage registration (rigid→affine→SyN)" "${ants_cmd[@]}"
+    fi  # end within_subject branch
+
     local reg_status=$?
     
     # Check registration status first
