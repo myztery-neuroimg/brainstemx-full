@@ -164,8 +164,36 @@ _wmh_report_volumes() {
 
     if [ -n "$brainstem_mask" ] && [ -f "$brainstem_mask" ]; then
         log_message "${tool_label}: intersecting lesion mask with brainstem mask: $brainstem_mask"
+
+        # Binarise the brainstem mask (it may be a labelled/intensity volume) and
+        # ensure it shares the WMH grid; resample to the WMH mask if needed.
+        local bs_bin="${out_dir}/${tool_label}_brainstem_bin.nii.gz"
+        if ! _wmh_fslmaths "${tool_label}: binarise brainstem mask" "$brainstem_mask" -bin "$bs_bin"; then
+            bs_bin="$brainstem_mask"
+        fi
+
+        # Resample brainstem mask to WMH space if dimensions differ. The lesion
+        # mask and brainstem mask routinely live on different grids, so a bare
+        # fslmaths -mas would either fail on a dimension mismatch (silent drop)
+        # or corrupt the geometry when dims match but sform differs. Mirror the
+        # BIANCA/MARS modules' flirt resample (nearest-neighbour, sform-based).
+        # '|| true' guards the pipes against pipefail/set -e on fslinfo failure.
+        local wmh_dims bs_dims
+        wmh_dims=$(fslinfo "$lesion_mask" 2>/dev/null | awk '/^dim[1-3]/{print $2}' | tr '\n' 'x' || true)
+        bs_dims=$(fslinfo "$bs_bin" 2>/dev/null | awk '/^dim[1-3]/{print $2}' | tr '\n' 'x' || true)
+        if [ -n "$wmh_dims" ] && [ -n "$bs_dims" ] && [ "$wmh_dims" != "$bs_dims" ] && command -v flirt >/dev/null 2>&1; then
+            log_message "${tool_label}: brainstem mask grid ($bs_dims) != WMH grid ($wmh_dims); resampling to WMH space"
+            local bs_resampled="${out_dir}/${tool_label}_brainstem_resampled.nii.gz"
+            if flirt -in "$bs_bin" -ref "$lesion_mask" -out "$bs_resampled" \
+                     -applyxfm -usesqform -interp nearestneighbour >/dev/null 2>&1; then
+                _wmh_fslmaths "${tool_label}: resampled brainstem bin" "$bs_resampled" -bin "$bs_bin" || true
+            else
+                log_formatted "WARNING" "${tool_label}: failed to resample brainstem mask to WMH grid; intersection may fail"
+            fi
+        fi
+
         if _wmh_fslmaths "${tool_label}: brainstem WMH intersection" \
-            "$lesion_mask" -mas "$brainstem_mask" -bin "$brainstem_wmh"; then
+            "$lesion_mask" -mas "$bs_bin" -bin "$brainstem_wmh"; then
             if brainstem_vol=$(_wmh_mask_volume_mm3 "$brainstem_wmh"); then
                 log_formatted "INFO" "${tool_label}: brainstem-restricted WMH volume = ${brainstem_vol} mm^3"
             else

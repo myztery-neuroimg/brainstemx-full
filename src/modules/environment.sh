@@ -161,13 +161,17 @@ safe_fslmaths() {
     # Execute fslmaths with error handling (no timeout on macOS)
     log_message "Executing: fslmaths $*"
     
-    # Create a background process for monitoring (macOS alternative to timeout)
+    # Create a background process for monitoring (macOS alternative to timeout).
+    # Redirect the subshell's stdout/stderr to /dev/null so the orphaned 'sleep'
+    # can never keep the caller's FDs open: otherwise a command-substitution or
+    # pipe capture (e.g. x=$(safe_fslmaths ...)) would block on the held FD for
+    # up to the full 5-minute sleep even after fslmaths itself returned.
     (
         sleep 300  # 5 minute limit
         if ps aux | grep -v grep | grep "fslmaths.*$$" >/dev/null 2>&1; then
             log_formatted "WARNING" "$description: fslmaths running longer than 5 minutes"
         fi
-    ) &
+    ) >/dev/null 2>&1 &
     local monitor_pid=$!
     
     # Execute fslmaths
