@@ -1162,7 +1162,17 @@ create_directories() {
   mkdir -p "$RESULTS_DIR/qc_visualizations"
   mkdir -p "$RESULTS_DIR/reports"
   mkdir -p "$RESULTS_DIR/summary"
-  
+
+  # Canonical aggregation/reporting output tree (see docs/output_structure.md).
+  # The reporting layer DISCOVERS outputs wherever modules wrote them; these
+  # dirs are created up front so the tree is consistent and the reporting stage
+  # always has somewhere to write even on a minimal run.
+  mkdir -p "$RESULTS_DIR/segmentation/detailed_brainstem"
+  mkdir -p "$RESULTS_DIR/analysis/wmh"
+  mkdir -p "$RESULTS_DIR/analysis/cross_modal"
+  mkdir -p "$RESULTS_DIR/visualizations"
+  mkdir -p "$RESULTS_DIR/reports/tables"
+
   log_message "Created directory structure"
 }
 
