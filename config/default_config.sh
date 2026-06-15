@@ -82,13 +82,28 @@ export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
 # ANTs registration parameters (existing)
 # REG_TRANSFORM_TYPE is set in the "Registration & motion correction" section below
 # N4 Bias Field Correction presets: "iterations,convergence_threshold,spline_distance_mm,shrink_factor"
-# Spline distance: larger values = coarser fit = faster; smaller values = finer fit = slower
-export N4_PRESET_VERY_LOW="20x20x20,0.0001,1x1x3,2"
-export N4_PRESET_LOW="35x35x35,0.00025,2x2x3,2"
-export N4_PRESET_MEDIUM="70x70x70,0.0001,2x2x3,2"
-export N4_PRESET_HIGH="100x100x100,0.00005,2x2x3,2"
-export N4_PRESET_ULTRA="250x250x250x3,0.00001,2x2x3,2"
-export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # Use more conservative settings for FLAIR
+#
+# N4 -b CONVENTION (single source of truth for this pipeline):
+#   The 3rd field is the b-spline mesh element spacing expressed as a single
+#   ISOTROPIC SPLINE DISTANCE IN MM, fed to N4 as -b "[<spline_distance_mm>]".
+#   This is the ANTs-recommended convention (a single scalar mm value rather
+#   than a per-dimension mesh resolution like 2x2x3). For human brain the value
+#   should sit between ~100 and ~200 mm (ANTs N4 wiki / Tustison 2010).
+#   Larger distance = coarser/smoother bias field = faster; smaller distance =
+#   finer fit = slower and more detailed. The spline distance is HALVED at each
+#   subsequent convergence level (one level per "x"-separated iteration count).
+export N4_PRESET_VERY_LOW="20x20x20,0.0001,180,2"
+export N4_PRESET_LOW="35x35x35,0.00025,180,2"
+export N4_PRESET_MEDIUM="70x70x70,0.0001,150,2"
+export N4_PRESET_HIGH="100x100x100,0.00005,120,2"
+export N4_PRESET_ULTRA="250x250x250x3,0.00001,100,2"
+# FLAIR-specific N4 preset is derived per QUALITY_PRESET in the block below.
+# It is deliberately GENTLER than the matching general preset (coarser mesh =>
+# larger spline distance => smoother bias field, plus fewer iterations) because
+# N4 can absorb diffuse FLAIR lesion contrast into the estimated bias field under
+# lesion load (Valdes Hernandez 2016, PMC4846712). A smoother field is far less
+# likely to soak up real lesion signal. Placeholder default; overwritten below.
+export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
 
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
@@ -132,22 +147,28 @@ fi
 
 echo "QUALITY_PRESET: ${QUALITY_PRESET} ANTS_THREADS:${ANTS_THREADS}" >&2
 
-# Set default N4_PARAMS by QUALITY_PRESET
+# Set default N4_PARAMS by QUALITY_PRESET.
+#
+# FLAIR gets a GENUINELY gentler preset (NOT a copy of the general one): a larger
+# spline distance (coarser/smoother bias field) and fewer iterations than the
+# matching general preset, so the estimated field cannot absorb diffuse FLAIR
+# lesion contrast. Convergence threshold and shrink factor are kept aligned with
+# the general preset; only the field smoothness and effort are relaxed.
 if [ "$QUALITY_PRESET" == "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
-    export N4_PRESET_FLAIR="$N4_PRESET_ULTRA"
+    export N4_PRESET_FLAIR="150x150x150,0.00001,160,2"
 elif [ "$QUALITY_PRESET" == "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
-    export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
+    export N4_PRESET_FLAIR="75x75x75,0.00005,180,2"
 elif [ "$QUALITY_PRESET" == "MEDIUM" ]; then
     export N4_PARAMS="$N4_PRESET_MEDIUM"
-    export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"
+    export N4_PRESET_FLAIR="50x50x50,0.0001,200,2"
 elif [ "$QUALITY_PRESET" == "LOW" ]; then
     export N4_PARAMS="$N4_PRESET_MEDIUM"
-    export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"
+    export N4_PRESET_FLAIR="50x50x50,0.0001,200,2"
 else
     export N4_PARAMS="$N4_PRESET_VERY_LOW"
-    export N4_PRESET_FLAIR="$N4_PRESET_VERY_LOW"
+    export N4_PRESET_FLAIR="15x15x15,0.0001,200,2"
 fi
 # Parse out the fields for general sequences
 export N4_ITERATIONS=$(echo "$N4_PARAMS"      | cut -d',' -f1)
@@ -160,6 +181,20 @@ export N4_ITERATIONS_FLAIR=$(echo "$N4_PRESET_FLAIR"  | cut -d',' -f1)
 export N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
 export N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
 export N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
+
+# Optional lesion-weight mask for FLAIR N4 (two-pass workflow).
+#   Default empty => FLAIR N4 just uses the gentler preset above.
+#   When set to a path to an existing NIfTI weight image, it is passed to N4 as
+#   -w <mask> so high-weight (lesion) voxels are DOWN-weighted during bias-field
+#   estimation, preventing N4 from fitting the field to lesion contrast.
+# Intended two-pass workflow (lesions are unknown at first preprocessing):
+#   1. Run the pipeline once with N4_FLAIR_LESION_MASK="" (gentler preset only).
+#   2. Detect lesions on the first-pass output (analysis.sh).
+#   3. Re-run preprocessing with N4_FLAIR_LESION_MASK=<lesion-derived weight>
+#      so the second-pass bias field ignores lesion voxels.
+# The weight image must already be in the same space/geometry as the FLAIR being
+# corrected (i.e. the denoised, oriented FLAIR fed to N4).
+export N4_FLAIR_LESION_MASK="${N4_FLAIR_LESION_MASK:-}"
 
 # Multi-axial integration parameters (antsMultivariateTemplateConstruction2.sh)
 export TEMPLATE_ITERATIONS=3
@@ -367,11 +402,10 @@ export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
 
 #export ORIGINAL_ACQUISITION_WEIGHT=1000
 
-# Parse out FLAIR-specific fields
-N4_ITERATIONS_FLAIR=$(echo "$N4_PRESET_FLAIR"  | cut -d',' -f1)
-N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
-N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
-N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
+# NOTE: FLAIR-specific N4 fields (N4_ITERATIONS_FLAIR/.../N4_SHRINK_FLAIR) are
+# parsed and exported once in the N4 preset section above. The duplicate
+# non-exported parse that used to live here has been removed to keep a single
+# source of truth for the N4 -b convention.
 
 # White matter guided registration parameters
 export WM_GUIDED_DEFAULT=true  # Default to use white matter guided registration

@@ -231,9 +231,19 @@ process_rician_nlm_denoising() {
 }
 
 # Function to get N4 parameters
+#
+# Emits four whitespace-separated fields in EXACTLY the order the N4 command in
+# process_n4_correction() consumes them: "<iters> <conv> <bspl> <shrk>" where
+#   iters = -c iteration counts (e.g. 100x100x100)
+#   conv  = -c convergence threshold (stopping criterion)
+#   bspl  = -b spline distance in mm (single isotropic scalar; see default_config.sh)
+#   shrk  = -s shrink factor
+# For FLAIR inputs (filename contains "FLAIR") it returns the GENUINELY gentler
+# FLAIR preset (larger spline distance => smoother bias field + fewer iterations)
+# so N4 does not absorb diffuse FLAIR lesion contrast into the bias field.
 get_n4_parameters() {
   local file="$1"
-  
+
   # Validate input file exists but don't stop on error
   if [ ! -f "$file" ]; then
     log_formatted "WARNING" "File not found for parameter determination: $file - using defaults"
@@ -244,6 +254,7 @@ get_n4_parameters() {
   local shrk="$N4_SHRINK"
 
   if [[ "$file" == *"FLAIR"* ]]; then
+    # Gentler, lesion-safe FLAIR N4 (see N4_PRESET_FLAIR in default_config.sh).
     iters="$N4_ITERATIONS_FLAIR"
     conv="$N4_CONVERGENCE_FLAIR"
     bspl="$N4_BSPLINE_FLAIR"
@@ -287,14 +298,30 @@ EOF
     IS_SOLA=0
   fi
 
+  # Field-strength optimization acts on the N4 b-spline MESH SPACING (-b), NOT on
+  # the convergence threshold. The convergence threshold is purely a STOPPING
+  # criterion (the old 0.000001 vs 0.000005 split was cosmetic - both just
+  # iterated to the cap), so we leave it at the single value already derived from
+  # the quality preset (N4_CONVERGENCE) for BOTH field strengths. The real
+  # field-strength lever is the spline distance (N4_BSPLINE, a single isotropic
+  # spline distance in mm; see the N4 -b convention in default_config.sh):
+  #   - 1.5T: weaker, smoother bias field -> COARSER mesh (LARGER spline distance)
+  #   - 3T:   stronger, more spatially varying field -> FINER mesh (smaller dist.)
   if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
     log_message "Optimizing for 3T field strength ($FIELD_STRENGTH T)"
-    N4_CONVERGENCE="0.000001"
+    # 3T: ensure a FINER mesh to capture the stronger, more spatially varying
+    # bias field. Only tighten if the preset distance is coarser than 120mm so we
+    # never accidentally make 3T coarser than intended. The numeric guard keeps
+    # this safe if N4_BSPLINE is ever empty or a non-scalar (e.g. a custom preset
+    # missing the spline field) - we simply leave the preset value untouched.
+    if [[ "$N4_BSPLINE" =~ ^[0-9]+$ ]] && (( $(echo "$N4_BSPLINE > 120" | bc -l) )); then
+      N4_BSPLINE=120
+    fi
     REG_METRIC_CROSS_MODALITY="MI"
   else
     log_message "Optimizing for 1.5T field strength ($FIELD_STRENGTH T)"
-    # 1.5T adjustments
-    N4_CONVERGENCE="0.000005"
+    # 1.5T adjustments: COARSER mesh => smoother bias field. 200 is a blessed
+    # value, applied here CONSISTENTLY as an isotropic spline DISTANCE in mm.
     N4_BSPLINE=200
     REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.3]"
     ATROPOS_MRF="[0.15,1x1x1]"
@@ -304,6 +331,7 @@ EOF
     log_message "Applying specific optimizations for MAGNETOM Sola"
     REG_TRANSFORM_TYPE=3
     REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.25]"
+    # Blessed 200mm spline distance for Sola (same -b convention as everywhere).
     N4_BSPLINE=200
   fi
   log_message "ANTs parameters optimized from metadata"
@@ -379,10 +407,10 @@ process_n4_correction() {
 
   # Run N4 bias correction on denoised image with our enhanced ANTs command function
   log_message "Running N4 bias correction on denoised image"
-  
+
   # Determine ANTs bin path
   local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
-  
+
   # Check if N4BiasFieldCorrection is available
   if ! command -v N4BiasFieldCorrection &> /dev/null; then
     log_formatted "WARNING" "N4BiasFieldCorrection not available - skipping bias field correction"
@@ -392,17 +420,40 @@ process_n4_correction() {
     log_message "Saved (no bias correction): $output_file"
     return 0
   fi
-  
+
+  # Assemble N4 arguments. -b is an isotropic spline DISTANCE in mm wrapped as
+  # "[<dist>]" (single source-of-truth convention; see default_config.sh).
+  local n4_args=(
+    -d 3
+    -i "$denoised_file"
+    -x "$brain_mask"
+    -o "$output_file"
+    -b "[$bspl]"
+    -s "$shrk"
+    -c "[$iters,$conv]"
+  )
+
+  # OPTIONAL lesion-weight mask for FLAIR (two-pass workflow). N4's -w weight
+  # image down-weights high-weight voxels during bias-field ESTIMATION, so a
+  # lesion mask here keeps lesion contrast out of the estimated field.
+  # Lesions are unknown at first preprocessing, so the intended workflow is:
+  #   pass 1: N4_FLAIR_LESION_MASK="" -> gentler preset only (this same code)
+  #   detect lesions on the pass-1 output (analysis.sh)
+  #   pass 2: re-run with N4_FLAIR_LESION_MASK=<lesion weight in FLAIR space>
+  # The weight image must already match the denoised/oriented FLAIR geometry.
+  if [[ "$file" == *"FLAIR"* ]] && [ -n "${N4_FLAIR_LESION_MASK:-}" ]; then
+    if [ -f "$N4_FLAIR_LESION_MASK" ]; then
+      log_message "Applying FLAIR lesion weight mask to N4 (-w): $N4_FLAIR_LESION_MASK"
+      n4_args+=(-w "$N4_FLAIR_LESION_MASK")
+    else
+      log_formatted "WARNING" "N4_FLAIR_LESION_MASK set but file not found: $N4_FLAIR_LESION_MASK - running N4 without weight image"
+    fi
+  fi
+
   # Execute N4 using enhanced ANTs command execution (on denoised image)
   execute_ants_command "n4_bias_correction" "Non-uniform intensity (bias field) correction on denoised image" \
     N4BiasFieldCorrection \
-    -d 3 \
-    -i "$denoised_file" \
-    -x "$brain_mask" \
-    -o "$output_file" \
-    -b "[$bspl]" \
-    -s "$shrk" \
-    -c "[$iters,$conv]"
+    "${n4_args[@]}"
 
   local n4_status=$?
   if [ $n4_status -ne 0 ]; then
