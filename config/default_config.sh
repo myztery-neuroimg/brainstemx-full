@@ -78,6 +78,17 @@ export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 # ---------------------------------------------------------------------------
 # Controls how the brainstem and its substructures (midbrain/pons/medulla/SCP)
 # are obtained.
+#   all        : (DEFAULT) run every ENABLED path below as CONCURRENT PARALLEL
+#                paths and let downstream per-region detection analyse the UNION
+#                of all masks they produce. The fast paths (Harvard-Oxford gross
+#                extent + multi-atlas warp, minutes) and the slow FreeSurfer
+#                recon-all (multi-hour) run side-by-side; the fast outputs are
+#                usable as soon as they finish even while recon-all continues.
+#                Each path is INDEPENDENT and NON-FATAL: a failed/skipped path
+#                logs a WARNING and does not kill the others or the pipeline.
+#                Use the SEG_RUN_* toggles below to drop individual paths (e.g.
+#                SEG_RUN_FREESURFER=false avoids the multi-hour recon-all while
+#                keeping the fast HO + multi-atlas paths).
 #   freesurfer : recon-all + segmentBS (Iglesias 2015) for the substructures,
 #                with the Harvard-Oxford gross Brain-Stem mask as the extent and
 #                the FS<->HO agreement QC gate. Falls back gracefully to the HO
@@ -90,9 +101,26 @@ export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 #                the Harvard-Oxford gross extent. Per-atlas enables below.
 #                (alias: bianciardi). Requires the atlases on disk under
 #                $FSLDIR/data/atlases — see multi_atlas.sh / docs.
+# The single-method values (freesurfer/multi_atlas/bianciardi/atlas/harvard_oxford)
+# remain MUTUALLY EXCLUSIVE and behave exactly as before.
 # Talairach has been removed entirely (single 1988 post-mortem brain; largest
 # MNI-mapping error inferiorly/posteriorly — worst exactly in the brainstem).
-export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
+export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
+
+# --- Per-method toggles for BRAINSTEM_SEGMENTATION_METHOD=all -----------------
+# In 'all' mode each ENABLED path runs as a concurrent parallel path. All default
+# ON. Disable a path to drop it from the parallel fan-out:
+#   SEG_RUN_HARVARD_OXFORD : Harvard-Oxford gross extent (fast; also the fallback
+#                            mask + the reference for the FS<->HO agreement gate).
+#   SEG_RUN_MULTI_ATLAS    : Bianciardi/CIT168/AAL3 warp (minutes; no recon-all).
+#   SEG_RUN_FREESURFER     : FreeSurfer substructures (recon-all -> segmentBS).
+#                            This is the MULTI-HOUR path; set it to false to keep
+#                            the fast HO + multi-atlas paths and skip recon-all.
+# These toggles only apply in 'all' mode; the exclusive single-method values
+# above ignore them.
+export SEG_RUN_HARVARD_OXFORD="${SEG_RUN_HARVARD_OXFORD:-true}"
+export SEG_RUN_MULTI_ATLAS="${SEG_RUN_MULTI_ATLAS:-true}"
+export SEG_RUN_FREESURFER="${SEG_RUN_FREESURFER:-true}"
 
 # FreeSurfer brainstem-segmentation knobs (used by brainstem_freesurfer.sh).
 # FREESURFER_HOME / FS_LICENSE are honoured from the environment; the module

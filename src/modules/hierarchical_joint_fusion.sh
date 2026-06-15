@@ -66,6 +66,35 @@ prepare_atlas_ensemble() {
     return 0
 }
 
+# Seed a destination transform prefix from the orchestrator's shared MNI->subject
+# warp (SEG_SHARED_MNI_REG_PREFIX) when it is present. Copies (does not symlink)
+# the 0GenericAffine.mat + 1Warp.nii.gz so the destination is self-contained.
+# Returns 0 only when both transform files are in place at <dest_prefix>; returns
+# 1 (caller computes its own warp) when no usable shared warp is available.
+_hojf_seed_from_shared_warp() {
+    local dest_prefix="$1"
+    local shared_prefix="${SEG_SHARED_MNI_REG_PREFIX:-}"
+    [ -n "$shared_prefix" ] || return 1
+
+    local src_affine="${shared_prefix}0GenericAffine.mat"
+    local src_warp="${shared_prefix}1Warp.nii.gz"
+    [ -f "$src_affine" ] && [ -f "$src_warp" ] || return 1
+
+    local dest_affine="${dest_prefix}0GenericAffine.mat"
+    local dest_warp="${dest_prefix}1Warp.nii.gz"
+    # Already seeded (idempotent / resumable).
+    if [ -f "$dest_affine" ] && [ -f "$dest_warp" ]; then
+        return 0
+    fi
+    cp -f "$src_affine" "$dest_affine" 2>/dev/null || return 1
+    cp -f "$src_warp" "$dest_warp" 2>/dev/null || return 1
+    # The inverse warp is optional here (HO only applies the forward chain) but
+    # copy it through when present so the workspace mirrors a full registration.
+    [ -f "${shared_prefix}1InverseWarp.nii.gz" ] && \
+        cp -f "${shared_prefix}1InverseWarp.nii.gz" "${dest_prefix}1InverseWarp.nii.gz" 2>/dev/null || true
+    return 0
+}
+
 extract_harvard_oxford_brainstem() {
     local input_file="$1"
     local workspace="$2"
@@ -87,21 +116,31 @@ extract_harvard_oxford_brainstem() {
         return 1
     fi
 
-    log_message "Registering MNI template to subject space (single SyN warp)..."
-    log_message "Template: $mni_template"
     local atlas_prefix="${registration_dir}/mni_to_subject_"
-
-    antsRegistrationSyN.sh \
-        -d 3 \
-        -f "$input_file" \
-        -m "$mni_template" \
-        -o "$atlas_prefix" \
-        -t s \
-        -j 1 \
-        -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
-
     local atlas_affine="${atlas_prefix}0GenericAffine.mat"
     local atlas_warp="${atlas_prefix}1Warp.nii.gz"
+
+    # Concurrency-safe shared warp: in 'all' mode the orchestrator computes the
+    # MNI->subject SyN warp ONCE up front (before the parallel fan-out) and
+    # exports SEG_SHARED_MNI_REG_PREFIX. Seed this workspace from that cached
+    # transform instead of recomputing it — both the HO and multi-atlas paths
+    # reuse the SAME warp, so two background jobs never race on (or duplicate) the
+    # expensive registration. When the shared prefix is absent (single-method
+    # runs) we fall back to computing the warp here as before.
+    if _hojf_seed_from_shared_warp "$atlas_prefix"; then
+        log_message "Reusing pre-computed shared MNI->subject warp: ${SEG_SHARED_MNI_REG_PREFIX}"
+    else
+        log_message "Registering MNI template to subject space (single SyN warp)..."
+        log_message "Template: $mni_template"
+        antsRegistrationSyN.sh \
+            -d 3 \
+            -f "$input_file" \
+            -m "$mni_template" \
+            -o "$atlas_prefix" \
+            -t s \
+            -j 1 \
+            -n "${ANTS_THREADS}" >/dev/null 2>/dev/null
+    fi
 
     if [[ ! -f "$atlas_affine" ]] || [[ ! -f "$atlas_warp" ]]; then
         log_formatted "ERROR" "MNI-to-subject registration failed"
@@ -235,6 +274,7 @@ generate_hemisphere_masks() {
 
 export -f execute_hierarchical_joint_fusion
 export -f prepare_atlas_ensemble
+export -f _hojf_seed_from_shared_warp
 export -f extract_harvard_oxford_brainstem
 export -f generate_segmentation_outputs
 export -f generate_hemisphere_masks
