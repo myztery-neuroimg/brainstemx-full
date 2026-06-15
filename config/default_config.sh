@@ -407,6 +407,29 @@ export WITHIN_SUBJECT_REGISTRATION="${WITHIN_SUBJECT_REGISTRATION:-false}"
 # Fewer iterations than the default SyN to limit deformation in cross-session alignment.
 export WITHIN_SUBJECT_SYN_CONVERGENCE="${WITHIN_SUBJECT_SYN_CONVERGENCE:-[20x10x5x2,1e-6,10]}"
 
+# ---------------------------------------------------------------------------
+# Longitudinal multi-session analysis  (Unit D — src/longitudinal.sh)
+# ---------------------------------------------------------------------------
+# LONGITUDINAL_MODE         : master gate; false (default) = single-study
+#                             per-session pipeline runs are completely
+#                             unaffected.  Invoke src/longitudinal.sh directly
+#                             (it ignores the gate) or set true to signal that
+#                             the environment is a longitudinal run.
+# LONGITUDINAL_SESSIONS     : path to the operator-supplied session map file.
+#                             Format: one line per session —
+#                               <label>  <input_dir>  <role>
+#                             where role is "anchor" (exactly one) or
+#                             "timepoint".  Subject-specific paths MUST be kept
+#                             in a gitignored operator config; NEVER commit.
+# LONGITUDINAL_COMMON_SPACE : common-space strategy (default "anchor" = use
+#                             the anchor session T1 directly as the common
+#                             anatomical reference for all timepoints).
+#                             "template" (antsMultivariateTemplateConstruction2)
+#                             is deferred to a future Unit D v2.
+export LONGITUDINAL_MODE="${LONGITUDINAL_MODE:-false}"
+export LONGITUDINAL_SESSIONS="${LONGITUDINAL_SESSIONS:-}"
+export LONGITUDINAL_COMMON_SPACE="${LONGITUDINAL_COMMON_SPACE:-anchor}"
+
 # Per-metric tuning shared by all stages of perform_multistage_registration().
 # CC radius applies when CC is used (same-modality SyN); MI bins apply when MI is
 # used (cross-modality rigid/affine/SyN). The SyN stage now selects MI for
