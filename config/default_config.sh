@@ -321,6 +321,18 @@ export REG_LABEL_INTERPOLATION="GenericLabel"
 export THRESHOLD_WM_SD_MULTIPLIER=1.2   # SD multiplier from local norm; used by GMM fallback + legacy path
 export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cluster --minextent)
 
+# Primary analysis engine selector (Step 6).  Controls which detector runs as
+# the PRIMARY hyperintensity analysis on a normal run:
+#   detect_hyperintensities  (DEFAULT) - the modern engine in analysis.sh that
+#       discovers the FreeSurfer brainstem substructures + multi-atlas nuclei
+#       under segmentation/detailed_brainstem (find_all_atlas_regions), performs
+#       CSF/partial-volume exclusion (#114) and per-region GMM thresholding.
+#   comprehensive - the legacy run_comprehensive_analysis path (NAWM SD-threshold
+#       over Talairach-style mask globs).  Retained as a guarded fallback only.
+# If the selected primary engine fails, the pipeline automatically falls back to
+# the OTHER engine so a run never aborts purely on engine choice.
+export ANALYSIS_PRIMARY_ENGINE="detect_hyperintensities"
+
 # ---------------------------------------------------------------------------
 # CSF / partial-volume exclusion (posterior-fossa false-positive reduction)
 # ---------------------------------------------------------------------------
@@ -778,6 +790,15 @@ export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE" "COR")
 
 # Batch processing parameters
 export  SUBJECT_LIST=""  # Path to subject list file for batch processing
+
+# ------------------------------------------------------------------------------
+# DICOM cluster-to-coordinate mapping stage (Step 6 tail)
+# ------------------------------------------------------------------------------
+# STOPGAP (default OFF): the cluster-to-DICOM coordinate mapping stage
+# (dicom_cluster_mapping.sh, invoked at the tail of Step 6 in pipeline.sh) is
+# known-broken and pending a separate rewrite. It is gated OFF by default so a
+# normal run skips it; set RUN_DICOM_MAPPING=true to opt back in once fixed.
+export RUN_DICOM_MAPPING=false
 
 # ------------------------------------------------------------------------------
 # DICOM File Pattern Configuration (used by import.sh and qa.sh)
