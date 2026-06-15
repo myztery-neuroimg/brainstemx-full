@@ -323,6 +323,51 @@ export PV_EROSION_MM=1                  # Erode region mask by this many mm to d
 export CONNECTIVITY_HIGH_SD_MULT=2.0       # mean + this*std: standalone "very high" threshold
 export CONNECTIVITY_CONNECTED_SD_MULT=1.5  # mean + this*std: lower threshold for connected voxels
 
+# ===========================================================================
+# POST-DETECTION false-positive filtering  (src/modules/fp_filter.sh)
+# ===========================================================================
+# The "cheapest win" COMPLEMENTING the CSF/partial-volume exclusion above (#114).
+#   - The CSF/PV block above excludes CSF/PV voxels BEFORE GMM/z-score detection.
+#   - fp_filter.sh filters the already-detected lesion/cluster mask AFTER
+#     detection, removing residual false positives (near-edge / peri-CSF
+#     residuals, tiny spurious clusters, CSF-pulsation artifacts).
+#
+# DEFAULT OFF: this filtering is LOSSY by construction (it can delete TRUE small
+# lesions - Molchanova 2024).  It is NOT wired into pipeline.sh; the functions
+# are reusable and applied via run_fp_filter() after cluster detection.
+#
+# Rationale: Pai 2025 / Bawil 2026 (layered conservative post-hoc suppression);
+# Atlason 2022 PLOS ONE e0274212 (SegAE CSF-pulsation product); Molchanova 2024
+# (blanket small-instance removal deletes true small lesions).
+export FP_FILTER_ENABLED=false           # MASTER switch (default OFF - lossy + not wired)
+
+# --- Stage gates (each sub-stage independently togglable) -------------------
+export FP_MIN_CLUSTER_ENABLED=true       # stage: drop sub-threshold connected components
+export FP_BRAINMASK_EROSION_ENABLED=true # stage: drop lesion voxels outside eroded brain
+export FP_CSF_DISTANCE_ENABLED=true      # stage: drop lesion clusters near CSF
+# FP_SEGAE_ENABLED is defined below (it doubles as the SegAE stage gate).
+
+# --- Min connected-component size (Molchanova 2024 caveat) ------------------
+# CONSERVATIVE default: blanket small-instance removal DELETES TRUE small
+# lesions, so the threshold is small and the module logs how many voxels/
+# clusters were removed at WARNING level so the loss is always visible.
+export FP_MIN_CLUSTER_VOXELS=2           # drop connected components with < this many voxels (conservative)
+export FP_CLUSTER_CONNECTIVITY=26        # FSL `cluster --connectivity` (6 | 18 | 26); matches detection
+
+# --- Brain-mask erosion (near-edge / peri-CSF residual removal) -------------
+export FP_BRAINMASK_EROSION_MM=1         # erode brain mask by this many mm; drop lesion voxels outside it
+
+# --- CSF-distance gating (peri-CSF cluster removal) ------------------------
+# Reuses the FAST CSF PVE map produced for #114 (${out_prefix}_csf_prob.nii.gz).
+export FP_CSF_DISTANCE_MM=1              # drop lesion clusters within this many mm of CSF
+# CSF binarisation threshold reuses CSF_PVE_THRESHOLD from the #114 block above.
+
+# --- SegAE CSF-pulsation-artifact filter (Atlason 2022) --------------------
+# Needs a CSF PROBABILITY map (soft segmentation).  Degrades gracefully if absent.
+export FP_SEGAE_ENABLED=false           # stage gate (default OFF; also the master gate for SegAE)
+export FP_SEGAE_PRODUCT_THRESHOLD=0.5   # CSF x lesion soft-product > this => estimated pulsation artifact
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
 # GMM per-region thresholding  (gmm_threshold.py --help for full docs)
 # ---------------------------------------------------------------------------
