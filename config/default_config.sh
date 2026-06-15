@@ -1144,3 +1144,16 @@ export PADDING_Y=5
 export PADDING_Z=5
 export C3D_CROP_THRESHOLD=0.1
 export C3D_PADDING_MM=5
+
+# ============================================================================
+# REPORTING / AGGREGATION (final stage)
+# ============================================================================
+# The reporting stage (src/modules/reporting.sh) aggregates every artefact a run
+# produced into summary tables (CSV/TSV + HTML under reports/tables/) and a
+# single top-level report (reports/brainstemx_report.html + .md fallback). It
+# DISCOVERS outputs wherever modules wrote them and is fully gated/graceful: a
+# minimal T1+FLAIR run still yields a valid (smaller) report; absent sections are
+# skipped cleanly. See docs/output_structure.md.
+export REPORTING_ENABLED=true     # master switch for the reporting stage
+# Note: reporting also reuses CROSS_MODAL_SUBDIR (cross-modal table location)
+# and SKIP_VISUALIZATION (skip the report visualizations) from the blocks above.

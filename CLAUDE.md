@@ -60,10 +60,12 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   wmh_segcsvd.sh         # optional WMH: segcsvdWMH CNN (FLAIR-only); off by default
   wmh_shiva.sh           # optional WMH: SHIVA-WMH small-lesion detector (high sensitivity); off by default
   wmh_mars.sh            # optional WMH: MARS-WMH deep-learning tool (MIAC); off by default
-  visualization.sh       # 3D rendering, HTML reports
+  visualization.sh       # 3D rendering, QC HTML report, + report visualizations (per-method seg overlays, hyperintensity-on-FLAIR, multi-modal montage)
+  reporting.sh           # FINAL stage: aggregation/reporting layer — discovers all outputs, builds CSV/TSV+HTML summary tables (reports/tables/) and the top-level report (reports/brainstemx_report.html + .md). Gated/graceful/idempotent.
+  reporting_tables.py    # stdlib-only aggregator behind reporting.sh (parses provenance/summaries, renders tables + top-level report; called via uv)
   qa.sh                  # 20+ validation checks
 config/default_config.sh # all pipeline defaults (has include guard)
-tests/                   # 22 bash test scripts + 1 pytest module
+tests/                   # 23 bash test scripts + 2 pytest modules
 ```
 
 ## Code style
@@ -131,6 +133,16 @@ Beyond the T1/FLAIR backbone, the pipeline brings the **secondary** T2-weighted 
 - **Import** keeps every dcm2niix series in `EXTRACT_DIR` (no modality filtering). `scan_selection.sh::discover_secondary_modality_specs` selects the best SWI/DWI-trace/ADC/T2 scan (filters out the T2-SPACE-FLAIR and the DWI-vs-ADC cross-contamination).
 - **Registration** routes secondaries through the **contrast-matched cascade** (`registration.sh::register_contrast_matched_cascade`, T1←FLAIR←{T2,DWI,ADC,SWI}, composed forward+inverse transforms persisted) into the common analysis space. Enabled by `CONTRAST_MATCHED_REGISTRATION=true` + `AUTO_REGISTER_ALL_MODALITIES=true` (both default on; the cascade is a no-op when no secondary is present). `CONTRAST_ANCHOR_MAP` anchors the whole T2-family {T2,DWI,ADC,SWI} on FLAIR.
 - **Cross-modal corroboration** (`cross_modal_analysis.sh`, default on, self-gated) samples the co-registered secondaries inside every PRIMARY FLAIR cluster and flags **DWI restriction** (trace↑ + ADC↓ → acute/ischemic), **SWI hypointensity** (→ hemorrhage/microbleed), **T2 hyperintensity** (→ corroborates FLAIR). It is corroboration ON TOP of the primary detection — it never re-detects or alters the lesion mask. Outputs the per-cluster table + summary under `analysis/cross_modal/`. Config: the `CROSS_MODAL_*` block (`MULTIMODAL_SECONDARY_MODALITIES`, per-modality z thresholds) in `config/default_config.sh`.
+
+## Output layer (canonical tree + summary tables + top-level report)
+
+The FINAL pipeline stage (Step 8.5, `reporting.sh::generate_summary_report`, after analysis/QA/viz) is the aggregation/reporting layer over every merged capability. It DISCOVERS outputs wherever modules wrote them (it does not require every module to use fixed paths) and emits:
+
+- **Summary tables** under `reports/tables/`, each as **CSV/TSV + HTML** (and a `manifest.json`): `hyperintensity_per_region` (region × source: cluster count, volume, mean/peak z — from per-region GMM `region_provenance.tsv` + a `region_stats.tsv` sidecar the bash layer computes via `fslstats`), `wmh_tool_volumes` (one row per enabled tool, total + brainstem-restricted volume + clusters from each `<tool>_wmh_summary.txt`), `segmentation_volumes` (HO gross / FS substructures / multi-atlas nuclei / SynthSeg-aseg / subregions), `cross_modal` (passthrough of `analysis/cross_modal/cross_modal_clusters.csv`), `freesurfer_morphometry` (aseg volumes + eTIV from `freesurfer/harvest/stats/aseg.stats`), and a `run_manifest` (which seg paths / WMH tools / modalities / tables actually ran).
+- **Report visualizations** under `visualizations/` (`visualization.sh::generate_report_visualizations`): per-method segmentation overlays on T1, hyperintensity clusters on FLAIR, and a multi-modal montage (lesion mask on FLAIR/DWI/SWI/T2). Honours `SKIP_VISUALIZATION`.
+- **Top-level report** `reports/brainstemx_report.html` (+ `.md` fallback): a one-stop dashboard embedding all populated tables, the run manifest, and the discovered visualizations.
+
+Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv`); the bash layer owns only the FSL-dependent parts (mask discovery + `fslstats` volume sidecars). Everything is **gated/graceful** (a minimal T1+FLAIR run still produces a valid smaller report; absent sections render as "No data") and **idempotent**. Governed by `REPORTING_ENABLED` (default `true`). Canonical tree + table schemas: `docs/output_structure.md`.
 
 ## Runtime notes
 

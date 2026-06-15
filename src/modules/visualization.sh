@@ -628,10 +628,234 @@ generate_html_report() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _viz_find_base_image <modality> <subject_dir>
+#   Find a representative base image for overlays. Prefers a registered/common
+#   space volume, then standardized, then brain-extracted, then bias-corrected.
+#   Echoes path or empty.
+# ---------------------------------------------------------------------------
+_viz_find_base_image() {
+    local modality="$1"
+    local subject_dir="$2"
+    local f=""
+    if [ "$modality" = "FLAIR" ] && [ -f "${subject_dir}/registered/t1_to_flairWarped.nii.gz" ]; then
+        f="${subject_dir}/registered/t1_to_flairWarped.nii.gz"
+    fi
+    if [ -z "$f" ] && [ -d "${subject_dir}/standardized" ]; then
+        f=$(find "${subject_dir}/standardized" -iname "*${modality}*_std.nii.gz" ! -iname "*intensity*" 2>/dev/null | head -1)
+    fi
+    if [ -z "$f" ] && [ -d "${subject_dir}/brain_extraction" ]; then
+        f=$(find "${subject_dir}/brain_extraction" -iname "*${modality}*brain.nii.gz" 2>/dev/null | head -1)
+    fi
+    if [ -z "$f" ] && [ -d "${subject_dir}/bias_corrected" ]; then
+        f=$(find "${subject_dir}/bias_corrected" -iname "*${modality}*.nii.gz" ! -iname "*Mask*" 2>/dev/null | head -1)
+    fi
+    echo "$f"
+}
+
+# ---------------------------------------------------------------------------
+# _viz_snapshot <base> <overlay> <out_png> [cmap]
+#   Resample the overlay onto the base grid if dims differ, then write a
+#   tri-planar PNG via FSL slicer. GRACEFUL: returns non-zero (no crash) on any
+#   failure (e.g. slicer absent).
+# ---------------------------------------------------------------------------
+_viz_snapshot() {
+    local base="$1" overlay="$2" out_png="$3" cmap="${4:-red}"
+    [ -n "$base" ] && [ -f "$base" ] || return 1
+    command -v slicer >/dev/null 2>&1 || return 1
+    if [ -n "$overlay" ] && [ -f "$overlay" ]; then
+        local ov="$overlay"
+        if command -v fslval >/dev/null 2>&1; then
+            local bd od
+            bd=$(fslval "$base" dim1 2>/dev/null)
+            od=$(fslval "$overlay" dim1 2>/dev/null)
+            if [ -n "$bd" ] && [ -n "$od" ] && [ "$bd" != "$od" ] && command -v flirt >/dev/null 2>&1; then
+                ov="${out_png%.png}_ov_resampled.nii.gz"
+                flirt -in "$overlay" -ref "$base" -out "$ov" -applyxfm -usesqform -interp nearestneighbour >/dev/null 2>&1 || ov="$overlay"
+            fi
+        fi
+        local ov_bin="${out_png%.png}_ov_bin.nii.gz"
+        fslmaths "$ov" -bin "$ov_bin" >/dev/null 2>&1 || cp "$ov" "$ov_bin"
+        slicer "$base" "$ov_bin" -a "$out_png" >/dev/null 2>&1 || { rm -f "$ov_bin" 2>/dev/null; return 1; }
+        rm -f "$ov_bin" 2>/dev/null
+        [ "$ov" != "$overlay" ] && rm -f "$ov" 2>/dev/null
+    else
+        slicer "$base" -a "$out_png" >/dev/null 2>&1 || return 1
+    fi
+    [ -f "$out_png" ]
+}
+
+# ---------------------------------------------------------------------------
+# generate_segmentation_overlays <subject_id> <subject_dir>
+#   Per-method segmentation overlays on T1: HO gross brainstem + one
+#   representative overlay per detailed_brainstem source (FS substructures,
+#   multi-atlas nuclei). Writes PNGs to visualizations/. GRACEFUL: skips any
+#   source whose masks are absent.
+# ---------------------------------------------------------------------------
+generate_segmentation_overlays() {
+    local subject_id="$1"
+    local subject_dir="$2"
+    local viz_dir="${subject_dir}/visualizations"
+    mkdir -p "$viz_dir"
+
+    local t1
+    t1=$(_viz_find_base_image "T1" "$subject_dir")
+    if [ -z "$t1" ] || [ ! -f "$t1" ]; then
+        log_message "Viz: no T1 base image found - skipping segmentation overlays"
+        return 0
+    fi
+
+    local ho
+    ho=$(find "${subject_dir}/segmentation/brainstem" -name "*_brainstem.nii.gz" 2>/dev/null | head -1)
+    if [ -n "$ho" ] && [ -f "$ho" ]; then
+        _viz_snapshot "$t1" "$ho" "${viz_dir}/seg_harvard_oxford_brainstem.png" && \
+            log_message "Viz: seg overlay (HO gross brainstem)"
+    fi
+
+    local detailed="${subject_dir}/segmentation/detailed_brainstem"
+    if [ -d "$detailed" ]; then
+        local src f
+        for src in freesurfer bianciardi cit168 aal3; do
+            f=""
+            case "$src" in
+                freesurfer) f=$(find "$detailed" -name "*_pons.nii.gz" ! -name "bianciardi_*" ! -name "cit168_*" ! -name "aal3_*" 2>/dev/null | head -1) ;;
+                *)          f=$(find "$detailed" -name "${src}_*.nii.gz" ! -name "*intensity*" 2>/dev/null | head -1) ;;
+            esac
+            if [ -n "$f" ] && [ -f "$f" ]; then
+                _viz_snapshot "$t1" "$f" "${viz_dir}/seg_${src}.png" && \
+                    log_message "Viz: seg overlay (${src})"
+            fi
+        done
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# generate_hyperintensity_overlays <subject_id> <subject_dir> [mask]
+#   Hyperintensity cluster overlay on FLAIR. Uses the supplied lesion mask or
+#   discovers the primary engine's mask. Writes a PNG to visualizations/.
+# ---------------------------------------------------------------------------
+generate_hyperintensity_overlays() {
+    local subject_id="$1"
+    local subject_dir="$2"
+    local mask="${3:-}"
+    local viz_dir="${subject_dir}/visualizations"
+    mkdir -p "$viz_dir"
+
+    local flair
+    flair=$(_viz_find_base_image "FLAIR" "$subject_dir")
+    if [ -z "$flair" ] || [ ! -f "$flair" ]; then
+        log_message "Viz: no FLAIR base image - skipping hyperintensity overlay"
+        return 0
+    fi
+
+    if [ -z "$mask" ] || [ ! -f "$mask" ]; then
+        mask=$(find "${subject_dir}/hyperintensities" -name "*_threshATLAS_GMM_bin_fpfiltered.nii.gz" 2>/dev/null | head -1)
+        [ -z "$mask" ] && mask=$(find "${subject_dir}/hyperintensities" -name "*_threshATLAS_GMM_bin.nii.gz" 2>/dev/null | head -1)
+        [ -z "$mask" ] && mask=$(find "${subject_dir}/hyperintensities" -name "*_bin.nii.gz" 2>/dev/null | head -1)
+    fi
+
+    if [ -n "$mask" ] && [ -f "$mask" ]; then
+        _viz_snapshot "$flair" "$mask" "${viz_dir}/hyperintensities_on_flair.png" && \
+            log_message "Viz: hyperintensity clusters on FLAIR"
+    else
+        log_message "Viz: no hyperintensity mask found - skipping FLAIR overlay"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# generate_multimodal_montage <subject_id> <subject_dir> [lesion_mask]
+#   Multi-modal montage: the lesion mask overlaid on FLAIR/DWI/SWI/T2 (each
+#   co-registered modality that is present). Writes one PNG per available
+#   modality plus the FLAIR reference. GRACEFUL: skips absent modalities.
+# ---------------------------------------------------------------------------
+generate_multimodal_montage() {
+    local subject_id="$1"
+    local subject_dir="$2"
+    local mask="${3:-}"
+    local viz_dir="${subject_dir}/visualizations"
+    mkdir -p "$viz_dir"
+
+    if [ -z "$mask" ] || [ ! -f "$mask" ]; then
+        mask=$(find "${subject_dir}/hyperintensities" -name "*_threshATLAS_GMM_bin*.nii.gz" 2>/dev/null | head -1)
+    fi
+
+    local cm_dir="${subject_dir}/registered/${CONTRAST_MATCHED_SUBDIR:-contrast_matched}"
+    local produced=0
+    local flair
+    flair=$(_viz_find_base_image "FLAIR" "$subject_dir")
+    if [ -n "$flair" ] && [ -f "$flair" ]; then
+        _viz_snapshot "$flair" "$mask" "${viz_dir}/montage_FLAIR.png" && produced=$((produced + 1))
+    fi
+
+    if [ -d "$cm_dir" ]; then
+        local reg_dir="${subject_dir}/registered"
+        local mod found
+        for mod in DWI SWI T2; do
+            found=""
+            # Prefer the canonical cross-modal discovery helper so the montage
+            # uses the SAME modality keyword families (DWI trace/b1000, SWI/SWAN/
+            # venobold, etc.) and ADC exclusion as cross_modal_analysis.sh — a
+            # literal *DWI*/*SWI* glob would miss trace/SWAN-named volumes that
+            # the cross-modal table nonetheless uses.
+            if declare -f _cross_modal_find_coregistered >/dev/null 2>&1; then
+                found=$(_cross_modal_find_coregistered "$mod" "$reg_dir" 2>/dev/null || true)
+            fi
+            # Fallback glob (when the cross-modal module is not loaded).
+            if [ -z "$found" ]; then
+                found=$(find "$cm_dir" -maxdepth 1 -iname "*${mod}*_to_flairWarped.nii.gz" ! -iname "*FLAIR*to_flair*" 2>/dev/null | head -1)
+                [ -z "$found" ] && found=$(find "$cm_dir" -maxdepth 1 -iname "*${mod}*Warped.nii.gz" ! -iname "*FLAIR*" 2>/dev/null | head -1)
+            fi
+            if [ -n "$found" ] && [ -f "$found" ]; then
+                _viz_snapshot "$found" "$mask" "${viz_dir}/montage_${mod}.png" && {
+                    produced=$((produced + 1))
+                    log_message "Viz: montage panel (${mod})"
+                }
+            fi
+        done
+    fi
+    log_message "Viz: multi-modal montage panels produced=$produced"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# generate_report_visualizations <subject_id> <subject_dir> [lesion_mask]
+#   Convenience wrapper: build the full set of report visualizations into
+#   visualizations/. Each sub-step is independently gated/graceful.
+# ---------------------------------------------------------------------------
+generate_report_visualizations() {
+    local subject_id="$1"
+    local subject_dir="$2"
+    local mask="${3:-}"
+
+    if [ "${SKIP_VISUALIZATION:-false}" = "true" ]; then
+        log_message "Report visualizations skipped (SKIP_VISUALIZATION=true)"
+        return 0
+    fi
+
+    log_formatted "INFO" "===== REPORT VISUALIZATIONS ====="
+    mkdir -p "${subject_dir}/visualizations"
+    generate_segmentation_overlays "$subject_id" "$subject_dir" || \
+        log_formatted "WARNING" "Viz: segmentation overlays reported a non-fatal failure"
+    generate_hyperintensity_overlays "$subject_id" "$subject_dir" "$mask" || \
+        log_formatted "WARNING" "Viz: hyperintensity overlay reported a non-fatal failure"
+    generate_multimodal_montage "$subject_id" "$subject_dir" "$mask" || \
+        log_formatted "WARNING" "Viz: multi-modal montage reported a non-fatal failure"
+    log_message "Report visualizations written to: ${subject_dir}/visualizations"
+    return 0
+}
+
 # Export functions
 export -f generate_qc_visualizations
 export -f create_multi_threshold_overlays
 export -f generate_html_report
+export -f _viz_find_base_image
+export -f _viz_snapshot
+export -f generate_segmentation_overlays
+export -f generate_hyperintensity_overlays
+export -f generate_multimodal_montage
+export -f generate_report_visualizations
 
 # Function to launch visual QA in freeview without blocking pipeline execution
 launch_visual_qa() {
