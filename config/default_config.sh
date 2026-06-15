@@ -277,6 +277,44 @@ export RESAMPLE_TO_ISOTROPIC=false
 #export ISOTROPIC_SPACING=1.0
 #unset ISOTROPIC_SPACING
 
+# ------------------------------------------------------------------------------
+# Modality-aware denoising routing
+# ------------------------------------------------------------------------------
+# The denoising dispatcher (dispatch_denoising in preprocess.sh) selects the
+# denoising method by detected modality:
+#   T1 / T2 / FLAIR  -> Rician Non-Local-Means (DenoiseImage)         [default]
+#   DWI / diffusion  -> MP-PCA (dwidenoise, MRtrix); NLM is INVALID for DWI
+#   SWI / TOF / angio -> SKIPPED by default (NLM smears microbleeds/vessels)
+#
+# When set to true, applies a gentle Rician NLM to SWI/TOF images instead of
+# skipping.  Leave false to preserve microbleeds (SWI) and small vessels (TOF).
+export SWI_TOF_DENOISE_ENABLED=false
+# When the modality cannot be detected, skip denoising instead of defaulting to
+# NLM.  Default false keeps the historical structural-assumption behaviour.
+export DENOISE_DEFAULT_SKIP=false
+
+# ------------------------------------------------------------------------------
+# DWI (diffusion) preprocessing path  (dwi_preprocess.sh)
+# ------------------------------------------------------------------------------
+# Master switch.  When false (default) the DWI path is never invoked and the
+# existing T1/FLAIR flow is completely unaffected.  When true, DWI inputs are
+# auto-detected in the preprocessing stage and routed through the MP-PCA path.
+export PROCESS_DWI=false
+# Optional Gibbs ringing removal (mrdegibbs) after MP-PCA denoising.
+export DWI_DEGIBBS=true
+# Bias-field correction for DWI: "ants" uses `dwibiascorrect ants`; otherwise an
+# N4 fallback is applied to the mean b0/DWI volume.  Set DWI_BIAS_CORRECT=false
+# to skip bias correction entirely.
+export DWI_BIAS_CORRECT=true
+export DWI_BIAS_METHOD="ants"
+# Eddy/motion/topup (dwifslpreproc) is OPTIONAL and OFF by default: it requires
+# acquisition parameters (phase-encode direction + readout time) and gradient
+# tables.  To enable, set DWI_RUN_EDDY=true and provide DWI_PE_DIR (e.g. "j-")
+# and DWI_READOUT_TIME (seconds) plus accompanying .bvec/.bval files.
+export DWI_RUN_EDDY=false
+export DWI_PE_DIR=""
+export DWI_READOUT_TIME=""
+
 # Scan selection options
 # Available modes:
 #   original - ONLY consider ORIGINAL acquisitions, ignore DERIVED scans
