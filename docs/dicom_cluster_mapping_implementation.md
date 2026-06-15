@@ -1,5 +1,15 @@
 # DICOM Cluster Mapping Implementation
 
+> **Status (2026): GATED OFF pending a rewrite.** The cluster→DICOM-source mapping
+> stage is currently disabled by default — `RUN_DICOM_MAPPING=false` in
+> `config/default_config.sh`, and `pipeline.sh` skips the stage unless
+> `RUN_DICOM_MAPPING=true`. The module (`src/modules/dicom_cluster_mapping.sh`)
+> and the design below are retained for reference, but a normal run does **not**
+> produce the `dicom_cluster_mapping/` outputs described here. The contrast-matched
+> cascade now persists the composed **inverse** transforms this stage will need
+> when it is re-enabled. Treat the "ready for production" / "happens automatically
+> in Step 5" claims below as describing the *intended* (currently inactive) flow.
+
 ## Overview
 
 This document describes the implementation of cluster-to-DICOM coordinate mapping functionality for the brainstem MRI analysis pipeline. This feature addresses the architectural gap where hyperintense clusters detected in processed NIfTI space could not be mapped back to their source DICOM files for visualization in medical imaging viewers.

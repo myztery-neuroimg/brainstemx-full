@@ -6,13 +6,17 @@ An end-to-end neuroimaging pipeline for analyzing T2/FLAIR hyperintensity and T1
 
 ## Key Features
 
-- **Multi-modal integration** across T1/T2/FLAIR/SWI/DWI sequences
-- **Zero-shot cluster analysis** identifies signal anomalies without manual segmentation
+- **Multi-modal integration** across T1/FLAIR plus SWI / DWI-trace / ADC / T2 (modality-aware selection), with **cross-modal corroboration** of every primary FLAIR cluster (DWI restriction → acute, SWI → hemorrhage, T2 → corroborates)
+- **Contrast-matched cascaded registration** (`T1 → FLAIR → {DWI, T2, SWI}`, default on, graceful) anchors each secondary modality to its nearest same-contrast 3D structural, with composed forward+inverse transforms
+- **Zero-shot cluster analysis** identifies signal anomalies without manual segmentation — per-region GMM with FreeSurfer-CSF-aware CSF/partial-volume exclusion is the PRIMARY detector
+- **Parallel multi-method brainstem segmentation** (default `BRAINSTEM_SEGMENTATION_METHOD=all`): Harvard-Oxford gross extent + FreeSurfer substructures + multi-atlas nuclei + SynthSeg+ run concurrently, union-fed and provenance-tagged (per-method `SEG_RUN_*` toggles)
+- **Full FreeSurfer recon harvest** (aseg/wmparc/aparc stats, eTIV, optional thalamic/hypothalamic/hippo-amygdala subregions) plus extra ML methods (SynthSeg+, SynthSR, sclimbic)
 - **8-stage resumable pipeline** with intelligent checkpoint detection
-- **DICOM backtrace capability** for clinical validation in native scanner format
+- **Canonical results tree + reporting layer** — per-method/cluster/multi-modal visualizations, CSV/HTML summary tables, and a top-level `reports/brainstemx_report.html` dashboard
+- **DICOM backtrace capability** for clinical validation in native scanner format (cluster→source mapping is currently gated off pending a rewrite — `RUN_DICOM_MAPPING=false`)
 - **Adaptive processing** handles both high-end research and routine clinical protocols
 - **Optional multi-atlas brainstem nuclei labeling** (Bianciardi/CIT168/AAL3) warped into subject space
-- **Optional supervised/DL WMH modules** (BIANCA, LST-AI/SAMSEG, segcsvdWMH, SHIVA-WMH, MARS-WMH, WMH-SynthSeg) — default OFF
+- **Optional supervised/DL WMH modules** (BIANCA, LST-AI/SAMSEG, segcsvdWMH, SHIVA-WMH, MARS-WMH, WMH-SynthSeg) — exploratory; none validated in the brainstem
 
 ## Quick Start
 
@@ -56,21 +60,25 @@ source ~/.bash_profile && src/pipeline.sh -i ../DiCOM -o ../mri_results -s patie
 
 The pipeline consists of 8 resumable stages:
 
-1. **import** - DICOM import and conversion
-2. **preprocess** - Modality-aware denoising (Rician NLM for T1/T2/FLAIR, MP-PCA for DWI) + N4 bias correction
+1. **import** - DICOM import and conversion (all series kept; no modality filtering)
+2. **preprocess** - Modality-aware denoising (Rician NLM for T1/T2/FLAIR, MP-PCA for DWI) + N4 bias correction (field-strength `-b`; gentler lesion-aware FLAIR)
 3. **brain_extraction** - SynthStrip primary (ANTs/BET fallback) + robustfov + posterior-fossa QC, plus standardization
-4. **registration** - Multi-stage ANTs alignment to standard space (cross-modality SyN uses Mutual Information)
-5. **segmentation** - Brainstem/pons segmentation — FreeSurfer substructures (default) or Harvard-Oxford gross extent (thr25), with an optional multi-atlas warp (Bianciardi/CIT168/AAL3); selectable via `BRAINSTEM_SEGMENTATION_METHOD`
-6. **analysis** - Hyperintensity detection and clustering
-7. **visualization** - Generate reports and visualizations
+4. **registration** - Multi-stage ANTs alignment (cross-modality SyN uses Mutual Information) + the contrast-matched cascade routing any present SWI/DWI/ADC/T2 into the common analysis space
+5. **segmentation** - Parallel multi-method brainstem segmentation (default `BRAINSTEM_SEGMENTATION_METHOD=all`): Harvard-Oxford gross extent (thr25) + FreeSurfer substructures + multi-atlas nuclei (Bianciardi/CIT168/AAL3) + SynthSeg+, union-fed; also `freesurfer` / `atlas` / `multi_atlas` single-method values
+6. **analysis** - Per-region GMM hyperintensity detection with CSF/PV exclusion + cross-modal corroboration of each cluster
+7. **visualization** - Generate QC + report visualizations
 8. **tracking** - Pipeline progress validation
+
+A final **reporting** step (Step 8.5) then aggregates everything into CSV/HTML summary tables and the top-level `reports/brainstemx_report.html` dashboard.
 
 Use `-t STAGE` to resume from any stage (e.g., `-t 4` or `-t registration`).
 
 ## Documentation
 
 - **[Technical Overview](docs/TECHNICAL_OVERVIEW.md)** - Comprehensive technical documentation
+- **[Output Structure](docs/output_structure.md)** - Canonical results tree, summary tables, and the top-level report
 - **[Multi-Atlas Integration](docs/multi_atlas_integration_spec.md)** - Optional Bianciardi/CIT168/AAL3 brainstem labeling
+- **[FreeSurfer Brainstem Substructures](docs/brainstem_freesurfer_segmentation_spec.md)** - Iglesias 2015 `segmentBS` parcels (replaces Talairach)
 - **[Scan Selection](docs/README_scan_selection.md)** - Details on intelligent scan selection
 - **[Reference Space Selection](docs/README_reference_space_selection.md)** - Reference space optimization
 - **[Synthetic Test Data](docs/synthetic_test_data.md)** - Generating synthetic phantoms for testing
@@ -85,7 +93,7 @@ Active development as of June 2026. While functional, improvements are ongoing. 
 This pipeline leverages established neuroimaging tools:
 - **ANTs** - Advanced Normalizations Tools
 - **FSL** - FMRIB Software Library
-- **FreeSurfer** - Brainstem substructure segmentation (Iglesias 2015 `segmentBS`) + 3D visualization
+- **FreeSurfer** - Brainstem substructure segmentation (Iglesias 2015 `segmentBS`), full recon harvest (aseg/wmparc/aparc stats, eTIV, subregions), ML methods (SynthSeg+, SynthSR, sclimbic), and 3D visualization
 - **Harvard-Oxford Atlas** - Gross brainstem extent mask
 - **MNI152 Templates** - Registration targets
 
