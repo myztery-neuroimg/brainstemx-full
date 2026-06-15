@@ -269,8 +269,14 @@ test_integration() {
         # '|| exit_code=$?', so the segmentation module's 'set -e' aborting on
         # mock/incomplete data only exits the subshell instead of tripping the
         # test process's own inherited 'set -e' and killing the suite.
+        #
+        # Pin the EXCLUSIVE 'atlas' method here: the new default ('all') fans out
+        # to concurrent paths INCLUDING the multi-hour FreeSurfer recon-all, which
+        # must never run in the unit suite. 'atlas' exercises the real
+        # extract_brainstem_final -> HO gross path (the function-can-be-called
+        # intent of this test) in bounded time, with no recon-all / fan-out.
         local exit_code=0
-        ( extract_brainstem_final "$TEST_IMAGE" ) >/dev/null 2>&1 || exit_code=$?
+        ( BRAINSTEM_SEGMENTATION_METHOD=atlas extract_brainstem_final "$TEST_IMAGE" ) >/dev/null 2>&1 || exit_code=$?
         
         # We expect this might fail due to missing dependencies, but it shouldn't
         # crash the suite. Any clean exit (0 = success, non-zero = graceful

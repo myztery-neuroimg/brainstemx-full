@@ -102,17 +102,21 @@ _MODULE_LOADED=1
 | `SCAN_SELECTION_MODE` | `registration_optimized` \| `highest_resolution` \| `interactive` |
 | `THRESHOLD_WM_SD_MULTIPLIER` | authoritative fallback threshold (GMM inherits this) |
 | `GMM_*` (11 vars) | GMM per-region thresholding — see `config/default_config.sh` |
-| `BRAINSTEM_SEGMENTATION_METHOD` | `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |
+| `BRAINSTEM_SEGMENTATION_METHOD` | `all` (default, parallel) \| `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |
+| `SEG_RUN_HARVARD_OXFORD` / `SEG_RUN_MULTI_ATLAS` / `SEG_RUN_FREESURFER` | per-path toggles for `all` mode (all default on; `SEG_RUN_FREESURFER=false` skips the multi-hour recon-all) |
 | `USE_BIANCIARDI` / `USE_CIT168` / `USE_AAL3` | per-atlas enables for `multi_atlas` (AAL3 off by default) |
 | `ATLAS_DIR` | atlas root, default `${FSLDIR}/data/atlases` |
 
 ## Brainstem segmentation method & optional modules
 
-**`BRAINSTEM_SEGMENTATION_METHOD`** (default `freesurfer`) selects the brainstem labeling backend:
+**`BRAINSTEM_SEGMENTATION_METHOD`** (default `all`) selects the brainstem labeling backend:
 
-- `freesurfer` (default) — FreeSurfer `segmentBS`/`brainstemSsLabels` substructures (midbrain/pons/medulla/SCP) on the subject's own T1; gated by an FS↔HO agreement (Dice + leakage) check; falls back to the HO gross mask on disagreement or missing FreeSurfer/license.
+- `all` (default) — runs every ENABLED path below as **concurrent parallel paths** and analyses the UNION of all masks they produce. The fast paths (HO gross extent + multi-atlas warp, minutes) run alongside the multi-hour FreeSurfer recon-all; each path is independent and non-fatal (a failed/skipped path logs a WARNING, never aborts the others or the pipeline). The MNI→subject SyN warp is computed ONCE up front and reused by both the HO and multi-atlas paths (no race on the shared transform). Per-path toggles `SEG_RUN_HARVARD_OXFORD` / `SEG_RUN_MULTI_ATLAS` / `SEG_RUN_FREESURFER` (all default on) drop individual paths — set `SEG_RUN_FREESURFER=false` to keep the fast HO + multi-atlas paths and skip recon-all. Downstream per-region GMM (`find_all_atlas_regions` → `apply_per_region_gmm_analysis`) discovers the union of FS parcels + multi-atlas nuclei/subdivisions + HO gross mask and tags each region's provenance (`region_provenance.tsv`).
+- `freesurfer` — FreeSurfer `segmentBS`/`brainstemSsLabels` substructures (midbrain/pons/medulla/SCP) on the subject's own T1; gated by an FS↔HO agreement (Dice + leakage) check; falls back to the HO gross mask on disagreement or missing FreeSurfer/license.
 - `atlas` / `harvard_oxford` — Harvard-Oxford gross brainstem extent only (index 7, `maxprob-thr25`).
 - `multi_atlas` / `bianciardi` — additionally warps Bianciardi BrainstemNavigator / CIT168 / AAL3 into subject space (shared SyN→MNI + `GenericLabel`) for nucleus-level masks (`docs/multi_atlas_integration_spec.md`).
+
+The single-method values (`freesurfer`/`multi_atlas`/`bianciardi`/`atlas`/`harvard_oxford`) remain mutually exclusive and behave exactly as before.
 
 **Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`. The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
 

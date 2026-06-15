@@ -124,7 +124,7 @@ BRAINSTEM SEGMENTATION REPORT
 Generated: $(date)
 Subject: $(basename "$output_prefix")
 Template Resolution: ${DEFAULT_TEMPLATE_RES:-1mm}
-Brainstem method: ${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}
+Brainstem method: $(_seg_method_report_line)
 
 INPUT FILES
 -----------
@@ -223,11 +223,103 @@ extract_brainstem_with_flair() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _seg_method_report_line - human-readable "Method:" descriptor for the reports
+#
+# For the parallel 'all' mode it lists which paths were ENABLED and (when the
+# parallel run has populated SEG_ALL_PATHS_OK) which actually SUCCEEDED, so the
+# report reflects the real provenance of the masks. For the exclusive methods it
+# returns the legacy single-method description.
+# ---------------------------------------------------------------------------
+_seg_method_report_line() {
+    local m="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
+    if [ "$m" != "all" ]; then
+        echo "$m"
+        return 0
+    fi
+    local enabled=""
+    [ "${SEG_RUN_HARVARD_OXFORD:-true}" = "true" ] && enabled="${enabled}harvard_oxford "
+    [ "${SEG_RUN_MULTI_ATLAS:-true}" = "true" ]    && enabled="${enabled}multi_atlas "
+    [ "${SEG_RUN_FREESURFER:-true}" = "true" ]     && enabled="${enabled}freesurfer "
+    enabled="${enabled% }"
+    local line="all (parallel paths enabled: ${enabled:-none})"
+    # Append the succeeded-paths list once the parallel run has populated the
+    # array. Use the array length (not "${SEG_ALL_PATHS_OK:-}", which only tests
+    # element 0) so an empty array is detected correctly. `declare -p` guards the
+    # case where the variable was never set (set -u safe).
+    if declare -p SEG_ALL_PATHS_OK >/dev/null 2>&1 && [ "${#SEG_ALL_PATHS_OK[@]}" -gt 0 ]; then
+        line="${line}; succeeded: ${SEG_ALL_PATHS_OK[*]}"
+    fi
+    echo "$line"
+}
+
+# ---------------------------------------------------------------------------
+# _compute_shared_mni_to_subject_warp - compute the MNI->subject SyN warp ONCE
+#
+# CONCURRENCY SAFETY: in 'all' mode the Harvard-Oxford path and the multi-atlas
+# path both need the SAME MNI->subject SyN transform. If two background jobs each
+# ran antsRegistrationSyN.sh into a shared cache prefix concurrently they could
+# corrupt the half-written transform. We instead compute it ONCE here, BEFORE the
+# parallel fan-out, into a canonical shared dir and export SEG_SHARED_MNI_REG_PREFIX.
+# Both paths then COPY (read-only) from that prefix into their own workspace, so
+# the background jobs never write the same registration file.
+#
+# Args: <subject_t1>
+# Echoes the shared transform prefix on success (also exported); returns 0 on
+# success, 1 if the warp could not be produced (callers fall back to computing
+# their own — still correct, just no longer shared).
+# ---------------------------------------------------------------------------
+_compute_shared_mni_to_subject_warp() {
+    local subject_t1="$1"
+
+    local shared_dir="${RESULTS_DIR}/segmentation/shared_mni_registration"
+    local prefix="${shared_dir}/mni_to_subject_"
+    local affine="${prefix}0GenericAffine.mat"
+    local warp="${prefix}1Warp.nii.gz"
+
+    # Cached / resumable: reuse an existing shared warp.
+    if [ -f "$affine" ] && [ -f "$warp" ]; then
+        export SEG_SHARED_MNI_REG_PREFIX="$prefix"
+        log_message "Shared MNI->subject warp already present (cached): $prefix"
+        echo "$prefix"
+        return 0
+    fi
+
+    local tres="${TEMPLATE_RES:-${DEFAULT_TEMPLATE_RES:-1mm}}"
+    local mni_template="${FSLDIR}/data/standard/MNI152_T1_${tres}_brain.nii.gz"
+    [ -f "$mni_template" ] || mni_template="${FSLDIR}/data/standard/MNI152_T1_${tres}.nii.gz"
+    if [ ! -f "$mni_template" ]; then
+        log_formatted "WARNING" "MNI template not found ($tres) — cannot pre-compute shared warp; paths will register independently"
+        return 1
+    fi
+
+    mkdir -p "$shared_dir"
+    log_formatted "INFO" "Pre-computing shared MNI->subject SyN warp (computed ONCE, reused by HO + multi-atlas paths)"
+    log_message "  Template: $mni_template"
+    antsRegistrationSyN.sh -d 3 -f "$subject_t1" -m "$mni_template" \
+        -o "$prefix" -t s -j 1 -n "${ANTS_THREADS:-1}" >/dev/null 2>&1
+
+    if [ ! -f "$affine" ] || [ ! -f "$warp" ]; then
+        log_formatted "WARNING" "Shared MNI->subject registration failed; paths will register independently"
+        return 1
+    fi
+
+    export SEG_SHARED_MNI_REG_PREFIX="$prefix"
+    log_formatted "SUCCESS" "Shared MNI->subject warp computed: $prefix"
+    echo "$prefix"
+    return 0
+}
+
 # Comprehensive segmentation with multiple methods (from original)
+#
+# Default method 'all' runs every ENABLED path (Harvard-Oxford gross extent,
+# multi-atlas warp, FreeSurfer substructures) as CONCURRENT PARALLEL paths. The
+# single-method values (freesurfer / multi_atlas / bianciardi / atlas /
+# harvard_oxford) remain mutually exclusive and behave exactly as before.
 extract_brainstem_final() {
     local input_file="$1"
     local input_basename=$(basename "$input_file" .nii.gz)
-    local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
+    local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
 
     log_formatted "INFO" "===== COMPREHENSIVE BRAINSTEM SEGMENTATION ====="
     log_message "Brainstem segmentation method: $seg_method"
@@ -235,6 +327,35 @@ extract_brainstem_final() {
     # Define output directory
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     mkdir -p "$brainstem_dir"
+
+    if [ "$seg_method" = "all" ]; then
+        _extract_brainstem_all_parallel "$input_file" "$input_basename" "$brainstem_dir"
+    else
+        _extract_brainstem_single_method "$input_file" "$input_basename" "$brainstem_dir" "$seg_method"
+    fi
+
+    # Validate segmentation
+    validate_segmentation_outputs "$input_file" "$input_basename"
+
+    # Generate comprehensive visualization report
+    generate_comprehensive_report "$input_file" "$input_basename"
+
+    log_formatted "SUCCESS" "Comprehensive segmentation complete"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _extract_brainstem_single_method - legacy mutually-exclusive dispatch
+#
+# Preserves the historical behaviour for the exclusive method values. Always
+# produces the Harvard-Oxford gross extent first (the fallback mask + the
+# FS<->HO agreement reference), then layers on the requested substructure source.
+# ---------------------------------------------------------------------------
+_extract_brainstem_single_method() {
+    local input_file="$1"
+    local input_basename="$2"
+    local brainstem_dir="$3"
+    local seg_method="$4"
 
     # Always produce the Harvard-Oxford gross brainstem extent. It is the
     # fallback mask AND the reference for the FS-HO agreement QC gate.
@@ -275,13 +396,270 @@ extract_brainstem_final() {
         log_formatted "WARNING" "Unknown BRAINSTEM_SEGMENTATION_METHOD='$seg_method'; defaulting to Harvard-Oxford gross mask only"
     fi
 
-    # Validate segmentation
-    validate_segmentation_outputs "$input_file" "$input_basename"
+    return 0
+}
 
-    # Generate comprehensive visualization report
-    generate_comprehensive_report "$input_file" "$input_basename"
+# ---------------------------------------------------------------------------
+# _extract_brainstem_all_parallel - run all ENABLED paths as concurrent parallel
+# paths (the new default 'all' mode).
+#
+# Paths (each gated by a SEG_RUN_* toggle, all default on):
+#   - Harvard-Oxford gross extent (extract_brainstem)         — fast
+#   - Multi-atlas warp (run_multi_atlas_brainstem)            — minutes, no recon
+#   - FreeSurfer substructures (extract_brainstem_freesurfer) — MULTI-HOUR recon
+#
+# Concurrency design:
+#   * The shared MNI->subject SyN warp is computed ONCE up front and reused by
+#     both the HO and multi-atlas paths (no race on the cached transform).
+#   * Each path runs in a BACKGROUND SUBSHELL writing to a per-path log; its exit
+#     code is collected with `wait <pid>`. A failing background job is NON-FATAL:
+#     it logs a WARNING and never aborts the parent or the other paths (the
+#     parent never runs `wait` under a propagating errexit on the job's status).
+#   * Heavy ANTs/recon thread counts are capped so concurrent paths don't
+#     oversubscribe the CPU (ANTS_THREADS split across the heavy paths, honouring
+#     MAX_CPU_INTENSIVE_JOBS).
+#   * Final outputs are non-clobbering: HO -> segmentation/brainstem/<base>_*,
+#     FS parcels -> segmentation/detailed_brainstem/<base>_{pons,midbrain,...},
+#     multi-atlas masks -> segmentation/detailed_brainstem/{bianciardi,cit168}_*.
+# ---------------------------------------------------------------------------
+_extract_brainstem_all_parallel() {
+    local input_file="$1"
+    local input_basename="$2"
+    local brainstem_dir="$3"
 
-    log_formatted "SUCCESS" "Comprehensive segmentation complete"
+    local run_ho="${SEG_RUN_HARVARD_OXFORD:-true}"
+    local run_ma="${SEG_RUN_MULTI_ATLAS:-true}"
+    local run_fs="${SEG_RUN_FREESURFER:-true}"
+
+    log_formatted "INFO" "=== PARALLEL BRAINSTEM SEGMENTATION (method=all) ==="
+    log_message "Enabled paths: harvard_oxford=$run_ho  multi_atlas=$run_ma  freesurfer=$run_fs"
+
+    # Compute the shared MNI->subject warp ONCE (before fan-out) so the HO and
+    # multi-atlas paths reuse the same transform instead of racing on it.
+    if [ "$run_ho" = "true" ] || [ "$run_ma" = "true" ]; then
+        _compute_shared_mni_to_subject_warp "$input_file" >/dev/null || \
+            log_formatted "WARNING" "Shared warp unavailable; HO/multi-atlas will each register independently (still correct, just slower)"
+    fi
+
+    # Cap heavy thread counts so concurrently-running ANTs/recon paths don't
+    # oversubscribe. Count the heavy paths (HO + multi-atlas both run ANTs warps;
+    # FreeSurfer runs recon-all) and divide the ANTS_THREADS budget across them.
+    local heavy_paths=0
+    [ "$run_ho" = "true" ] && heavy_paths=$((heavy_paths + 1))
+    [ "$run_ma" = "true" ] && heavy_paths=$((heavy_paths + 1))
+    [ "$run_fs" = "true" ] && heavy_paths=$((heavy_paths + 1))
+    [ "$heavy_paths" -lt 1 ] && heavy_paths=1
+
+    local total_threads="${ANTS_THREADS:-4}"
+    [[ "$total_threads" =~ ^[0-9]+$ ]] || total_threads=4
+    local per_path_threads=$(( total_threads / heavy_paths ))
+    [ "$per_path_threads" -lt 1 ] && per_path_threads=1
+    # Respect an explicit MAX_CPU_INTENSIVE_JOBS thread cap when set (>0).
+    local max_cpu="${MAX_CPU_INTENSIVE_JOBS:-0}"
+    if [[ "$max_cpu" =~ ^[0-9]+$ ]] && [ "$max_cpu" -gt 0 ] && [ "$per_path_threads" -gt "$max_cpu" ]; then
+        per_path_threads="$max_cpu"
+    fi
+    log_message "Per-path ANTs/recon thread cap: $per_path_threads (of $total_threads across $heavy_paths heavy path(s))"
+
+    local log_dir="${RESULTS_DIR}/logs/segmentation_parallel"
+    mkdir -p "$log_dir"
+
+    local output_prefix="${brainstem_dir}/${input_basename}"
+    local ho_brainstem_mask="${output_prefix}_brainstem.nii.gz"
+
+    # ── Launch background paths ─────────────────────────────────────────────
+    local ho_pid="" ma_pid="" fs_pid=""
+
+    if [ "$run_ho" = "true" ]; then
+        (
+            export ANTS_THREADS="$per_path_threads"
+            log_formatted "INFO" "[parallel] Harvard-Oxford gross extent path starting"
+            if extract_brainstem "$input_file" "$input_basename"; then
+                map_segmentation_files "$input_basename" "$brainstem_dir"
+                log_formatted "SUCCESS" "[parallel] Harvard-Oxford gross extent path complete"
+            else
+                log_formatted "WARNING" "[parallel] Harvard-Oxford gross extent path FAILED (non-fatal)"
+                exit 1
+            fi
+        ) >"${log_dir}/harvard_oxford.log" 2>&1 &
+        ho_pid=$!
+        log_message "  HO path PID=$ho_pid (log: ${log_dir}/harvard_oxford.log)"
+    else
+        log_message "  HO path disabled (SEG_RUN_HARVARD_OXFORD=false)"
+    fi
+
+    if [ "$run_ma" = "true" ]; then
+        (
+            export ANTS_THREADS="$per_path_threads"
+            log_formatted "INFO" "[parallel] Multi-atlas path starting"
+            if run_multi_atlas_brainstem "$input_file" "$input_basename"; then
+                log_formatted "SUCCESS" "[parallel] Multi-atlas path complete"
+            else
+                log_formatted "WARNING" "[parallel] Multi-atlas path FAILED (non-fatal)"
+                exit 1
+            fi
+        ) >"${log_dir}/multi_atlas.log" 2>&1 &
+        ma_pid=$!
+        log_message "  Multi-atlas path PID=$ma_pid (log: ${log_dir}/multi_atlas.log)"
+    else
+        log_message "  Multi-atlas path disabled (SEG_RUN_MULTI_ATLAS=false)"
+    fi
+
+    if [ "$run_fs" = "true" ]; then
+        (
+            export ANTS_THREADS="$per_path_threads"
+            log_formatted "INFO" "[parallel] FreeSurfer substructure path starting (recon-all may run for HOURS)"
+            # Pass the HO mask path for the FS<->HO agreement gate. The gate is
+            # skipped gracefully if the HO mask is not present when it runs (the
+            # FS path is the long pole, so HO normally finishes well before).
+            if extract_brainstem_freesurfer "$input_file" "$output_prefix" "$ho_brainstem_mask"; then
+                log_formatted "SUCCESS" "[parallel] FreeSurfer substructure path complete"
+            else
+                log_formatted "WARNING" "[parallel] FreeSurfer substructure path unavailable/low-confidence (non-fatal)"
+                exit 1
+            fi
+        ) >"${log_dir}/freesurfer.log" 2>&1 &
+        fs_pid=$!
+        log_message "  FreeSurfer path PID=$fs_pid (log: ${log_dir}/freesurfer.log)"
+    else
+        log_message "  FreeSurfer path disabled (SEG_RUN_FREESURFER=false) — skipping multi-hour recon-all"
+    fi
+
+    # ── Collect each path independently (failure is non-fatal) ──────────────
+    # `wait <pid>` returns the job's exit status; we capture it without letting a
+    # non-zero status abort the parent under set -e.
+    SEG_ALL_PATHS_RAN=()
+    SEG_ALL_PATHS_OK=()
+
+    if [ -n "$ho_pid" ]; then
+        local ho_rc=0; wait "$ho_pid" || ho_rc=$?
+        cat "${log_dir}/harvard_oxford.log" 2>/dev/null || true
+        SEG_ALL_PATHS_RAN+=("harvard_oxford")
+        if [ "$ho_rc" -eq 0 ]; then
+            SEG_ALL_PATHS_OK+=("harvard_oxford")
+            log_formatted "SUCCESS" "Harvard-Oxford path: OK"
+        else
+            log_formatted "WARNING" "Harvard-Oxford path: FAILED (rc=$ho_rc) — non-fatal"
+        fi
+    fi
+
+    if [ -n "$ma_pid" ]; then
+        local ma_rc=0; wait "$ma_pid" || ma_rc=$?
+        cat "${log_dir}/multi_atlas.log" 2>/dev/null || true
+        SEG_ALL_PATHS_RAN+=("multi_atlas")
+        if [ "$ma_rc" -eq 0 ]; then
+            SEG_ALL_PATHS_OK+=("multi_atlas")
+            log_formatted "SUCCESS" "Multi-atlas path: OK"
+        else
+            log_formatted "WARNING" "Multi-atlas path: FAILED (rc=$ma_rc) — non-fatal"
+        fi
+    fi
+
+    if [ -n "$fs_pid" ]; then
+        local fs_rc=0; wait "$fs_pid" || fs_rc=$?
+        cat "${log_dir}/freesurfer.log" 2>/dev/null || true
+        SEG_ALL_PATHS_RAN+=("freesurfer")
+        if [ "$fs_rc" -eq 0 ]; then
+            SEG_ALL_PATHS_OK+=("freesurfer")
+            log_formatted "SUCCESS" "FreeSurfer path: OK"
+        else
+            log_formatted "WARNING" "FreeSurfer path: unavailable/low-confidence (rc=$fs_rc) — non-fatal"
+        fi
+    fi
+
+    # NOTE: bash cannot export arrays; SEG_ALL_PATHS_RAN/OK remain plain shell
+    # variables in this process. _seg_method_report_line (called in-process via
+    # command substitution by the report generators) reads them via declare -p,
+    # so no export is needed or possible.
+    log_formatted "INFO" "Parallel segmentation paths ran: ${SEG_ALL_PATHS_RAN[*]:-none}; succeeded: ${SEG_ALL_PATHS_OK[*]:-none}"
+
+    # The canonical gross brainstem mask (segmentation/brainstem/<base>_brainstem.nii.gz)
+    # is a HARD pipeline requirement: pipeline.sh aborts the segmentation stage if
+    # it is missing. Only the Harvard-Oxford path writes it. When the HO path is
+    # disabled (SEG_RUN_HARVARD_OXFORD=false) or failed, but a substructure path
+    # (FreeSurfer / multi-atlas) succeeded, SYNTHESISE the gross mask from the
+    # union of the produced substructure masks so the contract holds and downstream
+    # gets a real fallback extent — rather than silently aborting the whole run.
+    if [ ! -f "$ho_brainstem_mask" ]; then
+        log_formatted "WARNING" "Harvard-Oxford gross brainstem mask absent; synthesising it from the union of the substructure masks that succeeded"
+        if _synthesize_gross_brainstem_from_substructures "$input_basename" "$ho_brainstem_mask"; then
+            log_formatted "SUCCESS" "Synthesised gross brainstem mask from substructure union: $ho_brainstem_mask"
+        else
+            log_formatted "WARNING" "Could not synthesise a gross brainstem mask (no substructure masks available)"
+        fi
+    fi
+
+    # Non-fatal overall: as long as SOMETHING ran, downstream find_all_atlas_regions
+    # discovers the union of whatever masks the successful paths produced.
+    if [ ${#SEG_ALL_PATHS_OK[@]} -eq 0 ]; then
+        log_formatted "ERROR" "All parallel segmentation paths failed"
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _synthesize_gross_brainstem_from_substructures - build the canonical gross
+# brainstem mask + hemisphere splits from the union of substructure masks.
+#
+# Used in 'all' mode when the Harvard-Oxford path did not produce
+# segmentation/brainstem/<base>_brainstem.nii.gz (HO disabled or failed) but a
+# substructure path (FreeSurfer parcels and/or multi-atlas aggregated
+# subdivisions) did. The union of those subdivision masks is a valid gross
+# brainstem extent, so it satisfies the pipeline's mandatory-output contract and
+# serves as the analysis fallback. Returns 0 on success (mask written), 1 if no
+# substructure masks were available to union.
+#
+# Args: <input_basename> <out_brainstem_mask>
+# ---------------------------------------------------------------------------
+_synthesize_gross_brainstem_from_substructures() {
+    local input_basename="$1"
+    local out_mask="$2"
+
+    local detailed_dir="${RESULTS_DIR}/segmentation/detailed_brainstem"
+    [ -d "$detailed_dir" ] || return 1
+
+    mkdir -p "$(dirname "$out_mask")"
+
+    # Union the gross subdivision masks (FreeSurfer parcels + multi-atlas
+    # aggregated subdivisions) — NOT the tiny individual nuclei — so the result
+    # is a coherent gross extent. Match the *_pons/*_midbrain/*_medulla/*_scp
+    # families (with optional left/right) from any source.
+    local first=1 f
+    local tmp_union; tmp_union=$(mktemp -d)/union.nii.gz
+    shopt -s nullglob
+    for f in \
+        "$detailed_dir"/*_midbrain.nii.gz "$detailed_dir"/*_pons.nii.gz \
+        "$detailed_dir"/*_medulla.nii.gz "$detailed_dir"/*_scp.nii.gz \
+        "$detailed_dir"/*left_midbrain*.nii.gz "$detailed_dir"/*right_midbrain*.nii.gz \
+        "$detailed_dir"/*left_pons*.nii.gz "$detailed_dir"/*right_pons*.nii.gz \
+        "$detailed_dir"/*left_medulla*.nii.gz "$detailed_dir"/*right_medulla*.nii.gz \
+        "$detailed_dir"/*left_scp*.nii.gz "$detailed_dir"/*right_scp*.nii.gz; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in *_intensity*|*_flair_*) continue ;; esac
+        if [ "$first" -eq 1 ]; then
+            safe_fslmaths "synth gross init" "$f" -bin "$tmp_union" >/dev/null 2>&1 || continue
+            first=0
+        else
+            safe_fslmaths "synth gross add" "$tmp_union" -max "$f" -bin "$tmp_union" >/dev/null 2>&1 || true
+        fi
+    done
+    shopt -u nullglob
+
+    if [ "$first" -eq 1 ] || [ ! -f "$tmp_union" ]; then
+        rm -rf "$(dirname "$tmp_union")"
+        return 1
+    fi
+
+    cp -f "$tmp_union" "$out_mask"
+    rm -rf "$(dirname "$tmp_union")"
+
+    # Produce the hemisphere splits the report/QC reference, mirroring
+    # generate_hemisphere_masks (hierarchical_joint_fusion.sh).
+    local output_prefix="${out_mask%_brainstem.nii.gz}"
+    if declare -f generate_hemisphere_masks >/dev/null 2>&1; then
+        generate_hemisphere_masks "$out_mask" "$output_prefix" >/dev/null 2>&1 || true
+    fi
     return 0
 }
 
@@ -423,7 +801,7 @@ Subject: $input_basename
 
 SEGMENTATION SUMMARY
 -------------------
-Method: ${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer} (gross extent: Harvard-Oxford; substructures: FreeSurfer brainstemSsLabels)
+Method: $(_seg_method_report_line) (gross extent: Harvard-Oxford; substructures: FreeSurfer brainstemSsLabels and/or multi-atlas nuclei)
 Space: T1 Native Space
 Brainstem voxels: $brainstem_voxels
 
@@ -551,6 +929,11 @@ export -f enhance_segmentation_with_flair
 export -f generate_segmentation_report
 export -f extract_brainstem_with_flair
 export -f extract_brainstem_final
+export -f _extract_brainstem_single_method
+export -f _extract_brainstem_all_parallel
+export -f _synthesize_gross_brainstem_from_substructures
+export -f _compute_shared_mni_to_subject_warp
+export -f _seg_method_report_line
 export -f map_segmentation_files
 export -f validate_segmentation_outputs
 export -f create_combined_segmentation_map
@@ -566,4 +949,4 @@ export -f validate_segmentation
 export -f discover_and_map_segmentation_files
 export -f segment_brainstem
 
-log_message "Segmentation module loaded (Harvard-Oxford gross extent + FreeSurfer substructures)"
+log_message "Segmentation module loaded (parallel paths: Harvard-Oxford + multi-atlas + FreeSurfer; default method=all)"

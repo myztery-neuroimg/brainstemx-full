@@ -881,8 +881,21 @@ check_atlas_availability() {
   _report_atlas "HarvardOxford (subcortical)"     "$ho_ok"
 
   # Warn if the selected segmentation method needs an atlas that is missing.
-  local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
+  # Default mirrors config (BRAINSTEM_SEGMENTATION_METHOD default = 'all').
+  local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
   case "$seg_method" in
+    all)
+      # Parallel 'all' mode: warn per ENABLED path about its required atlases.
+      if [ "${SEG_RUN_HARVARD_OXFORD:-true}" = true ] && [ "$ho_ok" != true ]; then
+        log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='all' (SEG_RUN_HARVARD_OXFORD=true) needs the Harvard-Oxford subcortical atlas, which is ABSENT"
+      fi
+      if [ "${SEG_RUN_MULTI_ATLAS:-true}" = true ]; then
+        { [ "$bianciardi_ok" = true ] || [ "$cit168_ok" = true ] || [ "$aal3_ok" = true ]; } || \
+          log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='all' (SEG_RUN_MULTI_ATLAS=true) needs at least one of Bianciardi/CIT168/AAL3; ALL are ABSENT"
+      fi
+      # The FreeSurfer path needs no atlas (recon-all/segmentBS); HO is its
+      # gross-extent fallback, already reported above.
+      ;;
     atlas|harvard_oxford)
       [ "$ho_ok" = true ] || \
         log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='$seg_method' requires the Harvard-Oxford subcortical atlas, which is ABSENT"

@@ -348,6 +348,28 @@ _multi_atlas_register_mni_to_subject() {
         return 0
     fi
 
+    # Concurrency-safe shared warp: in 'all' mode the orchestrator computes the
+    # MNI->subject SyN warp ONCE up front (before the parallel fan-out) and
+    # exports SEG_SHARED_MNI_REG_PREFIX. Seed this reg_dir from that cached
+    # transform so the HO and multi-atlas paths reuse the SAME warp rather than
+    # racing on / duplicating the expensive registration. Falls through to
+    # computing a fresh warp when no shared prefix is available (single-method).
+    local shared_prefix="${SEG_SHARED_MNI_REG_PREFIX:-}"
+    if [ -n "$shared_prefix" ] && \
+       [ -f "${shared_prefix}0GenericAffine.mat" ] && \
+       [ -f "${shared_prefix}1Warp.nii.gz" ]; then
+        mkdir -p "$reg_dir"
+        if cp -f "${shared_prefix}0GenericAffine.mat" "$affine" 2>/dev/null && \
+           cp -f "${shared_prefix}1Warp.nii.gz" "$warp" 2>/dev/null; then
+            [ -f "${shared_prefix}1InverseWarp.nii.gz" ] && \
+                cp -f "${shared_prefix}1InverseWarp.nii.gz" "${prefix}1InverseWarp.nii.gz" 2>/dev/null || true
+            log_message "  Reusing pre-computed shared MNI->subject warp: ${shared_prefix}"
+            echo "$prefix"
+            return 0
+        fi
+        log_formatted "WARNING" "Could not seed multi-atlas reg_dir from shared warp; computing a fresh one"
+    fi
+
     # Use TEMPLATE_RES when set (sibling modules export it as a side-effect),
     # else the authoritative DEFAULT_TEMPLATE_RES so a 2mm config is honoured even
     # when this module is used standalone.
