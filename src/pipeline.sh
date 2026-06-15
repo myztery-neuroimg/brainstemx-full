@@ -95,14 +95,25 @@ source "${PIPELINE_DIR}/modules/dwi_preprocess.sh"
 source "${PIPELINE_DIR}/modules/brain_extraction.sh"
 source "${PIPELINE_DIR}/modules/registration.sh"
 source "${PIPELINE_DIR}/modules/segmentation.sh"
+source "${PIPELINE_DIR}/modules/multi_atlas.sh"
 source "${PIPELINE_DIR}/modules/segmentation_transformation_extraction.sh"
-source "${PIPELINE_DIR}/modules/segment_talairach.sh"
 source "${PIPELINE_DIR}/modules/analysis.sh"
 source "${PIPELINE_DIR}/modules/visualization.sh"
 source "${PIPELINE_DIR}/modules/qa.sh"
 source "${PIPELINE_DIR}/modules/scan_selection.sh"
 source "${PIPELINE_DIR}/modules/reference_space_selection.sh"
 source "${PIPELINE_DIR}/modules/enhanced_registration_validation.sh"
+
+# --- Optional modules (loaded if present; absence is non-fatal) ---
+# These land incrementally via separate PRs. Each module logs its own
+# "… module loaded" line when sourced. The [ -f ] guard keeps a missing
+# file from tripping `set -e`. Do NOT add multi_atlas.sh here — that
+# module owns its own source line (added by a concurrent PR).
+for _opt in wmh_bianca wmh_lst_samseg wmh_synthseg wmh_segcsvd wmh_shiva wmh_mars brainstem_aanseg fp_filter; do
+  _optf="${PIPELINE_DIR}/modules/${_opt}.sh"
+  [ -f "$_optf" ] && source "$_optf"
+done
+unset _opt _optf
 #source config/default_config.sh
 
 # Debugging: Check if functions are available after sourcing in pipeline.sh
@@ -1506,7 +1517,11 @@ main() {
     log_message "Loading configuration from $CONFIG_FILE"
     source "$CONFIG_FILE"
   fi
-  
+
+  # Report-only atlas availability (after config so BRAINSTEM_SEGMENTATION_METHOD
+  # and ATLAS_*_REL overrides are in scope). Non-fatal by design.
+  check_atlas_availability
+
   # Run pipeline
   if [ "$PIPELINE_TYPE" = "BATCH" ]; then
     # Check if subject list file is provided
