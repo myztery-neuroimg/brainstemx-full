@@ -333,7 +333,8 @@ extract_brainstem_talairach_with_transform() {
     
     # Use centralized apply_transformation function for consistent SyN transform handling
     local transform_prefix="${ants_prefix}"
-    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$transform_prefix" "NearestNeighbor"; then
+    # Talairach atlas is a discrete label volume: use label-aware interpolation (7th arg = is_label)
+    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$transform_prefix" "NearestNeighbor" "inverse" "true"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -1161,7 +1162,8 @@ extract_brainstem_talairach() {
     log_message "Applying composite transforms: warp field + affine (atlas→subject mapping)"
     
     # Use centralized apply_transformation function for consistent SyN transform handling
-    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "NearestNeighbor"; then
+    # Talairach atlas is a discrete label volume: use label-aware interpolation (7th arg = is_label)
+    if apply_transformation "$talairach_atlas" "$orientation_corrected_input" "$atlas_in_subject" "$ants_prefix" "NearestNeighbor" "inverse" "true"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"

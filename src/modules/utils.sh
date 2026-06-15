@@ -61,25 +61,40 @@ apply_transform() {
     local output_file="$4"
     local interp="${5:-trilinear}"
 
+    # FLIRT only accepts trilinear|nearestneighbour|sinc|spline; callers may pass
+    # ANTs-style names (Linear, NearestNeighbor, GenericLabel). Normalise the FSL
+    # interpolation so a label-aware request still maps to nearest-neighbour.
+    local flirt_interp="$interp"
+    case "$interp" in
+        NearestNeighbor|GenericLabel|MultiLabel|nearestneighbour) flirt_interp="nearestneighbour" ;;
+        Linear|trilinear)                                          flirt_interp="trilinear" ;;
+    esac
+
     # Handle usesqform flag (skip init matrix)
     if [ "${transform_file}" == "-usesqform" ]; then
         log_message "Applying transform with FLIRT using sform/qform: ${input_file} -> ${output_file}"
-        flirt -in "${input_file}" -ref "${ref_file}" -applyxfm -usesqform -out "${output_file}" -interp "${interp}"
+        flirt -in "${input_file}" -ref "${ref_file}" -applyxfm -usesqform -out "${output_file}" -interp "${flirt_interp}"
         return $?
     fi
 
     if [ "${USE_ANTS_SYN}" = "true" ]; then
-        # Map interpolation to ANTs options
+        # Map interpolation to ANTs options.  A nearest-neighbour / label request
+        # implies a discrete label/mask, so flag it as a label image for label-aware
+        # interpolation; intensity images keep Linear.
         local ants_interp="Linear"
-        if [[ "${interp}" == "nearestneighbour" ]]; then
-            ants_interp="NearestNeighbor"
-        fi
+        local ants_is_label="false"
+        case "${interp}" in
+            nearestneighbour|NearestNeighbor|GenericLabel|MultiLabel)
+                ants_interp="NearestNeighbor"
+                ants_is_label="true"
+                ;;
+        esac
         # Use centralized apply_transformation function for consistent SyN transform handling
         log_message "Using centralized apply_transformation function..."
-        
+
         # Extract transform prefix from transform file path
         local transform_prefix="${transform_file%0GenericAffine.mat}"
-        if apply_transformation "${input_file}" "${ref_file}" "${output_file}" "$transform_prefix" "${ants_interp}"; then
+        if apply_transformation "${input_file}" "${ref_file}" "${output_file}" "$transform_prefix" "${ants_interp}" "inverse" "${ants_is_label}"; then
             log_message "✓ Successfully applied transform using centralized function"
         else
             log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -88,7 +103,7 @@ apply_transform() {
     else
         log_message "Applying transform with FLIRT: ${input_file} -> ${output_file}"
         flirt -in "${input_file}" -ref "${ref_file}" -applyxfm -init "${transform_file}" \
-            -out "${output_file}" -interp "${interp}"
+            -out "${output_file}" -interp "${flirt_interp}"
     fi
 }
 
