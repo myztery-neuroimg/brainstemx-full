@@ -1451,16 +1451,21 @@ run_pipeline() {
   # Step 7: Visualization
   if [ $START_STAGE -le 7 ]; then
     log_message "Step 7: Visualization"
-    
+
+    # Visualization is best-effort QC output — a failure here must never abort the
+    # pipeline (analysis/reporting already completed). Guard each call so a missing
+    # backdrop or a slicer/fsleyes hiccup degrades to a WARNING under `set -e`.
     # Generate QC visualizations
-    generate_qc_visualizations "$subject_id" "$RESULTS_DIR"
-  
+    generate_qc_visualizations "$subject_id" "$RESULTS_DIR" \
+      || log_formatted "WARNING" "QC visualization generation reported a non-fatal issue"
+
     # Create multi-threshold overlays
-    create_multi_threshold_overlays "$subject_id" "$RESULTS_DIR"
-  
-  
+    create_multi_threshold_overlays "$subject_id" "$RESULTS_DIR" \
+      || log_formatted "WARNING" "Multi-threshold overlay generation reported a non-fatal issue"
+
     # Generate HTML report
-    generate_html_report "$subject_id" "$RESULTS_DIR"
+    generate_html_report "$subject_id" "$RESULTS_DIR" \
+      || log_formatted "WARNING" "HTML report generation reported a non-fatal issue"
   else
     log_message 'Skipping Step 7 (Visualization) as requested'
     log_message "Checking if hyperintensity data exists..."

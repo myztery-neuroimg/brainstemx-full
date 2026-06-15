@@ -148,25 +148,72 @@ fs_resolve_recon_input() {
         log_formatted "WARNING" "FREESURFER_T1_INPUT set but file missing: $FREESURFER_T1_INPUT — auto-detecting full-head T1 instead" >&2
     fi
 
-    # 2. Full-head bias-corrected T1 (pre brain extraction). Prefer the canonical
-    #    *_n4 output (preprocess.sh process_n4_correction), then the legacy
-    #    *N4Corrected output (utils.sh). Exclude masks and any brain-extracted /
-    #    standardized files. `find -print -quit` returns the first match without a
-    #    `| head` pipe, so it cannot take SIGPIPE under `set -o pipefail` (matches
-    #    the pattern fs_find_labels deliberately uses).
+    # 2. Resolve the full-head T1. recon-all is DESIGNED for a RAW, native T1: it
+    #    runs its OWN intensity-inhomogeneity (NU/N3) correction and atlas-based
+    #    intensity normalisation (mri_nu_correct.mni / mri_ca_normalize) plus its
+    #    own conform + skull-strip. Feeding it our bias_corrected T1 (ANTs N4 +
+    #    Rician-NLM denoise) DOUBLE-corrects the intensities FreeSurfer's
+    #    normalisation expects to find raw, which can degrade the WM segmentation
+    #    and inflate the cortical-surface genus — i.e. MORE topological defects,
+    #    which is exactly what stresses mris_fix_topology (the segfault this module
+    #    works around). So PREFER the raw dcm2niix source T1 from EXTRACT_DIR; only
+    #    fall back to the bias-corrected T1. Set FS_RECON_USE_RAW_T1=false to
+    #    restore the bias-corrected preference.
+    #    `find -print -quit` returns the first match without a `| head` pipe, so it
+    #    cannot take SIGPIPE under `set -o pipefail` (matches fs_find_labels).
+
+    # 2a. Locate the pipeline's CHOSEN full-head bias-corrected T1 (the canonical
+    #     *_n4 output, then the legacy *N4Corrected). This both defines which T1
+    #     SERIES the pipeline selected (used to find the raw progenitor) and is the
+    #     bias-corrected fallback. Exclude masks / brain-extracted / standardized.
     local bias_dir="${RESULTS_DIR:-}/bias_corrected"
+    local bias_candidate="" pattern
     if [ -n "${RESULTS_DIR:-}" ] && [ -d "$bias_dir" ]; then
-        local candidate pattern
         for pattern in "*T1*_n4.nii.gz" "*T1*N4Corrected.nii.gz"; do
-            candidate=$(find "$bias_dir" -maxdepth 1 -iname "$pattern" \
+            bias_candidate=$(find "$bias_dir" -maxdepth 1 -iname "$pattern" \
                 ! -iname "*Mask*" ! -iname "*BrainExtraction*" ! -iname "*_std.nii.gz" \
                 -print -quit 2>/dev/null)
-            if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-                log_message "  recon-all input: full-head bias-corrected T1 (${pattern}) -> $candidate" >&2
-                echo "$candidate"
-                return 0
-            fi
+            [ -n "$bias_candidate" ] && [ -f "$bias_candidate" ] && break
         done
+    fi
+
+    # 2b. Prefer the RAW source T1 (dcm2niix output in EXTRACT_DIR).
+    if [ "${FS_RECON_USE_RAW_T1:-true}" = "true" ] && [ -n "${EXTRACT_DIR:-}" ] && [ -d "${EXTRACT_DIR:-}" ]; then
+        local raw_candidate=""
+        # Derive the raw progenitor of the chosen bias-corrected T1 (strip _n4 /
+        # _N4Corrected) so FreeSurfer gets the SAME T1 series the pipeline chose.
+        if [ -n "$bias_candidate" ]; then
+            local raw_base
+            raw_base=$(basename "$bias_candidate")
+            raw_base="${raw_base%.nii.gz}"
+            raw_base="${raw_base%_n4}"
+            raw_base="${raw_base%_N4Corrected}"
+            [ -f "${EXTRACT_DIR}/${raw_base}.nii.gz" ] && raw_candidate="${EXTRACT_DIR}/${raw_base}.nii.gz"
+        fi
+        # Fallback: any full-head T1/MPRAGE in EXTRACT_DIR (exclude derivatives).
+        if [ -z "$raw_candidate" ]; then
+            local rpat
+            for rpat in "*MPRAGE*.nii.gz" "*T1*.nii.gz"; do
+                raw_candidate=$(find "$EXTRACT_DIR" -maxdepth 1 -iname "$rpat" \
+                    ! -iname "*Mask*" ! -iname "*BrainExtraction*" ! -iname "*brain.nii.gz" \
+                    ! -iname "*_n4.nii.gz" ! -iname "*N4Corrected*" ! -iname "*_std.nii.gz" \
+                    -print -quit 2>/dev/null)
+                [ -n "$raw_candidate" ] && [ -f "$raw_candidate" ] && break
+            done
+        fi
+        if [ -n "$raw_candidate" ] && [ -f "$raw_candidate" ]; then
+            log_message "  recon-all input: RAW full-head source T1 (FreeSurfer does its own N4 + intensity normalisation) -> $raw_candidate" >&2
+            echo "$raw_candidate"
+            return 0
+        fi
+        log_formatted "WARNING" "FS_RECON_USE_RAW_T1=true but no raw source T1 found under ${EXTRACT_DIR:-<unset>}; using the bias-corrected T1 instead" >&2
+    fi
+
+    # 2c. Bias-corrected full-head T1 (previous default; FreeSurfer re-does NU).
+    if [ -n "$bias_candidate" ] && [ -f "$bias_candidate" ]; then
+        log_message "  recon-all input: full-head bias-corrected T1 -> $bias_candidate" >&2
+        echo "$bias_candidate"
+        return 0
     fi
 
     # 3. Last resort: the reference image itself. This is very likely the
@@ -226,6 +273,69 @@ fs_surface_recon_log() {
     done <<< "$logtail"
 
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# fs_salvage_volumetric_recon - rescue a recon-all that died in the surface stages
+#
+# The cortical-SURFACE stages (tessellate / inflate / qsphere / mris_fix_topology
+# / white+pial) are a frequent crash site — notably the mris_fix_topology
+# Segmentation-fault on FreeSurfer 8.0.0 macOS-arm64. Those stages run AFTER the
+# VOLUMETRIC stages of autorecon2, which produce norm.mgz (CA Normalize) and
+# aseg.presurf.mgz (SubCort Seg / Merge ASeg). The final aseg.mgz is only written
+# LATER in autorecon3 (mri_surf2volseg), so a surface-stage crash leaves us with
+# norm.mgz + aseg.presurf.mgz but no aseg.mgz.
+#
+# segment_subregions brainstem needs exactly norm.mgz + aseg.mgz (and the aseg-CSF
+# harvest reads aseg.mgz). aseg.presurf.mgz is volumetrically identical to aseg.mgz
+# in the brainstem / subcortical / ventricle / CSF labels these consumers use —
+# the autorecon3 surface refinement only relabels the cortical ribbon, never the
+# brainstem. So when norm.mgz + aseg.presurf.mgz are present but aseg.mgz is not,
+# synthesize aseg.mgz from aseg.presurf.mgz so brainstem segmentation + aseg
+# harvest can proceed instead of discarding hours of compute and falling all the
+# way back to the HO gross mask. (Cortical-surface harvest — wmparc/aparc/surface
+# stats, and the segmentBS.sh fallback which needs wmparc.mgz — remains absent,
+# but is already non-fatal downstream. The FS↔HO agreement gate still guards a
+# grossly wrong volumetric segmentation.)
+#
+# Disable with FS_SALVAGE_VOLUMETRIC_RECON=false.
+#
+# Args: <subject_dir> <recon_exit_code>
+# Returns 0 if aseg.mgz is present (already, or freshly synthesized); 1 otherwise.
+# ---------------------------------------------------------------------------
+fs_salvage_volumetric_recon() {
+    local subject_dir="$1"
+    local exit_code="${2:-0}"
+    local mri_dir="${subject_dir}/mri"
+    local aseg="${mri_dir}/aseg.mgz"
+    local aseg_presurf="${mri_dir}/aseg.presurf.mgz"
+    local norm="${mri_dir}/norm.mgz"
+
+    if [ "${FS_SALVAGE_VOLUMETRIC_RECON:-true}" != "true" ]; then
+        return 1
+    fi
+
+    # If the final aseg.mgz already exists, the volumetric outputs are complete
+    # (the failure was something late/cosmetic) — nothing to synthesize.
+    if [ -f "$aseg" ]; then
+        log_formatted "WARNING" "recon-all exited non-zero (status ${exit_code}) but the final aseg.mgz is present — salvaging the volumetric recon."
+        return 0
+    fi
+
+    # Surface-stage crash: norm.mgz + aseg.presurf.mgz present, aseg.mgz absent.
+    if [ -f "$norm" ] && [ -f "$aseg_presurf" ]; then
+        log_formatted "WARNING" "recon-all surface stages failed (likely mris_fix_topology segfault on FS 8.0.0 macOS-arm64), but the volumetric outputs are intact (norm.mgz + aseg.presurf.mgz)."
+        log_formatted "WARNING" "  Synthesizing aseg.mgz from aseg.presurf.mgz so segment_subregions brainstem + aseg-CSF harvest can proceed. Cortical-surface harvest (wmparc/aparc/surface stats) will be absent."
+        if cp -f "$aseg_presurf" "$aseg"; then
+            log_message "  ✓ Synthesized ${aseg} from aseg.presurf.mgz"
+            return 0
+        fi
+        log_formatted "ERROR" "Failed to synthesize aseg.mgz from aseg.presurf.mgz"
+        return 1
+    fi
+
+    log_formatted "WARNING" "recon-all failed before producing the volumetric outputs (norm.mgz + aseg.presurf.mgz missing) — cannot salvage; will fall back to atlas/HO gross mask."
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -323,12 +433,21 @@ run_recon_all() {
     if [ "$recon_status" -ne 0 ]; then
         log_formatted "ERROR" "recon-all failed for subject '$subject_id'"
         fs_surface_recon_log "$subject_dir" "$recon_status"
+        # Attempt to salvage the volumetric recon before giving up — see below.
+        if fs_salvage_volumetric_recon "$subject_dir" "$recon_status"; then
+            log_message "  ✓ recon-all volumetric outputs salvaged: $subject_dir"
+            return 0
+        fi
         return 1
     fi
 
     if [ ! -f "$recon_marker" ]; then
         log_formatted "ERROR" "recon-all completed but expected output missing: $recon_marker"
         fs_surface_recon_log "$subject_dir" "$recon_status"
+        if fs_salvage_volumetric_recon "$subject_dir" "$recon_status"; then
+            log_message "  ✓ recon-all volumetric outputs salvaged: $subject_dir"
+            return 0
+        fi
         return 1
     fi
 
@@ -722,6 +841,7 @@ export -f fs_brainstem_available
 export -f fs_record_provenance
 export -f fs_resolve_recon_input
 export -f fs_surface_recon_log
+export -f fs_salvage_volumetric_recon
 export -f run_recon_all
 export -f fs_find_labels
 export -f run_brainstem_substructures

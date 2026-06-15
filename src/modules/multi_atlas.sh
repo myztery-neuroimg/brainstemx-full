@@ -497,8 +497,15 @@ split_dseg_to_region_masks() {
     offset=$(_lut_image_offset "$lut")
     log_message "  Splitting $atlas_tag dseg into per-region masks: $out_dir (lut->image offset=$offset)"
 
+    # Per-region volume sidecar (region | label | voxels | volume_mm3), one row per
+    # NON-empty nucleus. Captures "voxels for every seg" in a machine-readable table
+    # alongside the per-region console log below (the gross subdivisions get their own
+    # lines from _aggregate_bianciardi_subdivisions).
+    local vol_tsv="${out_dir}/${atlas_tag}_region_volumes.tsv"
+    printf 'region\tlabel\tvoxels\tvolume_mm3\n' > "$vol_tsv"
+
     local n_made=0
-    local idx name val safe_name out_mask vox
+    local idx name val safe_name out_mask vox vol_mm3
     while IFS=$'\t' read -r idx name; do
         [ -z "$idx" ] && continue
         val=$((idx + offset))
@@ -510,15 +517,19 @@ split_dseg_to_region_masks() {
         safe_fslmaths "split label $val ($name)" "$subject_dseg" \
             -thr "$val" -uthr "$val" -bin "$out_mask" >/dev/null 2>&1 || continue
 
-        vox=$(fslstats "$out_mask" -V 2>/dev/null | awk '{print $1}')
+        # fslstats -V echoes "<voxels> <volume_mm3>"; capture both.
+        read -r vox vol_mm3 < <(fslstats "$out_mask" -V 2>/dev/null)
         if [ -z "$vox" ] || [ "$vox" -le 0 ] 2>/dev/null; then
             rm -f "$out_mask"
             continue
         fi
+        log_message "    ${atlas_tag}_${safe_name}_label${val}: ${vox} voxels (${vol_mm3:-0} mm^3)"
+        printf '%s\t%s\t%s\t%s\n' "${atlas_tag}_${safe_name}" "$val" "$vox" "${vol_mm3:-0}" >> "$vol_tsv"
         n_made=$((n_made + 1))
     done < <(parse_atlas_lut "$lut")
 
     log_message "  $atlas_tag: created $n_made nucleus-level region masks"
+    log_message "  $atlas_tag: per-region volumes -> $vol_tsv"
 
     if [ "$atlas_tag" = "bianciardi" ]; then
         _aggregate_bianciardi_subdivisions "$subject_dseg" "$lut" "$out_dir"
@@ -567,11 +578,18 @@ _aggregate_bianciardi_subdivisions() {
         rm -f "$tmp_lab"
     done < <(parse_atlas_lut "$lut")
 
-    local f v
+    # Also record the gross subdivisions in the same per-region volume sidecar
+    # (label column = "agg" since these are aggregates, not single dseg labels).
+    local vol_tsv="${out_dir}/bianciardi_region_volumes.tsv"
+    local f v v_mm3 base
     for f in "${out_dir}"/bianciardi_*midbrain.nii.gz "${out_dir}"/bianciardi_*pons.nii.gz "${out_dir}"/bianciardi_*medulla.nii.gz; do
         [ -f "$f" ] || continue
-        v=$(fslstats "$f" -V 2>/dev/null | awk '{print $1}')
-        log_message "    $(basename "$f"): ${v:-0} voxels"
+        read -r v v_mm3 < <(fslstats "$f" -V 2>/dev/null)
+        log_message "    $(basename "$f"): ${v:-0} voxels (${v_mm3:-0} mm^3)"
+        if [ -f "$vol_tsv" ]; then
+            base=$(basename "$f" .nii.gz)
+            printf '%s\tagg\t%s\t%s\n' "$base" "${v:-0}" "${v_mm3:-0}" >> "$vol_tsv"
+        fi
     done
 }
 
@@ -607,6 +625,35 @@ _bianciardi_nucleus_subdivision() {
     esac
 }
 
+# _emit_atlas_view <subject_t1> <atlas_dseg_in_subject> <views_dir> <atlas_tag>
+#   Emit a single visualization for the WHOLE atlas: every nucleus colour-coded
+#   on the subject T1 in one view (far more useful than ~100 separate per-mask
+#   overlays). Writes an fsleyes launcher script and, when `slicer` is present, a
+#   static tri-planar PNG. Best-effort + non-fatal (missing T1/dseg/slicer just
+#   skips). Mirrors the view_*.sh convention used by the QC visualisation module.
+_emit_atlas_view() {
+    local subject_t1="$1" atlas_dseg="$2" views_dir="$3" atlas_tag="$4"
+    [ -f "$atlas_dseg" ] || return 0
+    if [ ! -f "$subject_t1" ]; then
+        log_formatted "WARNING" "  ${atlas_tag}: no subject T1 backdrop for visualisation — skipping view"
+        return 0
+    fi
+    mkdir -p "$views_dir" || return 0
+
+    local view_sh="${views_dir}/view_${atlas_tag}_nuclei.sh"
+    {
+        echo "#!/usr/bin/env bash"
+        echo "# ${atlas_tag}: all nuclei colour-coded on the subject T1 (random LUT per label)."
+        echo "fsleyes \"$subject_t1\" \"$atlas_dseg\" -cm random -a 50"
+    } > "$view_sh" && chmod +x "$view_sh"
+
+    if command -v slicer >/dev/null 2>&1; then
+        slicer "$subject_t1" "$atlas_dseg" -a "${views_dir}/${atlas_tag}_nuclei.png" >/dev/null 2>&1 || true
+    fi
+    log_message "  ${atlas_tag}: view script -> $view_sh"
+    return 0
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # run_multi_atlas_brainstem <subject_t1> <input_basename> [flair_file]
 #   Orchestrator: for each enabled atlas ensure cached MNI dseg -> warp to
@@ -634,6 +681,7 @@ run_multi_atlas_brainstem() {
     local region_out="${RESULTS_DIR}/segmentation/detailed_brainstem"
     local work_dir="${RESULTS_DIR}/segmentation/multi_atlas"
     local reg_dir="${work_dir}/registration"
+    local views_dir="${work_dir}/views"
     mkdir -p "$region_out" "$work_dir" "$reg_dir"
 
     # Single shared MNI->subject registration for all atlases.
@@ -654,6 +702,7 @@ run_multi_atlas_brainstem() {
             local b_subj="${work_dir}/bianciardi_in_subject.nii.gz"
             if warp_atlas_dseg_to_subject "$b_dseg" "$b_subj" "$subject_t1" "$reg_prefix" "true"; then
                 split_dseg_to_region_masks "$b_subj" "$b_lut" "$region_out" "bianciardi" && any=true
+                _emit_atlas_view "$subject_t1" "$b_subj" "$views_dir" "bianciardi"
                 _warp_bianciardi_overlay "$subject_t1" "$reg_prefix" "$work_dir"
             fi
         fi
@@ -668,6 +717,7 @@ run_multi_atlas_brainstem() {
             local c_subj="${work_dir}/cit168_in_subject.nii.gz"
             if warp_atlas_dseg_to_subject "$c_dseg" "$c_subj" "$subject_t1" "$reg_prefix" "true"; then
                 split_dseg_to_region_masks "$c_subj" "$c_lut" "$region_out" "cit168" && any=true
+                _emit_atlas_view "$subject_t1" "$c_subj" "$views_dir" "cit168"
             fi
         else
             log_formatted "WARNING" "CIT168 dseg/LUT missing — skipping CIT168"
@@ -683,6 +733,7 @@ run_multi_atlas_brainstem() {
             local a_subj="${work_dir}/aal3_in_subject.nii.gz"
             if warp_atlas_dseg_to_subject "$a_norm" "$a_subj" "$subject_t1" "$reg_prefix" "true"; then
                 split_dseg_to_region_masks "$a_subj" "$a_lut" "$region_out" "aal3" && any=true
+                _emit_atlas_view "$subject_t1" "$a_subj" "$views_dir" "aal3"
             fi
         else
             log_formatted "WARNING" "AAL3 normalized dseg/LUT missing — skipping AAL3"
@@ -726,6 +777,7 @@ export -f build_bianciardi_dseg
 export -f normalize_aal3_to_fsl_mni
 export -f warp_atlas_dseg_to_subject
 export -f split_dseg_to_region_masks
+export -f _emit_atlas_view
 export -f run_multi_atlas_brainstem
 
 log_message "Multi-atlas module loaded (Bianciardi/CIT168/AAL3)"

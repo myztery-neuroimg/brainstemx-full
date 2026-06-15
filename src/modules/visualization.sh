@@ -9,6 +9,41 @@
 # - 3D visualization
 #
 
+# ---------------------------------------------------------------------------
+# viz_resolve_flair_background - locate the registered FLAIR/T2-FLAIR background
+#
+# The overlays need a registered FLAIR (analysis space) as the anatomical
+# backdrop. Earlier code hard-coded "${subject_id}_pons_t2flair.nii.gz" under
+# registered/, but the pipeline never produces that name — the actual registered
+# FLAIR is "*FLAIR*Warped.nii.gz" / "t1_to_flairWarped.nii.gz" (see the Step-5
+# skip-block resolution in pipeline.sh). This resolves the real file, falling
+# back through the legacy name and any standardized/extracted FLAIR, and echoes
+# nothing (empty) when none exists so callers can degrade gracefully.
+#
+# Args: <subject_id> <subject_dir>
+# ---------------------------------------------------------------------------
+viz_resolve_flair_background() {
+    local subject_id="$1"
+    local subject_dir="$2"
+    local reg_dir="${subject_dir}/registered"
+    local candidate=""
+
+    # 1. Registered FLAIR in analysis space (canonical, matches pipeline.sh).
+    candidate=$(find "$reg_dir" -iname "*FLAIR*Warped.nii.gz" -print -quit 2>/dev/null)
+    [ -z "$candidate" ] && candidate=$(find "$reg_dir" -name "t1_to_flairWarped.nii.gz" -print -quit 2>/dev/null)
+
+    # 2. Legacy hard-coded name (kept for backward-compat with old result trees).
+    [ -z "$candidate" ] && [ -f "${reg_dir}/${subject_id}_pons_t2flair.nii.gz" ] && \
+        candidate="${reg_dir}/${subject_id}_pons_t2flair.nii.gz"
+
+    # 3. Any standardized / brain-extracted FLAIR as a last-resort backdrop.
+    [ -z "$candidate" ] && candidate=$(find "${subject_dir}/standardized" -iname "*FLAIR*_std.nii.gz" -print -quit 2>/dev/null)
+    [ -z "$candidate" ] && candidate=$(find "${subject_dir}/brain_extraction" -iname "*FLAIR*brain.nii.gz" -print -quit 2>/dev/null)
+
+    [ -n "$candidate" ] && [ -f "$candidate" ] && echo "$candidate"
+    return 0
+}
+
 # Function to generate QC visualizations
 generate_qc_visualizations() {
     local subject_id="$1"
@@ -21,21 +56,27 @@ generate_qc_visualizations() {
     # Get input files
     local t2_flair=$(find "${subject_dir}" -name "*T2_SPACE_FLAIR*.nii.gz" | head -1)
     local t1=$(find "${subject_dir}" -name "*MPRAGE*.nii.gz" | head -1)
-    
+
+    # Resolve the registered FLAIR backdrop once (shared by every overlay below).
+    # Empty when no FLAIR is present (e.g. a T1-only run) — overlays then skip.
+    local flair_bg
+    flair_bg=$(viz_resolve_flair_background "$subject_id" "$subject_dir")
+    if [ -z "$flair_bg" ]; then
+        log_formatted "WARNING" "No registered FLAIR backdrop found under ${subject_dir}/registered — skipping FLAIR overlays"
+    fi
+
     # Create edge overlays for segmentation validation - using Talairach subdivisions
     for region in "brainstem" "pons" "left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain"; do
         local mask="${subject_dir}/segmentation/${region}/${subject_id}_${region}.nii.gz"
+        local t2flair="$flair_bg"
         # For brainstem and pons, look in their respective directories
         if [[ "$region" == "brainstem" ]]; then
             mask="${subject_dir}/segmentation/brainstem/${subject_id}_${region}.nii.gz"
-            local t2flair="${subject_dir}/registered/${subject_id}_${region}_t2flair.nii.gz"
         elif [[ "$region" == "pons" ]]; then
             mask="${subject_dir}/segmentation/pons/${subject_id}_${region}.nii.gz"
-            local t2flair="${subject_dir}/registered/${subject_id}_${region}_t2flair.nii.gz"
         else
             # Talairach detailed subdivisions are in detailed_brainstem directory
             mask="${subject_dir}/segmentation/detailed_brainstem/${subject_id}_${region}.nii.gz"
-            local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"  # Use pons t2flair for all subdivisions
         fi
         
         if [ -f "$mask" ] && [ -f "$t2flair" ]; then
@@ -95,8 +136,8 @@ generate_qc_visualizations() {
         # Use intensity version for proper heat colormap visualization in freeview
         local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}_intensity.nii.gz"
         local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
-        local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
-        
+        local t2flair="$flair_bg"
+
         # Prefer intensity version if it exists, otherwise use regular version
         if [ -f "$hyper_intensity" ]; then
             hyper="$hyper_intensity"
@@ -204,11 +245,11 @@ generate_qc_visualizations() {
     fi
     
     # Create multi-threshold comparison for hyperintensities
-    if [ -f "${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz" ]; then
+    local t2flair
+    t2flair=$(viz_resolve_flair_background "$subject_id" "$subject_dir")
+    if [ -n "$t2flair" ] && [ -f "$t2flair" ]; then
         echo "Creating multi-threshold comparison for hyperintensities..."
-        
-        local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
-        
+
         # Include the configured threshold alongside defaults
         local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
         local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
@@ -297,12 +338,16 @@ create_multi_threshold_overlays() {
     echo "Creating multi-threshold overlays for subject $subject_id"
     mkdir -p "$output_dir"
     
-    # Get T2-FLAIR image
-    local t2flair="${subject_dir}/registered/${subject_id}_pons_t2flair.nii.gz"
-    
-    if [ ! -f "$t2flair" ]; then
-        log_formatted "ERROR" "T2-FLAIR image not found: $t2flair"
-        return 1
+    # Get the registered FLAIR backdrop. Visualization is best-effort: when no
+    # FLAIR is present (T1-only run, or registration/segmentation degraded to the
+    # HO gross mask without a registered FLAIR), warn and return success so the
+    # missing overlay never aborts the pipeline (this runs under `set -e`).
+    local t2flair
+    t2flair=$(viz_resolve_flair_background "$subject_id" "$subject_dir")
+
+    if [ -z "$t2flair" ] || [ ! -f "$t2flair" ]; then
+        log_formatted "WARNING" "No registered FLAIR backdrop found under ${subject_dir}/registered — skipping multi-threshold overlays"
+        return 0
     fi
     
     # Define thresholds and colors - include configured threshold
@@ -847,6 +892,7 @@ generate_report_visualizations() {
 }
 
 # Export functions
+export -f viz_resolve_flair_background
 export -f generate_qc_visualizations
 export -f create_multi_threshold_overlays
 export -f generate_html_report

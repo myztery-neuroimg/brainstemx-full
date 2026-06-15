@@ -177,11 +177,27 @@ export FS_RECON_ALL_FLAG="${FS_RECON_ALL_FLAG:--all}"   # recon-all level (segme
 # ${RESULTS_DIR}/bias_corrected (the *_n4 / *N4Corrected file, pre brain
 # extraction). Override with an explicit full-head T1 path here if needed:
 export FREESURFER_T1_INPUT="${FREESURFER_T1_INPUT:-}"    # explicit full-head T1 for recon-all (auto-detected if empty)
+# recon-all is designed for a RAW native T1 — it does its OWN NU/N3 bias
+# correction + atlas-based intensity normalisation. Feeding it our N4+denoised
+# bias_corrected T1 double-corrects the intensities FreeSurfer expects raw, which
+# can worsen WM segmentation and inflate surface genus (more mris_fix_topology
+# stress). When 'true' the module prefers the raw dcm2niix source T1 from
+# EXTRACT_DIR (same series the pipeline chose), falling back to the bias-corrected
+# T1. Set to false to feed the bias-corrected T1 (legacy behaviour).
+export FS_RECON_USE_RAW_T1="${FS_RECON_USE_RAW_T1:-true}"
 # When 'true', recon-all's stdout/stderr is streamed to the console in addition
 # to its own scripts/recon-all.log. On FAILURE the log tail + error lines are
 # ALWAYS surfaced regardless of this flag.
 export FS_RECON_VERBOSE="${FS_RECON_VERBOSE:-false}"     # stream recon-all output live to console
 export FS_RECON_LOG_TAIL_LINES="${FS_RECON_LOG_TAIL_LINES:-30}"  # lines of recon-all.log to surface on failure
+# Salvage a recon-all that crashes in the cortical-SURFACE stages (e.g. the
+# mris_fix_topology segfault on FS 8.0.0 macOS-arm64). Those stages run AFTER the
+# volumetric outputs (norm.mgz + aseg.presurf.mgz) that segment_subregions
+# brainstem + the aseg-CSF harvest actually need; when they are present but the
+# post-surface aseg.mgz is not, the module synthesizes aseg.mgz from
+# aseg.presurf.mgz so brainstem segmentation proceeds instead of discarding the
+# whole recon and falling back to the HO gross mask. Set to false to disable.
+export FS_SALVAGE_VOLUMETRIC_RECON="${FS_SALVAGE_VOLUMETRIC_RECON:-true}"
 # FS<->HO agreement gate (mirrors the existing brain-mask Dice QC style):
 export FS_BS_AGREEMENT_DICE_MIN="${FS_BS_AGREEMENT_DICE_MIN:-0.7}"        # min Dice(FS union, HO Brain-Stem)
 export FS_BS_AGREEMENT_LEAKAGE_MAX="${FS_BS_AGREEMENT_LEAKAGE_MAX:-0.2}"  # max fraction of FS union outside HO
@@ -554,7 +570,7 @@ export CONNECTIVITY_CONNECTED_SD_MULT=1.5  # mean + this*std: lower threshold fo
 # Rationale: Pai 2025 / Bawil 2026 (layered conservative post-hoc suppression);
 # Atlason 2022 PLOS ONE e0274212 (SegAE CSF-pulsation product); Molchanova 2024
 # (blanket small-instance removal deletes true small lesions).
-export FP_FILTER_ENABLED=false           # MASTER switch (default OFF - lossy + not wired)
+export FP_FILTER_ENABLED="${FP_FILTER_ENABLED:-false}"    # MASTER switch (default OFF - lossy: removes true small lesions; keep off for brainstem)
 
 # --- Stage gates (each sub-stage independently togglable) -------------------
 export FP_MIN_CLUSTER_ENABLED=true       # stage: drop sub-threshold connected components
@@ -632,7 +648,7 @@ export GMM_FALLBACK_PERCENTILE=97.5     # --fallback-percentile: used when GMM f
 # either BIANCA_TRAINING_MASTERFILE or BIANCA_LOAD_CLASSIFIER set.
 #
 # Entry point: run_bianca_wmh <flair_std> <out_prefix> [<t1_std>] [<flair_to_mni.mat>]
-export WMH_BIANCA_ENABLED=false          # master switch; true = run BIANCA in analysis stage
+export WMH_BIANCA_ENABLED="${WMH_BIANCA_ENABLED:-false}"  # master switch (default OFF: supervised, needs manual training data / classifier — see BIANCA_TRAINING_MASTERFILE)
 
 # --- Training data (choose ONE; both empty = graceful skip) -----------------
 # Path to a BIANCA training masterfile. Each row lists, in consistent column
@@ -691,8 +707,8 @@ export BIANCA_MIN_CLUSTER_SIZE=0         # drop WMH clusters below this many vox
 #              sibling unit (shared FreeSurfer install + brainstem labels).
 # Each back-end intersects its whole-brain lesion mask with the pipeline's
 # brainstem mask to report a brainstem-restricted WMH burden separately.
-export WMH_LSTAI_ENABLED=false          # true => run LST-AI when available
-export WMH_SAMSEG_ENABLED=false         # true => run FreeSurfer SAMSEG when available
+export WMH_LSTAI_ENABLED="${WMH_LSTAI_ENABLED:-false}"   # true => run LST-AI when available (needs lst-ai install / Docker)
+export WMH_SAMSEG_ENABLED="${WMH_SAMSEG_ENABLED:-false}"  # true => run FreeSurfer SAMSEG when available (slow, whole-brain Bayesian)
 
 # LST-AI options
 export LSTAI_THRESHOLD=0.5              # lesion probability threshold (0-1; LST-AI default 0.5)
@@ -726,7 +742,7 @@ export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recomm
 # ANATOMY/NORMALIZATION option, NOT the primary lesion mask; ALWAYS pair its
 # output with the FP-filter.
 # ===========================================================================
-export WMH_SYNTHSEG_ENABLED=false       # master switch; true => run WMH-SynthSeg when available
+export WMH_SYNTHSEG_ENABLED="${WMH_SYNTHSEG_ENABLED:-true}"  # master switch; true => run WMH-SynthSeg when available (graceful skip if mri_WMHsynthseg absent)
 export WMH_SYNTHSEG_LABEL=77            # WMH label value in the mri_WMHsynthseg output (FreeSurfer LUT 77)
 export WMH_SYNTHSEG_DEVICE="cpu"        # "cpu" or a GPU id (e.g. "0") passed to --device
 # ===========================================================================
@@ -748,7 +764,7 @@ export WMH_SYNTHSEG_DEVICE="cpu"        # "cpu" or a GPU id (e.g. "0") passed to
 # once you have the segcsvd container (and FreeSurfer for SynthSeg) installed.
 #
 # Entry point: run_segcsvd_wmh <flair> [t1] [out_dir]
-export WMH_SEGCSVD_ENABLED=false         # master switch; true = run segcsvdWMH in analysis stage
+export WMH_SEGCSVD_ENABLED="${WMH_SEGCSVD_ENABLED:-false}"  # master switch; true = run segcsvdWMH (needs container + mri_synthseg)
 
 # --- Tool location (choose ONE back-end; all empty/absent = graceful skip) ---
 # Apptainer/Singularity .sif image (preferred distribution form). Absolute path.
@@ -793,7 +809,7 @@ export SEGCSVD_MODULE_EXTRA_OPTS=""
 # Requires FreeSurfer + a FreeSurfer license + a prior 'recon-all' for the
 # subject (the module never runs the hours-long recon-all itself). Absence of any
 # dependency is a graceful, non-fatal skip.
-export BRAINSTEM_AANSEG_ENABLED=false    # master switch; true = run AANSegment (EXPLORATORY)
+export BRAINSTEM_AANSEG_ENABLED="${BRAINSTEM_AANSEG_ENABLED:-true}"  # master switch; true = run AANSegment (EXPLORATORY, ≤1mm only, CC BY-NC-ND; graceful skip if coarse/FS absent)
 export AANSEG_MAX_VOXEL_MM=1.0           # max per-axis voxel size (mm); coarser => unreliable
 export AANSEG_SKIP_IF_COARSE=true        # true => skip when input is coarser than the limit
 export AANSEG_WRITE_REGION_MASKS=false   # true => also stage nuclei labels under segmentation/ (NOT wired into analysis)
@@ -827,7 +843,7 @@ export AANSEG_OUTPUT_DIR=""              # optional explicit output dir (default
 # logs a clear warning and skips gracefully (non-fatal).
 #
 # Entry point: run_shiva_wmh <flair> <t1> [out_dir]
-export WMH_SHIVA_ENABLED=false           # master switch; true = run SHIVA-WMH in analysis stage
+export WMH_SHIVA_ENABLED="${WMH_SHIVA_ENABLED:-true}"    # master switch; true = run SHIVA-WMH (small-lesion sensitive; graceful skip if antspynet/container absent)
 
 # Back-end selection: "auto" (prefer antspynet, then container), "antspynet", or "container".
 export SHIVA_WMH_BACKEND="auto"
@@ -869,16 +885,20 @@ export SHIVA_WMH_CONTAINER_CMD=""
 # skips gracefully (non-fatal). Enable only after pulling the container.
 #
 # Entry point: run_mars_wmh <flair.nii.gz> <t1.nii.gz> [<out_dir>]
-export WMH_MARS_ENABLED=false             # master switch; true = run MARS-WMH
+export WMH_MARS_ENABLED="${WMH_MARS_ENABLED:-true}"       # master switch; true = run MARS-WMH (needs Docker/Apptainer container, NON-COMMERCIAL license; graceful skip if absent)
 
 # --- Back-end selection / images --------------------------------------------
 # "auto" tries Docker image, then an Apptainer .sif, then a native CLI.
 # Force a single back-end with "docker" | "apptainer" | "cli".
 export MARS_WMH_BACKEND="auto"
-export MARS_WMH_DOCKER_IMAGE="miac/mars-wmh:latest"  # Docker image tag (adjust to your pull)
+# Real upstream images live on GHCR (github.com/miac-research/MARS-WMH): the
+# nnU-Net variant is ghcr.io/miac-research/wmh-nnunet:latest (also wmh-mdgru).
+# NOTE: these are linux/amd64 CUDA images — on Apple Silicon they need
+# `--platform linux/amd64` + Rosetta and run CPU-only (slow). Override to taste.
+export MARS_WMH_DOCKER_IMAGE="ghcr.io/miac-research/wmh-nnunet:latest"  # Docker image tag (adjust to your pull)
 export MARS_WMH_SIF=""                    # path to an Apptainer/Singularity .sif image
 export MARS_WMH_CLI="mars-wmh"            # native CLI name on PATH (if installed)
-export MARS_WMH_DOCKER_OPTS=""            # extra `docker run` opts (e.g. "--gpus all")
+export MARS_WMH_DOCKER_OPTS=""            # extra `docker run` opts (e.g. "--gpus all"; "--platform linux/amd64" on Apple Silicon)
 export MARS_WMH_APPTAINER_OPTS=""         # extra apptainer/singularity run opts (e.g. "--nv")
 
 # --- Thresholding ------------------------------------------------------------
@@ -887,9 +907,9 @@ export MARS_WMH_THRESHOLD=0.5             # prob-map threshold -> binary WMH mas
 # --- Optional MARS-brainstem ROI (preferred over the pipeline brainstem mask) -
 # When enabled and available, MARS-brainstem defines the brainstem ROI used for
 # the WMH intersection; otherwise the module falls back to the pipeline mask.
-export MARS_BRAINSTEM_ENABLED=false       # true = try MARS-brainstem to build the ROI
+export MARS_BRAINSTEM_ENABLED="${MARS_BRAINSTEM_ENABLED:-false}"  # true = try MARS-brainstem to build the ROI
 export MARS_BRAINSTEM_ROI=""              # explicit pre-computed brainstem ROI (takes precedence)
-export MARS_BRAINSTEM_DOCKER_IMAGE="miac/dl-brainstem:latest"  # MARS-brainstem Docker image
+export MARS_BRAINSTEM_DOCKER_IMAGE="ghcr.io/miac-research/dl-brainstem:latest"  # MARS-brainstem Docker image (GHCR; linux/amd64 CUDA)
 export MARS_BRAINSTEM_SIF=""              # path to a MARS-brainstem Apptainer .sif image
 export MARS_BRAINSTEM_CLI="mars-brainstem"  # native MARS-brainstem CLI name on PATH
 export MARS_BRAINSTEM_DOCKER_OPTS=""      # extra `docker run` opts for MARS-brainstem
