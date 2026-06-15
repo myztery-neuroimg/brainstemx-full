@@ -307,6 +307,55 @@ export REG_WINSORIZE_UPPER=0.995        # Upper winsorize quantile
 # (anti-aliased, preserves discrete values); continuous intensity images keep Linear.
 export REG_LABEL_INTERPOLATION="GenericLabel"
 
+# ===========================================================================
+# CONTRAST-MATCHED CASCADED REGISTRATION  (src/modules/registration.sh)
+# ===========================================================================
+# Default behaviour registers every modality DIRECTLY to T1 via cross-modality
+# Mutual Information.  That is fine for FLAIR<->T1, but a T2-weighted series
+# (3D-FLAIR, T2, the DWI trace, SWI) registers far better to a SAME-CONTRAST 3D
+# structural anchor than to T1.  In particular a DERIVED DWI trace (T2-weighted,
+# no raw 4D) fits a 0.9 mm 3D-FLAIR much better than a 2D 5 mm T1.
+#
+# When CONTRAST_MATCHED_REGISTRATION=true the pipeline builds a cascade:
+#
+#       T1  (master, -> MNI/atlas via the existing T1->MNI path)
+#        ^
+#        |  FLAIR -> T1   (cross-modality MI; the existing main registration)
+#        |
+#   {T2, DWI, SWI} -> FLAIR   (same-contrast anchor; their nearest 3D structural)
+#
+# Each T2-weighted modality is registered to the FLAIR anchor, and its transforms
+# are COMPOSED with the FLAIR->T1 transforms so the modality reaches T1 (and
+# onward to MNI/atlas) in a SINGLE antsApplyTransforms application — avoiding the
+# double interpolation of warping twice.  Both the composed FORWARD transform
+# list and its INVERSE are persisted (the inverse is needed by the downstream
+# DICOM cluster->source mapping).
+#
+# DEFAULT OFF preserves byte-identical current behaviour.  RECOMMENDED ON when a
+# good 3D FLAIR plus one or more T2-weighted series (T2/DWI/SWI) are present.
+export CONTRAST_MATCHED_REGISTRATION=false
+
+# Per-family contrast anchor map.  Each entry is "MODALITY:ANCHOR" where ANCHOR is
+# the modality whose registered space the MODALITY is matched to.  T2-weighted
+# family {T2,FLAIR,DWI,SWI} anchors on FLAIR; FLAIR anchors on T1; T1 anchors on
+# the MNI master.  Resolved by resolve_contrast_anchor() in registration.sh.
+export CONTRAST_ANCHOR_MAP=("T2:FLAIR" "DWI:FLAIR" "SWI:FLAIR" "FLAIR:T1" "T1:MNI")
+
+# Metric for the same-contrast modality->FLAIR step.  MI is always safe; CC only
+# if the pair is genuinely same-contrast (e.g. a true T2 vs 3D-FLAIR).  Left at MI
+# by default because a DWI trace / SWI are only approximately T2-like.
+export CONTRAST_MATCHED_METRIC="MI"
+
+# Interpolation used when resampling a contrast-matched INTENSITY image into T1
+# space via the composed transform.  Linear for continuous intensities; label/mask
+# warps must use GenericLabel (apply_transformation handles that separately).
+export CONTRAST_MATCHED_INTENSITY_INTERP="Linear"
+
+# Subdirectory (under ${RESULTS_DIR}/registered) holding the contrast-matched
+# outputs: per-modality registration to FLAIR, the composed-to-T1 resample, the
+# persisted composed forward/inverse transform lists, and a transform manifest.
+export CONTRAST_MATCHED_SUBDIR="contrast_matched"
+
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
