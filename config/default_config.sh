@@ -250,6 +250,38 @@ export EXTRACTION_TEMPLATE="$EXTRACTION_TEMPLATE_1MM"
 export PROBABILITY_MASK="$PROBABILITY_MASK_1MM"
 export REGISTRATION_MASK="$REGISTRATION_MASK_1MM"
 
+# ------------------------------------------------------------------------------
+# Brain extraction method & parameters
+# ------------------------------------------------------------------------------
+# Preferred brain extraction method. The pipeline tries this method first and
+# falls back gracefully to the next available method if the tool is missing or
+# fails. Fallback order is always: synthstrip -> ants -> bet.
+#   synthstrip - FreeSurfer mri_synthstrip (contrast-agnostic deep-learning
+#                skull-strip; current best practice for T1/FLAIR/SWI/DWI and the
+#                safest choice for brainstem/cerebellum preservation)
+#   ants       - template-free N4 -> Otsu -> largest-component -> morphology path
+#   bet        - FSL BET with robustfov neck removal + modality-specific -f
+export BRAIN_EXTRACTION_METHOD="synthstrip"
+
+# Radius (in voxels) for the morphological open (dilate then erode) in the ANTs
+# Otsu fallback path. The legacy value of 4 is aggressive at 1mm and can sever
+# the brainstem->cord taper or round off the pons; 1-2 is gentler and preserves
+# the posterior fossa.
+export BRAIN_MASK_MORPH_RADIUS=1
+
+# Modality-specific BET fractional intensity thresholds (-f). Lower values keep
+# more brain (important for FLAIR/T2 where BET tends to over-strip). T1 uses a
+# slightly higher value than the bare 0.5 default which clipped the cerebellum.
+export BET_F_T1=0.3
+export BET_F_FLAIR=0.2
+
+# Posterior-fossa QC gate: minimum fraction of brain-mask voxels expected to lie
+# in the inferior portion of the volume (cerebellum/brainstem region). If the
+# observed fraction falls below this, the mask is flagged as possibly clipped.
+# Even SynthStrip drops the cerebellum in ~1/3 of T2 cases, so this is a warning
+# (non-fatal) sanity check, not a hard failure.
+export BRAIN_QC_INFERIOR_FRACTION=0.06
+
 # Supported modalities for registration to T1
 export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE" "COR")
 
