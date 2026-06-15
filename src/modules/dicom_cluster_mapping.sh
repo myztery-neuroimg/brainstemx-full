@@ -283,9 +283,15 @@ match_clusters_to_dicom_files() {
                 local image_position=$(dcmdump "$dicom_file" 2>/dev/null | grep "ImagePositionPatient" | head -1 | sed 's/.*\[\(.*\)\].*/\1/' || echo "")
                 
                 if [ -n "$slice_location" ] || [ -n "$image_position" ]; then
-                    local pos_x=$(echo "$image_position" | cut -d'\\' -f1 || echo "0")
-                    local pos_y=$(echo "$image_position" | cut -d'\\' -f2 || echo "0")
-                    local pos_z=$(echo "$image_position" | cut -d'\\' -f3 || echo "$slice_location")
+                    # DICOM ImagePositionPatient is backslash-separated (e.g.
+                    # "-12.3\45.6\-78.9"). `cut -d'\\'` is INVALID — cut requires a
+                    # single-character delimiter and '\\' expands to two chars, so
+                    # cut errors and every coordinate silently became "0". Use awk,
+                    # whose -F field separator accepts the backslash regex '\\'.
+                    local pos_x pos_y pos_z
+                    pos_x=$(echo "$image_position" | awk -F'\\\\' '{print $1}'); pos_x="${pos_x:-0}"
+                    pos_y=$(echo "$image_position" | awk -F'\\\\' '{print $2}'); pos_y="${pos_y:-0}"
+                    pos_z=$(echo "$image_position" | awk -F'\\\\' '{print $3}'); pos_z="${pos_z:-$slice_location}"
                     
                     echo "$(basename "$dicom_file") $slice_location $pos_x $pos_y $pos_z" >> "$dicom_slices"
                 fi
