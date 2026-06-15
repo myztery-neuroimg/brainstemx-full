@@ -429,6 +429,12 @@ export WITHIN_SUBJECT_SYN_CONVERGENCE="${WITHIN_SUBJECT_SYN_CONVERGENCE:-[20x10x
 export LONGITUDINAL_MODE="${LONGITUDINAL_MODE:-false}"
 export LONGITUDINAL_SESSIONS="${LONGITUDINAL_SESSIONS:-}"
 export LONGITUDINAL_COMMON_SPACE="${LONGITUDINAL_COMMON_SPACE:-anchor}"
+# LONGITUDINAL_CHANGE_ENABLED : Unit E gate.  When true (default), the
+#   longitudinal orchestrator (src/longitudinal.sh) calls
+#   longitudinal_change.py after all sessions complete to compute per-region
+#   lesion volumes, deltas, and new/resolved/growing/shrinking dynamics.
+#   Non-fatal (warnings only on failure).  Set false to skip the step.
+export LONGITUDINAL_CHANGE_ENABLED="${LONGITUDINAL_CHANGE_ENABLED:-true}"
 
 # Per-metric tuning shared by all stages of perform_multistage_registration().
 # CC radius applies when CC is used (same-modality SyN); MI bins apply when MI is

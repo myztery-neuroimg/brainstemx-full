@@ -511,6 +511,49 @@ unset _i local_label local_role local_dir local_out local_exit local_comma local
 log_info "────────────────────────────────────────────────────────────"
 log_info "Longitudinal run complete."
 
+# ── Unit E: longitudinal change analysis ──────────────────────────────────────
+# Run after the session loop completes and the manifest is written.  Non-fatal:
+# a failure logs a warning and the orchestrator continues to the summary.
+
+LONGITUDINAL_CHANGE_ENABLED="${LONGITUDINAL_CHANGE_ENABLED:-true}"
+
+_change_reports_dir="${LONGITUDINAL_OUTPUT_DIR}/reports"
+_change_script="${LONGITUDINAL_SCRIPT_DIR}/modules/longitudinal_change.py"
+
+if [ "${LONGITUDINAL_CHANGE_ENABLED}" = "true" ]; then
+  # Count successful sessions from the exit-code array
+  _n_succeeded=0
+  for _ec in "${_exec_exit_codes[@]}"; do
+    if [ "${_ec}" -eq 0 ]; then
+      _n_succeeded=$(( _n_succeeded + 1 ))
+    fi
+  done
+  unset _ec
+
+  if [ "${_n_succeeded}" -ge 2 ]; then
+    log_info "Running Unit E longitudinal change analysis (${_n_succeeded} successful session(s))."
+    if [ -f "${_change_script}" ]; then
+      mkdir -p "${_change_reports_dir}"
+      if uv run python "${_change_script}" \
+            --manifest "${_manifest}" \
+            --output   "${_change_reports_dir}" 2>&1 | while IFS= read -r _line; do
+              log_info "  [change] ${_line}"
+            done; then
+        log_info "Longitudinal change report written to: ${_change_reports_dir}"
+      else
+        log_warning "Longitudinal change analysis failed (non-fatal) — see log above."
+      fi
+    else
+      log_warning "longitudinal_change.py not found at '${_change_script}' — skipping Unit E."
+    fi
+  else
+    log_info "Skipping longitudinal change analysis: fewer than 2 sessions succeeded (${_n_succeeded})."
+  fi
+else
+  log_info "Longitudinal change analysis disabled (LONGITUDINAL_CHANGE_ENABLED=false)."
+fi
+unset _n_succeeded _change_reports_dir _change_script
+
 # ── Summary report ────────────────────────────────────────────────────────────
 
 _total_sessions="${#_exec_labels[@]}"
