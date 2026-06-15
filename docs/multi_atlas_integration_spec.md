@@ -174,12 +174,15 @@ enabled atlas:
 
 ## Dispatch hook
 
-`config/default_config.sh` documents two new `BRAINSTEM_SEGMENTATION_METHOD`
-values: **`multi_atlas`** and its alias **`bianciardi`**.
-`segmentation.sh:extract_brainstem_final` always produces the Harvard-Oxford
-gross extent first, then — for these methods — calls
-`run_multi_atlas_brainstem`. The `freesurfer` and `atlas`/`harvard_oxford`
-cases are unchanged; an unknown value still falls back to the HO gross mask.
+`config/default_config.sh` documents the `BRAINSTEM_SEGMENTATION_METHOD`
+values that trigger this path: **`multi_atlas`** and its alias **`bianciardi`**
+(single-method), and the default **`all`** mode, in which the multi-atlas warp
+runs as one of the concurrent parallel paths whenever `SEG_RUN_MULTI_ATLAS=true`
+(the default). `segmentation.sh:extract_brainstem_final` always produces the
+Harvard-Oxford gross extent first, then — for these methods (or in `all` mode
+with the multi-atlas path enabled) — calls `run_multi_atlas_brainstem`. The
+`freesurfer` and `atlas`/`harvard_oxford` single-method cases are unchanged; an
+unknown value still falls back to the HO gross mask.
 
 `multi_atlas.sh` is sourced by both `segmentation.sh` and `pipeline.sh`.
 

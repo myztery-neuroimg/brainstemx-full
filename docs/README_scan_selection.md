@@ -4,7 +4,7 @@ This document describes the scan selection system that has been implemented in t
 
 ## Scan Selection Modes
 
-The pipeline now supports four different modes for selecting the best scan:
+The pipeline supports five different modes for selecting the best scan:
 
 ### 1. `original` Mode (Default for T1)
 
@@ -125,3 +125,14 @@ When analyzing brainstem lesions, prefer using scans like T2_SPACE_FLAIR_Sag_CS_
 - ORIGINAL acquisitions
 - Have consistent dimensions with the T1 reference
 - Avoid any unnecessary resampling or interpolation
+
+## Secondary-Modality Discovery (SWI / DWI-trace / ADC / T2)
+
+Beyond selecting the best T1 and FLAIR, scan selection is **modality-aware** for the
+secondary T2-weighted modalities the multi-modal path consumes. `scan_selection.sh::discover_secondary_modality_specs`
+walks `MULTIMODAL_SECONDARY_MODALITIES` (default `T2`, `SWI`, `DWI`, `ADC`) and, for
+each modality **present on disk**, picks the best scan — filtering out the
+T2-SPACE-FLAIR (which belongs to the FLAIR family, not T2) and disambiguating the
+DWI trace from the ADC map. The chosen secondaries flow into the contrast-matched
+registration cascade and per-cluster cross-modal corroboration. A study with only
+T1+FLAIR yields no secondary specs and the rest of the pipeline is unchanged.

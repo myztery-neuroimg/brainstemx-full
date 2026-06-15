@@ -28,17 +28,35 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 - Updated Juelich pons segmentation: applied same interpolation fix, yielding anatomically reasonable voxel counts.
 - Integrated FLAIR enhancement: generated separate FLAIR intensity masks for segmentation quality analysis.
 
-## Multi-Atlas Labeling & Optional Modules
+## Parallel Multi-Method Segmentation, Multi-Atlas Labeling & Optional Modules
 
-Beyond the default FreeSurfer/Harvard-Oxford path, the pipeline now ships several **opt-in** segmentation and lesion-detection back-ends:
+The default brainstem-segmentation mode is now **`BRAINSTEM_SEGMENTATION_METHOD=all`**: every enabled path runs as a **concurrent parallel path** and downstream per-region detection analyses the **union** of all masks they produce. The fast paths (Harvard-Oxford gross extent + multi-atlas warp, minutes) run side-by-side with the multi-hour FreeSurfer recon-all; each path is independent and **non-fatal** (a failed/skipped path logs a WARNING and never kills the others or the pipeline), and the shared MNI→subject SyN transform is computed once up front and reused. Per-path toggles `SEG_RUN_HARVARD_OXFORD` / `SEG_RUN_MULTI_ATLAS` / `SEG_RUN_FREESURFER` / `SEG_RUN_SYNTHSEG` (all default ON) drop individual paths — e.g. `SEG_RUN_FREESURFER=false` keeps the fast HO + multi-atlas paths and skips recon-all. The single-method values (`freesurfer`, `atlas`/`harvard_oxford`, `multi_atlas`/`bianciardi`) remain mutually exclusive and behave exactly as before. Each path's masks are provenance-tagged (`per_region_analysis/region_provenance.tsv`) so the reporting layer can attribute every region to its source method.
 
 - **Multi-atlas brainstem labeling** (`BRAINSTEM_SEGMENTATION_METHOD=multi_atlas`/`bianciardi`, `multi_atlas.sh`) — warps the **Bianciardi BrainstemNavigator v1.0** (nucleus-level), **CIT168** subcortical, and (off-by-default) **AAL3** atlases into subject T1 space via one shared SyN→MNI registration plus label-aware `GenericLabel` interpolation, producing per-region masks the existing per-region GMM detection consumes directly. See [docs/multi_atlas_integration_spec.md](multi_atlas_integration_spec.md).
+- **FreeSurfer full-recon harvest + ML methods** (`freesurfer_harvest.sh`) — recon-all is paid for **once**; the harvest then extracts the rest of its output (aseg/wmparc/aparc + `aparc.a2009s` stats, eTIV, optional thalamic / hypothalamic / hippo-amygdala subregions) with **no second recon**. Aseg/SynthSeg CSF + 4th-ventricle masks feed the FP-exclusion path. Fast contrast/resolution-agnostic ML methods run directly on a clinical/2D T1 with no recon: **SynthSeg+** (`mri_synthseg --robust`, default on), **SynthSR** (`mri_synthsr`, optional 1 mm T1 synthesis pre-step), and **sclimbic** (`mri_sclimbic_seg`, gated). Cheap harvests default ON; the multi-hour/extra-time pieces default OFF.
 - **Atlas-availability check** — a startup `check_atlas_availability` step reports which atlases are present under `$FSLDIR/data/atlases` and warns if the selected method needs a missing one; absence is **non-fatal** (the pipeline degrades to the Harvard-Oxford gross mask).
-- **Optional supervised / deep-learning WMH modules (all default-OFF)**, each intersected with the brainstem mask: FSL **BIANCA** (`wmh_bianca.sh`), **LST-AI + FreeSurfer SAMSEG** (`wmh_lst_samseg.sh`), **WMH-SynthSeg** (`wmh_synthseg.sh`), **segcsvdWMH** (`wmh_segcsvd.sh`), **SHIVA-WMH** (`wmh_shiva.sh`), and **MARS-WMH** (`wmh_mars.sh`).
-- **AANSegment** (`brainstem_aanseg.sh`) — **exploratory** FreeSurfer arousal-network nuclei segmentation (≤1 mm input only; large-lesion-sensitive; off by default).
-- **Post-detection false-positive filter** (`fp_filter.sh`) — config-gated FP suppression that operates *after* detection, complementing the CSF/partial-volume exclusion that runs *before* thresholding.
+- **Optional supervised / deep-learning WMH modules**, each intersected with the brainstem mask: FSL **BIANCA** (`wmh_bianca.sh`), **LST-AI + FreeSurfer SAMSEG** (`wmh_lst_samseg.sh`), **WMH-SynthSeg** (`wmh_synthseg.sh`), **segcsvdWMH** (`wmh_segcsvd.sh`), **SHIVA-WMH** (`wmh_shiva.sh`), and **MARS-WMH** (`wmh_mars.sh`). Each is self-gated — a no-op WARNING+skip until its tool/model/training data is present — so an enabled master switch is harmless until the tool is installed.
+- **AANSegment** (`brainstem_aanseg.sh`) — **exploratory** FreeSurfer arousal-network nuclei segmentation (≤1 mm input only; large-lesion-sensitive).
+- **Post-detection false-positive filter** (`fp_filter.sh`) — config-gated FP suppression that operates *after* detection, complementing the CSF/partial-volume exclusion that runs *before* thresholding. Lossy (removes true small lesions) — kept OFF by default for the brainstem.
 
-> ⚠️ **None of these is validated in the brainstem/pons.** All published WMH/lesion SOTA is supratentorial; the posterior fossa is repeatedly "under-evaluated", and Ryu et al. 2025 find DL segmentation "relatively poor" in the brainstem. Treat every optional module as exploratory, keep conservative pons QA with a human in the loop, and locally validate any tool before relying on it.
+> ⚠️ **None of the optional WMH/lesion modules is validated in the brainstem/pons.** All published WMH/lesion SOTA is supratentorial; the posterior fossa is repeatedly "under-evaluated", and Ryu et al. 2025 find DL segmentation "relatively poor" in the brainstem. Treat every optional module as exploratory, keep conservative pons QA with a human in the loop, and locally validate any tool before relying on it. These add-ons only **corroborate** — none alters the primary per-region-GMM FLAIR detection.
+
+## Multi-Modal Corroboration (SWI / DWI / T2 end-to-end)
+
+Beyond the T1/FLAIR backbone, the pipeline brings the **secondary** T2-weighted modalities — SWI magnitude, the DERIVED DWI **trace** + **ADC** (not raw 4D diffusion), and a true T2 — all the way through, **only when they are present** (a T1+FLAIR-only study is byte-identically unchanged; the toggles default ON precisely because they are no-ops in the absence of the relevant series).
+
+- **Contrast-matched cascaded registration** (`registration.sh:register_contrast_matched_cascade`, `CONTRAST_MATCHED_REGISTRATION=true`) anchors each T2-weighted secondary to its nearest same-contrast 3D structural rather than directly to T1: the cascade is `T1 ← FLAIR ← {T2, DWI, ADC, SWI}` (anchors set by `CONTRAST_ANCHOR_MAP`). Each secondary's transform is **composed** with the FLAIR→T1 transforms so it reaches T1/MNI in a single `antsApplyTransforms` application (no double interpolation); both the composed **forward and inverse** transform lists are persisted.
+- **Cross-modal corroboration** (`cross_modal_analysis.sh`, `CROSS_MODAL_ANALYSIS_ENABLED=true`) samples each co-registered secondary inside every PRIMARY FLAIR cluster ROI and flags **DWI restriction** (trace ↑ AND ADC ↓ → acute/ischemic), **SWI hypointensity** (→ hemorrhage/microbleed), and **T2 hyperintensity** (→ corroborates FLAIR). Each modality is z-scored within the brainstem ROI so the thresholds (`CROSS_MODAL_*_Z`) are scanner-independent. This is corroboration **on top of** the primary detection — it never re-detects lesions and never alters the primary mask. Outputs a per-cluster table + summary under `analysis/cross_modal/`.
+
+## Output & Reporting Layer
+
+A final **reporting** stage (Step 8.5, `reporting.sh`, after analysis/QA/viz) aggregates every merged capability over the **canonical results tree**. It **discovers** outputs wherever modules wrote them and emits, all gated/graceful/idempotent (a minimal T1+FLAIR run still produces a valid smaller report; absent sections render as "No data" and are recorded `absent` in the run manifest):
+
+- **Summary tables** under `reports/tables/`, each as **CSV/TSV + HTML**: `hyperintensity_per_region`, `wmh_tool_volumes`, `segmentation_volumes` (HO / FS / multi-atlas / SynthSeg-aseg / subregions), `cross_modal`, `freesurfer_morphometry` (aseg volumes + eTIV), and a `run_manifest`; plus a machine-readable `manifest.json`.
+- **Report visualizations** under `visualizations/` — per-method segmentation overlays, hyperintensity clusters on FLAIR, and a multi-modal montage (FLAIR/DWI/SWI/T2).
+- **Top-level report** `reports/brainstemx_report.html` (+ `.md` fallback) — a one-stop dashboard embedding all populated tables, the run manifest, and the discovered visualizations.
+
+Governed by `REPORTING_ENABLED` (default `true`); report visualizations honour `SKIP_VISUALIZATION`. Full tree + table schemas: [docs/output_structure.md](output_structure.md).
 
 ## Recent advances & roadmap (2024–2026)
 
@@ -88,7 +106,7 @@ This section situates BrainStem X against the 2024–2026 literature and records
   - DICOM backtrace JSON mapping results into original scanner coordinates for PACS validation
 
 ### Advanced Segmentation
-- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`/`brainstemSsLabels`) for the detailed subdivision into midbrain / pons / medulla / SCP, selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`, fallback `atlas`)
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`/`brainstemSsLabels`) for the detailed subdivision into midbrain / pons / medulla / SCP, run by default (the `all` mode runs them alongside the other paths; also selectable as the single-method `BRAINSTEM_SEGMENTATION_METHOD=freesurfer`)
 - **Harvard-Oxford subcortical atlas** (index 7, tightened to `maxprob-thr25`) used only for the gross brainstem extent mask and as the FreeSurfer fallback
 - **Atlas-to-subject transformation** preserving native resolution by bringing the MNI HO atlas to subject space; FreeSurfer segments the subject's own T1 directly
 - **Subject-specific brainstem refinement** using tissue segmentation to address shape variance in pathological cases
@@ -152,7 +170,8 @@ This section situates BrainStem X against the 2024–2026 literature and records
 
 #### Advanced Segmentation (segmentation.sh)
 - **Harvard-Oxford gross brainstem extent** using subcortical index 7, tightened to `maxprob-thr25`, as the extent mask and the fallback
-- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`/`brainstemSsLabels`) for the detailed subdivision into midbrain / pons / medulla / SCP, selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`, fallback `atlas`) and gated by an FS↔HO agreement (Dice + leakage) QC check
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`/`brainstemSsLabels`) for the detailed subdivision into midbrain / pons / medulla / SCP, gated by an FS↔HO agreement (Dice + leakage) QC check
+- **Parallel multi-method mode** (default `BRAINSTEM_SEGMENTATION_METHOD=all`) runs the HO, FreeSurfer-substructure, multi-atlas, and SynthSeg+ paths concurrently and feeds their union to per-region detection; per-path `SEG_RUN_*` toggles. Single-method values (`freesurfer`, `atlas`/`harvard_oxford`, `multi_atlas`/`bianciardi`) remain available and mutually exclusive
 - **Atlas-to-subject transformation** preserving native resolution by bringing the MNI HO atlas to subject space; FreeSurfer segments the subject's own T1 directly
 - **Subject-specific refinement** using tissue segmentation (Atropos/FAST) to address shape variance in hydrocephalus & Chiari cases
 - **FLAIR enhancement integration** creating both T1 and FLAIR intensity versions for multi-modal analysis
@@ -168,7 +187,8 @@ This section situates BrainStem X against the 2024–2026 literature and records
 - **Connectivity weighting** for refined detection using 3D morphological operations (fslmaths)
 - **Multi-threshold hyperintensity detection** with configurable standard deviation multipliers and minimum cluster size filtering
 - **Cross-modality validation** analyzes both FLAIR hyperintensities and T1 hypointensities with statistical correlation
-- **Optional supervised / DL WMH modules** (all default-off), each intersecting results with the brainstem mask: FSL BIANCA (`wmh_bianca.sh`), LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), WMH-SynthSeg (`wmh_synthseg.sh`), segcsvdWMH (`wmh_segcsvd.sh`), SHIVA-WMH (`wmh_shiva.sh`), MARS-WMH (`wmh_mars.sh`); plus a post-detection false-positive filter (`fp_filter.sh`)
+- **Cross-modal corroboration** (`cross_modal_analysis.sh`, default on/graceful) annotates each primary FLAIR cluster with co-registered SWI/DWI-trace/ADC/T2 evidence (DWI restriction → acute, SWI → hemorrhage, T2 → corroborates), without altering the primary mask
+- **Optional supervised / DL WMH modules** (each self-gated — no-op until its tool/model/training data is present), each intersecting results with the brainstem mask: FSL BIANCA (`wmh_bianca.sh`), LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), WMH-SynthSeg (`wmh_synthseg.sh`), segcsvdWMH (`wmh_segcsvd.sh`), SHIVA-WMH (`wmh_shiva.sh`), MARS-WMH (`wmh_mars.sh`); plus a post-detection false-positive filter (`fp_filter.sh`, off by default)
 
 #### Advanced Visualization & QA (visualization.sh, qa.sh)
 - **Interactive 3D rendering** creates volume renderings of hyperintensity clusters with customizable opacity and color mapping
@@ -179,7 +199,7 @@ This section situates BrainStem X against the 2024–2026 literature and records
 #### DICOM Integration & Clinical Validation (dicom_analysis.sh, dicom_cluster_mapping.sh)
 - **Vendor-agnostic DICOM metadata extraction** analyzes scanner parameters, acquisition settings, and sequence characteristics for optimal processing
 - **Clinical coordinate backtrace** maps processed results back to original DICOM coordinate system for PACS viewer compatibility
-- **Comprehensive cluster-to-DICOM mapping** creates coordinate lookup tables enabling medical imaging viewer navigation to identified clusters
+- **Cluster-to-DICOM mapping** (`dicom_cluster_mapping.sh`) creates coordinate lookup tables enabling medical imaging viewer navigation to identified clusters — **currently gated off** (`RUN_DICOM_MAPPING=false`) pending a rewrite; a normal run skips it
 - **Scanner-specific optimization** automatically detects Siemens, Philips, and GE scanners and applies vendor-specific processing parameters
 
 #### Intelligent Reference Space Selection (reference_space_selection.sh)
@@ -215,7 +235,7 @@ The segmentation module implements a **two-tier approach** (gross extent + subst
 
 2. **FreeSurfer Brainstem Substructures (Detailed Subdivision)**
    - Iglesias 2015 `segmentBS`/`brainstemSsLabels` → midbrain / pons / medulla / SCP masks in subject space (FreeSurfer segments the subject's own T1, no warp)
-   - Selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`; `atlas`/`harvard_oxford` = gross mask only)
+   - Run by default: the default `BRAINSTEM_SEGMENTATION_METHOD=all` mode runs this path concurrently with the HO / multi-atlas / SynthSeg+ paths (toggle with `SEG_RUN_FREESURFER`); also selectable as the single-method value `freesurfer` (`atlas`/`harvard_oxford` = gross mask only)
    - Gated by an FS↔HO agreement check (Dice + leakage); on disagreement or missing FreeSurfer/license, falls back to the HO gross mask and flags low confidence
    - Talairach has been removed entirely (single 1988 post-mortem brain; largest MNI-mapping error inferiorly/posteriorly — worst exactly in the brainstem)
 
@@ -251,10 +271,10 @@ The analysis module implements **region-based hyperintensity detection**:
    - Minimum cluster size filtering (configurable via `MIN_HYPERINTENSITY_SIZE`)
    - Morphological closing operations to eliminate noise
 
-5. **Optional Supervised / DL WMH Modules** (all default-off)
+5. **Optional Supervised / DL WMH Modules** (each self-gated; no-op until its tool/model/training data is present)
    - Each intersects results with the brainstem mask: FSL BIANCA (`wmh_bianca.sh`), LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), WMH-SynthSeg (`wmh_synthseg.sh`), segcsvdWMH (`wmh_segcsvd.sh`), SHIVA-WMH (`wmh_shiva.sh`), MARS-WMH (`wmh_mars.sh`)
-   - A post-detection false-positive filter (`fp_filter.sh`) can be applied afterward (config-gated)
-   - **None is validated in the brainstem** — keep conservative pons QA / human-in-the-loop
+   - A post-detection false-positive filter (`fp_filter.sh`) can be applied afterward (config-gated; off by default — lossy for small lesions)
+   - **None is validated in the brainstem** — keep conservative pons QA / human-in-the-loop; these corroborate, they never alter the primary detection
 
 #### QA Module (qa.sh)
 The QA module performs **20+ comprehensive validation checks**:
@@ -370,8 +390,9 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Enhanced registration validation** comprehensive metrics including cross-correlation, mutual information, normalized CC
 
 #### Stage 5: Brainstem Segmentation
+- **Parallel multi-method segmentation** (default `BRAINSTEM_SEGMENTATION_METHOD=all`): Harvard-Oxford gross extent + FreeSurfer substructures + multi-atlas nuclei + SynthSeg+ run as concurrent, independent, non-fatal paths whose masks are union-fed to per-region detection and provenance-tagged; per-path `SEG_RUN_*` toggles. Single-method values (`freesurfer`, `atlas`/`harvard_oxford`, `multi_atlas`/`bianciardi`) remain available
 - **Harvard-Oxford gross extent** subcortical atlas (index 7, `maxprob-thr25`) for the brainstem boundary mask and as the fallback
-- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`) for midbrain / pons / medulla / SCP, selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`, fallback `atlas`) and gated by an FS↔HO agreement QC check
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`) for midbrain / pons / medulla / SCP, gated by an FS↔HO agreement QC check; plus the full FreeSurfer recon harvest (aseg/wmparc/aparc stats, eTIV, optional subregions) and ML methods (SynthSeg+, SynthSR, sclimbic) from the same recon
 - **Subject-specific refinement** using tissue segmentation to address shape variance in pathological cases
 - **Native space preservation** maintains segmentation accuracy in subject's original high-resolution space
 - **FLAIR integration** creates both T1 and FLAIR intensity versions for comprehensive analysis
@@ -382,13 +403,15 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **CSF / partial-volume exclusion** using the FSL FAST CSF PVE map before thresholding
 - **Multi-threshold detection** configurable SD multipliers with minimum cluster size filtering
 - **Cross-modality validation** analyzes hyperintensity patterns across T1/T2/FLAIR with statistical correlation
-- **Optional supervised / DL WMH** BIANCA, LST-AI + SAMSEG, WMH-SynthSeg, segcsvdWMH, SHIVA-WMH, MARS-WMH modules (all default-off), intersected with the brainstem mask; optional `fp_filter.sh` post-detection FP suppression
+- **Cross-modal corroboration** samples each co-registered secondary (SWI/DWI-trace/ADC/T2) inside every primary FLAIR cluster and flags DWI restriction (→ acute), SWI hypointensity (→ hemorrhage), and T2 hyperintensity (→ corroborates) — on top of, never altering, the primary detection
+- **Optional supervised / DL WMH** BIANCA, LST-AI + SAMSEG, WMH-SynthSeg, segcsvdWMH, SHIVA-WMH, MARS-WMH modules (each self-gated, no-op until its tool/data is present), intersected with the brainstem mask; optional `fp_filter.sh` post-detection FP suppression
 - **Native-to-standard space mapping** enables analysis in both subject native and standardized coordinates
-- **DICOM cluster backtrace** creates coordinate lookup tables for medical imaging viewer navigation
+- **DICOM cluster backtrace** — the cluster→DICOM-source mapping (`dicom_cluster_mapping.sh`) is currently **gated off** (`RUN_DICOM_MAPPING=false`) pending a rewrite, so a normal run skips it
 
 #### Stage 7: Advanced Visualization & Reporting
 - **3D volume rendering** with customizable opacity and color mapping for hyperintensity clusters
 - **Multi-threshold comparison** side-by-side visualizations across different detection thresholds
+- **Report visualizations** per-method segmentation overlays, hyperintensity-on-FLAIR, and a multi-modal montage (FLAIR/DWI/SWI/T2)
 - **Interactive QA interface** real-time FSLView integration for immediate visual feedback
 - **Comprehensive HTML reporting** with embedded visualizations and quantitative metrics
 
@@ -397,6 +420,11 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Comprehensive QA reporting** 20+ validation checks including coordinate space consistency
 - **Batch processing summary** CSV reports with volume metrics and registration quality scores
 - **Error tracking and diagnostics** detailed logging for troubleshooting and quality assurance
+
+#### Stage 8.5: Aggregation & Reporting Layer
+- **Summary tables** under `reports/tables/` as CSV/TSV + HTML (per-region hyperintensity, WMH tool volumes, segmentation volumes, cross-modal, FreeSurfer morphometry, run manifest)
+- **Top-level dashboard** `reports/brainstemx_report.html` (+ `.md` fallback) embeds all populated tables and discovered visualizations; `manifest.json` records which sections were populated
+- **Discovers** outputs wherever modules wrote them; gated/graceful/idempotent (`REPORTING_ENABLED`). See [docs/output_structure.md](output_structure.md)
 
 **Complete Module Implementation:**
 - Core Pipeline → [`src/pipeline.sh`](src/pipeline.sh:1)
@@ -409,9 +437,14 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - Preprocessing → [`src/modules/preprocess.sh`](src/modules/preprocess.sh:1)
 - Registration → [`src/modules/registration.sh`](src/modules/registration.sh:1)
 - Brainstem Segmentation (HO gross extent + FreeSurfer substructures) → [`src/modules/segmentation.sh`](src/modules/segmentation.sh:1), [`src/modules/brainstem_freesurfer.sh`](src/modules/brainstem_freesurfer.sh:1)
+- Multi-Atlas Labeling (Bianciardi/CIT168/AAL3) → [`src/modules/multi_atlas.sh`](src/modules/multi_atlas.sh:1)
+- FreeSurfer Recon Harvest + ML methods (SynthSeg+/SynthSR/sclimbic) → [`src/modules/freesurfer_harvest.sh`](src/modules/freesurfer_harvest.sh:1)
 - Comprehensive Analysis → [`src/modules/analysis.sh`](src/modules/analysis.sh:1), [`src/modules/gmm_threshold.py`](src/modules/gmm_threshold.py:1)
+- Cross-Modal Corroboration → [`src/modules/cross_modal_analysis.sh`](src/modules/cross_modal_analysis.sh:1), [`src/modules/cross_modal_sample.py`](src/modules/cross_modal_sample.py:1)
+- Optional WMH Modules (default add-ons) → [`src/modules/wmh_bianca.sh`](src/modules/wmh_bianca.sh:1), [`src/modules/wmh_lst_samseg.sh`](src/modules/wmh_lst_samseg.sh:1), [`src/modules/wmh_synthseg.sh`](src/modules/wmh_synthseg.sh:1), [`src/modules/wmh_segcsvd.sh`](src/modules/wmh_segcsvd.sh:1), [`src/modules/wmh_shiva.sh`](src/modules/wmh_shiva.sh:1), [`src/modules/wmh_mars.sh`](src/modules/wmh_mars.sh:1), [`src/modules/brainstem_aanseg.sh`](src/modules/brainstem_aanseg.sh:1), [`src/modules/fp_filter.sh`](src/modules/fp_filter.sh:1)
 - Enhanced Registration Validation → [`src/modules/enhanced_registration_validation.sh`](src/modules/enhanced_registration_validation.sh:1)
 - Advanced Visualization → [`src/modules/visualization.sh`](src/modules/visualization.sh:1)
+- Aggregation & Reporting Layer → [`src/modules/reporting.sh`](src/modules/reporting.sh:1), [`src/modules/reporting_tables.py`](src/modules/reporting_tables.py:1)
 - Quality Assurance → [`src/modules/qa.sh`](src/modules/qa.sh:1)
 - Parallel Processing → [`src/modules/fast_wrapper.sh`](src/modules/fast_wrapper.sh:1)
 
