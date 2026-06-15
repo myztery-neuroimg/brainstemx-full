@@ -906,7 +906,8 @@ run_pipeline() {
                 log_message "Transforming $(basename $mask_file) to reference space..."
                 # The registration was computed as T1 moving -> FLAIR fixed, so
                 # masks derived from T1 must use the forward transform chain.
-                apply_transformation "$mask_file" "$flair_std" "$out_mask" "$transform_warp" "NearestNeighbor" "forward"
+                # These are discrete segmentation masks: use label-aware interpolation.
+                apply_transformation "$mask_file" "$flair_std" "$out_mask" "$transform_warp" "NearestNeighbor" "forward" "true"
             done
             log_formatted "SUCCESS" "Segmentation masks transformed to reference space."
             # Update brainstem_output to point to the transformed mask for QA and downstream use
