@@ -10,6 +10,7 @@ source "config/default_config.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/hierarchical_joint_fusion.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/brainstem_freesurfer.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/multi_atlas.sh"
 
 # Main segmentation function - Harvard-Oxford gross brainstem extraction
 extract_brainstem() {
@@ -257,6 +258,16 @@ extract_brainstem_final() {
             log_formatted "SUCCESS" "FreeSurfer brainstem substructures produced (pons/midbrain/medulla/scp)"
         else
             log_formatted "WARNING" "FreeSurfer brainstem substructures unavailable or low-confidence; using Harvard-Oxford gross mask only (no subdivisions, low spatial granularity)"
+        fi
+    elif [ "$seg_method" = "multi_atlas" ] || [ "$seg_method" = "bianciardi" ]; then
+        # Multi-atlas nucleus-level labeling (Bianciardi + CIT168 + optional AAL3)
+        # layered on top of the Harvard-Oxford gross extent produced above. Per-
+        # atlas enables live in config (USE_BIANCIARDI / USE_CIT168 / USE_AAL3).
+        # Degrades gracefully when atlases or external tools are unavailable.
+        if run_multi_atlas_brainstem "$input_file" "$input_basename"; then
+            log_formatted "SUCCESS" "Multi-atlas brainstem labeling produced per-region masks"
+        else
+            log_formatted "WARNING" "Multi-atlas brainstem labeling unavailable; using Harvard-Oxford gross mask only"
         fi
     elif [ "$seg_method" = "atlas" ] || [ "$seg_method" = "harvard_oxford" ]; then
         log_message "Atlas method selected: Harvard-Oxford gross mask only (no FreeSurfer substructures)"
