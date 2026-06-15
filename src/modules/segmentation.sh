@@ -1,19 +1,23 @@
-#!/bin/bash
-# src/modules/segmentation.sh - Updated to use hierarchical joint fusion
+#!/usr/bin/env bash
+# src/modules/segmentation.sh
+# Brainstem segmentation: Harvard-Oxford gross extent + FreeSurfer substructures.
+# (The legacy "hierarchical joint fusion" entry point is a single-atlas HO SyN
+#  warp — see hierarchical_joint_fusion.sh for the naming note.)
 
 source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
 source "config/default_config.sh"
 
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/hierarchical_joint_fusion.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/brainstem_freesurfer.sh"
 
-# Main segmentation function - now using hierarchical joint fusion
+# Main segmentation function - Harvard-Oxford gross brainstem extraction
 extract_brainstem() {
     local input_file="$1"
     local input_basename="$2"
     local flair_file=""  # Optional FLAIR file
-    
-    log_formatted "INFO" "=== BRAINSTEM SEGMENTATION (HIERARCHICAL JOINT FUSION) ==="
+
+    log_formatted "INFO" "=== BRAINSTEM SEGMENTATION (HARVARD-OXFORD GROSS EXTENT) ==="
     log_message "Processing: $input_file"
     log_message "Basename: $input_basename"
     [[ -n "$flair_file" ]] && log_message "FLAIR file: $flair_file"
@@ -34,11 +38,12 @@ extract_brainstem() {
     # Set output prefix (directory + basename so files are named correctly)
     local output_prefix="${brainstem_dir}/${input_basename}"
     
-    # Execute hierarchical joint fusion
+    # Execute Harvard-Oxford gross brainstem extraction (single-atlas SyN warp;
+    # the function name is legacy — see hierarchical_joint_fusion.sh).
     if execute_hierarchical_joint_fusion "$input_file" "$output_prefix" "$temp_dir"; then
-        log_formatted "SUCCESS" "Hierarchical joint fusion segmentation completed"
+        log_formatted "SUCCESS" "Harvard-Oxford gross brainstem extraction completed"
     else
-        log_formatted "ERROR" "Hierarchical joint fusion segmentation failed"
+        log_formatted "ERROR" "Harvard-Oxford gross brainstem extraction failed"
         #srm -rf "$temp_dir"
         return 1
     fi
@@ -78,22 +83,23 @@ enhance_segmentation_with_flair() {
     
     # Create FLAIR intensity mask
     fslmaths "$flair_file" -mul "$brainstem_mask" "$flair_intensity"
-    
-    # Enhance Talairach subdivisions with FLAIR
-    local subdivision_dir="$(dirname "$output_prefix")/talairach_subdivisions"
-    if [[ -d "$subdivision_dir" ]]; then
-        local flair_subdivision_dir="${subdivision_dir}_flair"
-        mkdir -p "$flair_subdivision_dir"
-        
-        for region_mask in "$subdivision_dir"/*.nii.gz; do
+
+    # Enhance FreeSurfer brainstem parcels with FLAIR (when present).
+    local detailed_dir="${RESULTS_DIR}/segmentation/detailed_brainstem"
+    if [[ -d "$detailed_dir" ]]; then
+        local flair_detailed_dir="${detailed_dir}_flair"
+        mkdir -p "$flair_detailed_dir"
+
+        for region_mask in "$detailed_dir"/*.nii.gz; do
+            [[ -f "$region_mask" ]] || continue
             local region_name=$(basename "$region_mask" .nii.gz)
-            local flair_region="${flair_subdivision_dir}/${region_name}_flair.nii.gz"
+            local flair_region="${flair_detailed_dir}/${region_name}_flair.nii.gz"
             fslmaths "$flair_file" -mul "$region_mask" "$flair_region"
         done
-        
-        log_message "  ✓ FLAIR-enhanced subdivisions: $flair_subdivision_dir"
+
+        log_message "  ✓ FLAIR-enhanced parcels: $flair_detailed_dir"
     fi
-    
+
     log_message "  ✓ FLAIR intensity enhancement completed"
     return 0
 }
@@ -108,13 +114,16 @@ generate_segmentation_report() {
     local report_file="${output_prefix}_segmentation_report.txt"
     local brainstem_mask="${output_prefix}_brainstem.nii.gz"
     
+    local detailed_dir="${RESULTS_DIR}/segmentation/detailed_brainstem"
+
     cat > "$report_file" <<EOF
 ================================================================================
-HIERARCHICAL JOINT FUSION SEGMENTATION REPORT
+BRAINSTEM SEGMENTATION REPORT
 ================================================================================
 Generated: $(date)
 Subject: $(basename "$output_prefix")
 Template Resolution: ${DEFAULT_TEMPLATE_RES:-1mm}
+Brainstem method: ${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}
 
 INPUT FILES
 -----------
@@ -129,14 +138,13 @@ PRIMARY OUTPUTS
    - Left hemisphere: ${output_prefix}_left_hemisphere.nii.gz
    - Right hemisphere: ${output_prefix}_right_hemisphere.nii.gz
 
-3. Talairach Subdivisions:
-   Directory: $(dirname "$output_prefix")/talairach_subdivisions/
-   Regions: left_medulla, right_medulla, left_pons, right_pons, 
-            left_midbrain, right_midbrain
+3. Brainstem Substructures (FreeSurfer parcels, when available):
+   Directory: ${detailed_dir}/
+   Regions: midbrain, pons, medulla, scp (plus left/right splits)
 
 $([ -n "$flair_file" ] && echo "4. FLAIR-Enhanced Outputs:
    - FLAIR intensity mask: ${output_prefix}_brainstem_flair_intensity.nii.gz
-   - FLAIR subdivisions: $(dirname "$output_prefix")/talairach_subdivisions_flair/")
+   - FLAIR parcels: ${detailed_dir}_flair/")
 
 SEGMENTATION STATISTICS
 -----------------------
@@ -154,20 +162,20 @@ EOF
         echo "" >> "$report_file"
     fi
     
-    # Add subdivision statistics
-    local subdivision_dir="$(dirname "$output_prefix")/talairach_subdivisions"
-    if [[ -d "$subdivision_dir" ]]; then
-        echo "TALAIRACH SUBDIVISION STATISTICS" >> "$report_file"
-        echo "--------------------------------" >> "$report_file"
-        
-        for region_file in "$subdivision_dir"/*.nii.gz; do
+    # Add substructure statistics (FreeSurfer parcels)
+    if [[ -d "$detailed_dir" ]]; then
+        echo "BRAINSTEM SUBSTRUCTURE STATISTICS" >> "$report_file"
+        echo "---------------------------------" >> "$report_file"
+
+        for region_file in "$detailed_dir"/*.nii.gz; do
+            [[ -f "$region_file" ]] || continue
             local region_name=$(basename "$region_file" .nii.gz)
             local region_voxels=$(fslstats "$region_file" -V | awk '{print $1}')
             echo "  ${region_name}: ${region_voxels} voxels" >> "$report_file"
         done
         echo "" >> "$report_file"
     fi
-    
+
     cat >> "$report_file" <<EOF
 
 VISUALIZATION COMMANDS
@@ -180,8 +188,8 @@ fsleyes $input_file $brainstem_mask -cm red -a 0.5
 $([ -n "$flair_file" ] && echo "# Primary brainstem on FLAIR:
 fsleyes $flair_file $brainstem_mask -cm red -a 0.5")
 
-# Talairach subdivisions:
-fsleyes $input_file $(dirname "$output_prefix")/talairach_subdivisions/*.nii.gz -cm random -a 0.6
+# Brainstem substructures:
+fsleyes $input_file ${detailed_dir}/*.nii.gz -cm random -a 0.6
 
 ================================================================================
 EOF
@@ -218,31 +226,50 @@ extract_brainstem_with_flair() {
 extract_brainstem_final() {
     local input_file="$1"
     local input_basename=$(basename "$input_file" .nii.gz)
-    
+    local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
+
     log_formatted "INFO" "===== COMPREHENSIVE BRAINSTEM SEGMENTATION ====="
-    log_message "Using hierarchical joint fusion as primary method"
-    
+    log_message "Brainstem segmentation method: $seg_method"
+
     # Define output directory
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     mkdir -p "$brainstem_dir"
-    
-    # Execute hierarchical joint fusion
+
+    # Always produce the Harvard-Oxford gross brainstem extent. It is the
+    # fallback mask AND the reference for the FS-HO agreement QC gate.
     if extract_brainstem "$input_file" "$input_basename"; then
-        log_formatted "SUCCESS" "Hierarchical joint fusion segmentation successful"
+        log_formatted "SUCCESS" "Harvard-Oxford gross brainstem extraction successful"
     else
-        log_formatted "ERROR" "Hierarchical joint fusion segmentation failed"
+        log_formatted "ERROR" "Harvard-Oxford gross brainstem extraction failed"
         return 1
     fi
-    
+
     # Map files to expected names
     map_segmentation_files "$input_basename" "$brainstem_dir"
-    
+
+    # Brainstem substructures: FreeSurfer parcels when requested + available;
+    # otherwise the gross HO mask stands alone (subdivisions absent).
+    if [ "$seg_method" = "freesurfer" ]; then
+        local output_prefix="${brainstem_dir}/${input_basename}"
+        local ho_brainstem_mask="${output_prefix}_brainstem.nii.gz"
+
+        if extract_brainstem_freesurfer "$input_file" "$output_prefix" "$ho_brainstem_mask"; then
+            log_formatted "SUCCESS" "FreeSurfer brainstem substructures produced (pons/midbrain/medulla/scp)"
+        else
+            log_formatted "WARNING" "FreeSurfer brainstem substructures unavailable or low-confidence; using Harvard-Oxford gross mask only (no subdivisions, low spatial granularity)"
+        fi
+    elif [ "$seg_method" = "atlas" ] || [ "$seg_method" = "harvard_oxford" ]; then
+        log_message "Atlas method selected: Harvard-Oxford gross mask only (no FreeSurfer substructures)"
+    else
+        log_formatted "WARNING" "Unknown BRAINSTEM_SEGMENTATION_METHOD='$seg_method'; defaulting to Harvard-Oxford gross mask only"
+    fi
+
     # Validate segmentation
     validate_segmentation_outputs "$input_file" "$input_basename"
-    
+
     # Generate comprehensive visualization report
     generate_comprehensive_report "$input_file" "$input_basename"
-    
+
     log_formatted "SUCCESS" "Comprehensive segmentation complete"
     return 0
 }
@@ -385,7 +412,7 @@ Subject: $input_basename
 
 SEGMENTATION SUMMARY
 -------------------
-Method: Hierarchical Joint Fusion (Harvard-Oxford + Talairach + Juelich)
+Method: ${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer} (gross extent: Harvard-Oxford; substructures: FreeSurfer brainstemSsLabels)
 Space: T1 Native Space
 Brainstem voxels: $brainstem_voxels
 
@@ -460,12 +487,12 @@ segment_tissues() {
 
 # Legacy function wrappers for backward compatibility
 extract_brainstem_harvard_oxford() {
-    log_formatted "INFO" "Using hierarchical joint fusion (Harvard-Oxford component)"
+    log_formatted "INFO" "Using Harvard-Oxford gross brainstem extraction"
     extract_brainstem "$@"
 }
 
 extract_brainstem_talairach() {
-    log_formatted "INFO" "Using hierarchical joint fusion (includes Talairach subdivisions)"
+    log_formatted "WARNING" "extract_brainstem_talairach is deprecated (Talairach removed). Using Harvard-Oxford gross extraction; substructures come from FreeSurfer."
     extract_brainstem "$@"
 }
 
@@ -528,4 +555,4 @@ export -f validate_segmentation
 export -f discover_and_map_segmentation_files
 export -f segment_brainstem
 
-log_message "Segmentation module loaded with hierarchical joint fusion"
+log_message "Segmentation module loaded (Harvard-Oxford gross extent + FreeSurfer substructures)"

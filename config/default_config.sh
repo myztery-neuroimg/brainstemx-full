@@ -73,11 +73,34 @@ export OUTPUT_DATATYPE="int"        # final int16
 # Atlas and template configuration
 export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 
-# Joint fusion specific parameters
-export JOINT_FUSION_ALPHA="${JOINT_FUSION_ALPHA:-0.1}"      # Label smoothing
-export JOINT_FUSION_BETA="${JOINT_FUSION_BETA:-2.0}"        # Spatial regularization
-export JOINT_FUSION_PATCH_RADIUS="${JOINT_FUSION_PATCH_RADIUS:-2}"
-export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
+# ---------------------------------------------------------------------------
+# Brainstem segmentation method
+# ---------------------------------------------------------------------------
+# Controls how the brainstem and its substructures (midbrain/pons/medulla/SCP)
+# are obtained.
+#   freesurfer : recon-all + segmentBS (Iglesias 2015) for the substructures,
+#                with the Harvard-Oxford gross Brain-Stem mask as the extent and
+#                the FS<->HO agreement QC gate. Falls back gracefully to the HO
+#                gross mask when FreeSurfer/recon-all/license is unavailable or
+#                the FS<->HO agreement is too low.
+#   atlas      : Harvard-Oxford gross Brain-Stem mask only (no substructures).
+#                (alias: harvard_oxford)
+# Talairach has been removed entirely (single 1988 post-mortem brain; largest
+# MNI-mapping error inferiorly/posteriorly — worst exactly in the brainstem).
+export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
+
+# FreeSurfer brainstem-segmentation knobs (used by brainstem_freesurfer.sh).
+# FREESURFER_HOME / FS_LICENSE are honoured from the environment; the module
+# detects them and degrades to the HO gross mask when absent.
+export FS_RECON_ALL_FLAG="${FS_RECON_ALL_FLAG:--all}"   # recon-all level (segmentBS needs aseg/norm)
+# FS<->HO agreement gate (mirrors the existing brain-mask Dice QC style):
+export FS_BS_AGREEMENT_DICE_MIN="${FS_BS_AGREEMENT_DICE_MIN:-0.7}"        # min Dice(FS union, HO Brain-Stem)
+export FS_BS_AGREEMENT_LEAKAGE_MAX="${FS_BS_AGREEMENT_LEAKAGE_MAX:-0.2}"  # max fraction of FS union outside HO
+
+# Harvard-Oxford subcortical maxprob probability threshold for the gross
+# Brain-Stem extent. thr25 is tighter than the most-dilated thr0 variant; the
+# maxprob label index is independent of this threshold.
+export HO_SUB_MAXPROB_THR="${HO_SUB_MAXPROB_THR:-thr25}"
 
 # ANTs registration parameters (existing)
 # REG_TRANSFORM_TYPE is set in the "Registration & motion correction" section below
