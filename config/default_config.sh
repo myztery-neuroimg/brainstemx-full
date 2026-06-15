@@ -282,6 +282,25 @@ export BET_F_FLAIR=0.2
 # (non-fatal) sanity check, not a hard failure.
 export BRAIN_QC_INFERIOR_FRACTION=0.06
 
+# Shared robustfov FOV-normalization (neck/large-FOV removal) applied as a
+# pre-extraction step for ALL methods (synthstrip/ants/bet), not just the BET
+# fallback. On large-FOV sagittal 3D inputs (T1_MPRAGE_SAG, T2_SPACE_FLAIR_Sag)
+# the neck and shoulders drag skull-strip centres of mass too low; cropping the
+# FOV first improves extraction and downstream registration. The brain mask is
+# extracted on the cropped image, then mapped BACK to the original full grid via
+# the inverse of robustfov's ROI->full affine, so the final brain/mask outputs
+# stay in the ORIGINAL native space and geometry (nothing downstream shifts).
+# Requires FSL robustfov; if unavailable, the pipeline logs a non-fatal skip and
+# extracts on the original image (legacy behaviour).
+export BRAIN_EXTRACTION_ROBUSTFOV=true
+
+# Heuristic gate for the robustfov pre-step. When >0, FOV cropping only triggers
+# if the superior-inferior (Z) extent in mm (dim3 * pixdim3) exceeds this value,
+# which targets the large-FOV sagittal slabs while leaving already-tight axial
+# acquisitions untouched. Set to 0 to apply the crop unconditionally whenever
+# BRAIN_EXTRACTION_ROBUSTFOV is enabled and robustfov is available.
+export BRAIN_EXTRACTION_ROBUSTFOV_MIN_Z_MM=180
+
 # Supported modalities for registration to T1
 export SUPPORTED_MODALITIES=("FLAIR" "SWI" "DWI" "TLE" "COR")
 
