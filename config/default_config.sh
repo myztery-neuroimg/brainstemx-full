@@ -226,6 +226,34 @@ export GMM_FALLBACK_PERCENTILE=97.5     # --fallback-percentile: used when GMM f
 # It defaults to THRESHOLD_WM_SD_MULTIPLIER (above) so there is ONE
 # authoritative fallback value.  Override only if you need them to diverge.
 
+# ---------------------------------------------------------------------------
+# Supervised / learned WMH detection (LST-AI + FreeSurfer SAMSEG)
+# ---------------------------------------------------------------------------
+# Optional, pretrained, training-data-free WMH/lesion segmentation back-ends
+# implemented in src/modules/wmh_lst_samseg.sh.  Both are OFF by default and
+# require external tools that are NOT part of the core pipeline dependency set:
+#   - LST-AI : deep-learning successor to SPM-LST. Install via 'pip install
+#              lst-ai' (Python, no MATLAB) or pull the Docker image. Needs
+#              co-registered FLAIR + T1; ships pretrained weights.
+#   - SAMSEG : FreeSurfer >=7.x 'run_samseg --lesion' (needs $FREESURFER_HOME).
+#              Synergizes with the FreeSurfer brainstem segmentation added in a
+#              sibling unit (shared FreeSurfer install + brainstem labels).
+# Each back-end intersects its whole-brain lesion mask with the pipeline's
+# brainstem mask to report a brainstem-restricted WMH burden separately.
+export WMH_LSTAI_ENABLED=false          # true => run LST-AI when available
+export WMH_SAMSEG_ENABLED=false         # true => run FreeSurfer SAMSEG when available
+
+# LST-AI options
+export LSTAI_THRESHOLD=0.5              # lesion probability threshold (0-1; LST-AI default 0.5)
+export LSTAI_DEVICE="cpu"              # "cpu" or a GPU id (e.g. "0")
+export LSTAI_DOCKER_IMAGE="jqmcginnis/lst-ai:latest"  # used only if Docker back-end is selected
+
+# SAMSEG options
+export SAMSEG_LESION_THRESHOLD=0.3     # lesion posterior threshold (run_samseg default 0.3)
+export SAMSEG_LESION_MASK_PATTERN="0 1" # one number per input (T1 FLAIR): 0=no constraint, 1=brighter-than-GM
+export SAMSEG_LESION_LABEL=99          # lesion label value in SAMSEG seg.mgz
+export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recommended when FLAIR shows pallidum)
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
