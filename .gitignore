@@ -31,3 +31,10 @@ pytest_cache
 .venv
 .gitignore
 talairach_subdivisions
+
+# User-specific / environment-specific scratch configs & tests (never track)
+config/dicom2_comprehensive_fix.sh
+config/dicom2_config.sh
+config/dicom2_runtime_patches.sh
+tests/test_original_detection.sh
+tests/test_interactive_selection.sh
