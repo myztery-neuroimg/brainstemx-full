@@ -394,6 +394,19 @@ export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
 export REG_PRECISION=1                 # Registration precision
 
+# Within-subject (same-subject, cross-session) registration presets (Unit B).
+# When true: same-modality pairs use rigid-only (6 DOF, no SyN); cross-modal
+# pairs use rigid + MI + a constrained low-deformation SyN stage to preserve
+# morphometry across timepoints.  Default false = unchanged behaviour.
+export WITHIN_SUBJECT_REGISTRATION="${WITHIN_SUBJECT_REGISTRATION:-false}"
+
+# ANTs convergence schedule for the constrained within-subject SyN stage
+# (cross-modal path when WITHIN_SUBJECT_REGISTRATION=true).  Format is
+# [iterationsxiterationsxiterations,convergenceThreshold,windowSize] matching
+# the number of resolution levels in TEMPLATE_SHRINK_FACTORS (default 4 levels).
+# Fewer iterations than the default SyN to limit deformation in cross-session alignment.
+export WITHIN_SUBJECT_SYN_CONVERGENCE="${WITHIN_SUBJECT_SYN_CONVERGENCE:-[20x10x5x2,1e-6,10]}"
+
 # Per-metric tuning shared by all stages of perform_multistage_registration().
 # CC radius applies when CC is used (same-modality SyN); MI bins apply when MI is
 # used (cross-modality rigid/affine/SyN). The SyN stage now selects MI for
