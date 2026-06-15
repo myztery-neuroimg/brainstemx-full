@@ -534,6 +534,18 @@ export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cl
 # the OTHER engine so a run never aborts purely on engine choice.
 export ANALYSIS_PRIMARY_ENGINE="detect_hyperintensities"
 
+# Cross-source agreement / consensus (#1) and hierarchical roll-up (#3).
+# The per-region engine OR-unions detections from every segmentation source
+# (freesurfer/bianciardi/cit168/aal3/harvard_oxford) for max sensitivity.
+# CONSENSUS additionally emits, ALONGSIDE the union (which is unchanged):
+#   <prefix>_agreement_count.nii.gz  - integer: # of INDEPENDENT sources per voxel
+#   <prefix>_consensus_min<N>.nii.gz - binary: voxels confirmed by >= N sources
+# HIERARCHICAL emits <prefix>_hierarchical_region_summary.tsv rolling the detected
+# lesion up across gross brainstem -> midbrain/pons/medulla -> nucleus (deduped).
+export ANALYSIS_EMIT_CONSENSUS=true       # emit cross-source agreement count + consensus mask
+export CONSENSUS_MIN_SOURCES=2            # consensus mask = voxels flagged by >= this many sources
+export ANALYSIS_HIERARCHICAL_SUMMARY=true # emit the gross/subdivision/nucleus lesion roll-up TSV
+
 # ---------------------------------------------------------------------------
 # CSF / partial-volume exclusion (posterior-fossa false-positive reduction)
 # ---------------------------------------------------------------------------

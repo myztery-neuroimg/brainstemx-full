@@ -331,7 +331,14 @@ detect_hyperintensities() {
         log_message "Analyzing clusters for method $mult..."
         analyze_clusters "${out_prefix}_thresh${mult}_bin.nii.gz" "${out_prefix}_clusters_${mult}"
     done
-    
+
+    # --- Hierarchical region roll-up (#3) --------------------------------------
+    # Report the detected lesion at gross / subdivision / nucleus levels (with
+    # nuclei rolled up under their parent subdivision). Non-fatal.
+    emit_hierarchical_region_summary "${out_prefix}_threshATLAS_GMM_bin.nii.gz" \
+        "${out_prefix}_hierarchical_region_summary.tsv" || \
+        log_formatted "WARNING" "Hierarchical region summary reported a non-fatal issue"
+
     # Clean up temporary files
     rm -rf "$temp_dir"
 
@@ -1084,6 +1091,19 @@ apply_per_region_gmm_analysis() {
     # Initialize combined result as zeros
     fslmaths "$flair_image" -mul 0 "$combined_result"
 
+    # --- Cross-source agreement / consensus (#1) -----------------------------
+    # Alongside the OR-union (combined_result), accumulate ONE binary detection
+    # map per SOURCE (freesurfer/bianciardi/cit168/aal3/harvard_oxford). Summing
+    # the per-source maps yields an integer agreement count (how many INDEPENDENT
+    # sources flagged each voxel); thresholding it gives a high-specificity
+    # consensus mask. Counting per SOURCE (not per region) avoids inflating the
+    # count when a voxel is covered by both a Bianciardi nucleus AND the Bianciardi
+    # pons aggregate. Additive — the union output is unchanged.
+    local emit_consensus="${ANALYSIS_EMIT_CONSENSUS:-true}"
+    local agreement_dir="${per_region_dir}/agreement"
+    declare -A _src_detect_seen=()
+    [ "$emit_consensus" = "true" ] && mkdir -p "$agreement_dir"
+
     # Provenance manifest: records which SOURCE path (freesurfer / bianciardi /
     # cit168 / aal3 / harvard_oxford) each analysed region came from. The parallel
     # 'all' segmentation mode produces masks from several sources; downstream the
@@ -1265,10 +1285,24 @@ apply_per_region_gmm_analysis() {
                 log_message "Applying connectivity weighting for $region_base..."
                 if apply_connectivity_weighting "$region_upper_tail" "$region_zscore" "$region_connectivity"; then
                     
-                    # Add this region's result to combined result
+                    # Add this region's result to combined result (OR-union)
                     fslmaths "$combined_result" -add "$region_connectivity" "$combined_result"
                     region_results+=("$region_connectivity")
-                    
+
+                    # Accumulate a per-SOURCE BINARY detection map for the consensus.
+                    if [ "$emit_consensus" = "true" ]; then
+                        local _rc_bin="${gmm_temp_dir}/_detect_bin.nii.gz"
+                        local _src_map="${agreement_dir}/source_${region_source}_detect.nii.gz"
+                        if fslmaths "$region_connectivity" -bin "$_rc_bin" >/dev/null 2>&1; then
+                            if [ -f "$_src_map" ]; then
+                                fslmaths "$_src_map" -max "$_rc_bin" -bin "$_src_map" >/dev/null 2>&1 || true
+                            else
+                                fslmaths "$_rc_bin" -bin "$_src_map" >/dev/null 2>&1 || true
+                            fi
+                            _src_detect_seen["$region_source"]=1
+                        fi
+                    fi
+
                     log_message "✓ Successfully processed $region_base [source=$region_source] with GMM analysis"
 
                     # Create region-specific output files. Namespace by PROVENANCE
@@ -1293,6 +1327,41 @@ apply_per_region_gmm_analysis() {
         fslmaths "$combined_result" -bin "$combined_result"
         log_message "✓ Combined results from ${#region_results[@]} regions into atlas-based GMM detection"
 
+        # --- Build the agreement count + consensus mask (#1) -----------------
+        # Sum the per-SOURCE binary maps -> integer agreement count; threshold at
+        # CONSENSUS_MIN_SOURCES -> high-specificity consensus. Additive outputs;
+        # the union (combined_result / ATLAS_GMM_RESULT) is untouched.
+        if [ "$emit_consensus" = "true" ] && [ "${#_src_detect_seen[@]}" -gt 0 ]; then
+            local agreement_count="${out_prefix}_agreement_count.nii.gz"
+            local _first=1 _src _sd
+            for _src in "${!_src_detect_seen[@]}"; do
+                _sd="${agreement_dir}/source_${_src}_detect.nii.gz"
+                [ -f "$_sd" ] || continue
+                if [ "$_first" = "1" ]; then
+                    cp "$_sd" "$agreement_count"; _first=0
+                else
+                    fslmaths "$agreement_count" -add "$_sd" "$agreement_count"
+                fi
+            done
+            local n_sources="${#_src_detect_seen[@]}"
+            local min_agree="${CONSENSUS_MIN_SOURCES:-2}"
+            [[ "$min_agree" =~ ^[0-9]+$ ]] || min_agree=2
+            [ "$min_agree" -lt 1 ] && min_agree=1
+            [ "$min_agree" -gt "$n_sources" ] && min_agree="$n_sources"
+            local consensus_mask="${out_prefix}_consensus_min${min_agree}.nii.gz"
+            if [ "$_first" = "0" ] && [ -f "$agreement_count" ]; then
+                fslmaths "$agreement_count" -thr "$min_agree" -bin "$consensus_mask"
+                local _cons_vox _uni_vox
+                _cons_vox=$(fslstats "$consensus_mask" -V 2>/dev/null | awk '{print $1}')
+                _uni_vox=$(fslstats "$combined_result" -V 2>/dev/null | awk '{print $1}')
+                log_message "✓ Cross-source consensus: ${n_sources} source(s); union=${_uni_vox:-0} vox, ≥${min_agree}-source consensus=${_cons_vox:-0} vox"
+                log_message "  Agreement count map: $agreement_count"
+                log_message "  Consensus mask:      $consensus_mask"
+                export ATLAS_GMM_AGREEMENT="$agreement_count"
+                export ATLAS_GMM_CONSENSUS="$consensus_mask"
+            fi
+        fi
+
         # Summarise per-source provenance of the analysed regions.
         if [ -f "$provenance_manifest" ]; then
             log_message "Region provenance (source: count):"
@@ -1310,6 +1379,121 @@ apply_per_region_gmm_analysis() {
         log_formatted "ERROR" "No regions successfully processed with GMM analysis"
         return 1
     fi
+}
+
+# _hier_emit_row <level> <region> <source> <parent> <region_mask> <lesion_mask> <work> <out_tsv>
+#   Append one hierarchical-summary row: lesion∩region volumetry + fraction.
+_hier_emit_row() {
+    local level="$1" region="$2" source="$3" parent="$4" rmask="$5" lesion_mask="$6" work="$7" out_tsv="$8"
+    [ -f "$rmask" ] || return 0
+    local rv rvox rmm3
+    rv=$(fslstats "$rmask" -V 2>/dev/null); rvox=$(echo "$rv" | awk '{print $1+0}'); rmm3=$(echo "$rv" | awk '{print $2+0}')
+    local isect="${work}/_isect.nii.gz"
+    fslmaths "$lesion_mask" -mas "$rmask" "$isect" >/dev/null 2>&1 || return 0
+    local lv lvox lmm3
+    lv=$(fslstats "$isect" -V 2>/dev/null); lvox=$(echo "$lv" | awk '{print $1+0}'); lmm3=$(echo "$lv" | awk '{print $2+0}')
+    local frac
+    frac=$(awk -v a="$lvox" -v b="$rvox" 'BEGIN{printf "%.2f", (b>0 ? 100*a/b : 0)}')
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$level" "$region" "$source" "$parent" "$lvox" "$lmm3" "$rvox" "$rmm3" "$frac" >> "$out_tsv"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# emit_hierarchical_region_summary <lesion_bin_mask> <out_tsv>   (#3)
+#
+# Hierarchical roll-up of a detected lesion mask across three anatomical levels,
+# so a lesion in a nucleus is also reported in its subdivision and the whole
+# brainstem WITHOUT triple-counting voxels:
+#   gross       : the whole brainstem lesion total (the lesion mask is already
+#                 brainstem-restricted, so its total IS the gross burden)
+#   subdivision : midbrain / pons / medulla — a DEDUPED union across every source
+#   nucleus     : each multi-atlas / FS nucleus, tagged with its parent
+#                 subdivision (assigned by MAX geometric overlap, atlas-agnostic)
+# Reuses the per-region '*_resampled.nii.gz' masks (already on the lesion grid),
+# so there is no re-registration / space mismatch. Gated by
+# ANALYSIS_HIERARCHICAL_SUMMARY (default true); fully graceful.
+# ---------------------------------------------------------------------------
+emit_hierarchical_region_summary() {
+    local lesion_mask="$1"
+    local out_tsv="$2"
+
+    [ "${ANALYSIS_HIERARCHICAL_SUMMARY:-true}" = "true" ] || return 0
+    if [ -z "$lesion_mask" ] || [ ! -f "$lesion_mask" ]; then
+        log_formatted "WARNING" "Hierarchical summary: lesion mask missing ($lesion_mask) - skipping"
+        return 0
+    fi
+    local per_region_dir="${RESULTS_DIR}/per_region_analysis"
+    if [ ! -d "$per_region_dir" ]; then
+        log_formatted "WARNING" "Hierarchical summary: per_region_analysis dir absent - skipping"
+        return 0
+    fi
+    local work; work="$(dirname "$out_tsv")/.hier_work"
+    mkdir -p "$work"
+
+    printf 'level\tregion\tsource\tparent\tlesion_voxels\tlesion_mm3\tregion_voxels\tregion_mm3\tlesion_frac_pct\n' > "$out_tsv"
+
+    # gross: lesion mask is already brainstem-restricted -> its total is the gross.
+    local gv glv gmm
+    gv=$(fslstats "$lesion_mask" -V 2>/dev/null); glv=$(echo "$gv" | awk '{print $1+0}'); gmm=$(echo "$gv" | awk '{print $2+0}')
+    printf 'gross\tbrainstem\tcombined\t-\t%s\t%s\t-\t-\t-\n' "$glv" "$gmm" >> "$out_tsv"
+
+    # Known source prefixes (harvard_oxford contains an underscore, so parse by prefix).
+    local known_sources="freesurfer bianciardi cit168 aal3 harvard_oxford synthseg"
+
+    # Collect (resampled_mask, source, region_base, level) from the per-region dirs.
+    local -a R_mask=() R_src=() R_base=() R_level=()
+    local d
+    for d in "$per_region_dir"/*_FLAIR_analysis/; do
+        [ -d "$d" ] || continue
+        local rmask; rmask=$(find "$d" -maxdepth 1 -name '*_resampled.nii.gz' -print -quit 2>/dev/null)
+        [ -n "$rmask" ] && [ -f "$rmask" ] || continue
+        local tag; tag=$(basename "$d"); tag="${tag%_FLAIR_analysis}"
+        local src="other" base="$tag" s
+        for s in $known_sources; do
+            case "$tag" in ${s}_*) src="$s"; base="${tag#${s}_}"; break ;; esac
+        done
+        local core="${base#left_}"; core="${core#right_}"
+        local lvl="nucleus"
+        case "$core" in midbrain|pons|medulla|scp) lvl="subdivision" ;; esac
+        R_mask+=("$rmask"); R_src+=("$src"); R_base+=("$base"); R_level+=("$lvl")
+    done
+
+    # Pass 1: deduped subdivision unions (midbrain/pons/medulla) + their rows.
+    local sub subs="midbrain pons medulla" i
+    declare -A subunion=()
+    for sub in $subs; do
+        local acc="${work}/subunion_${sub}.nii.gz" found=0
+        for i in "${!R_mask[@]}"; do
+            [ "${R_level[$i]}" = "subdivision" ] || continue
+            local core="${R_base[$i]#left_}"; core="${core#right_}"
+            [ "$core" = "$sub" ] || continue
+            if [ "$found" = "1" ]; then fslmaths "$acc" -max "${R_mask[$i]}" "$acc" >/dev/null 2>&1; else fslmaths "${R_mask[$i]}" -bin "$acc" >/dev/null 2>&1; found=1; fi
+        done
+        if [ "$found" = "1" ]; then
+            fslmaths "$acc" -bin "$acc" >/dev/null 2>&1
+            subunion["$sub"]="$acc"
+            _hier_emit_row "subdivision" "$sub" "combined" "brainstem" "$acc" "$lesion_mask" "$work" "$out_tsv"
+        fi
+    done
+
+    # Pass 2: nuclei, parent subdivision = max geometric overlap.
+    for i in "${!R_mask[@]}"; do
+        [ "${R_level[$i]}" = "nucleus" ] || continue
+        local parent="other" best=-1 ov
+        for sub in $subs; do
+            [ -n "${subunion[$sub]:-}" ] || continue
+            ov=$(fslstats "${R_mask[$i]}" -k "${subunion[$sub]}" -V 2>/dev/null | awk '{print $1+0}')
+            [[ "$ov" =~ ^[0-9]+$ ]] || ov=0
+            if [ "$ov" -gt "$best" ]; then best="$ov"; parent="$sub"; fi
+        done
+        [ "$best" -le 0 ] 2>/dev/null && parent="other"
+        _hier_emit_row "nucleus" "${R_base[$i]}" "${R_src[$i]}" "$parent" "${R_mask[$i]}" "$lesion_mask" "$work" "$out_tsv"
+    done
+
+    log_message "✓ Hierarchical region summary (#3): $out_tsv"
+    rm -rf "$work" 2>/dev/null || true
+    return 0
 }
 
 # Function to perform region-specific z-score normalization (not whole brainstem)
@@ -2537,6 +2721,8 @@ export -f _region_source_from_path
 export -f build_csf_exclusion_mask
 export -f apply_csf_pv_exclusion
 export -f apply_per_region_gmm_analysis
+export -f _hier_emit_row
+export -f emit_hierarchical_region_summary
 export -f normalize_flair_brainstem_zscore
 export -f apply_gaussian_mixture_thresholding
 export -f apply_connectivity_weighting

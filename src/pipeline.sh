@@ -1126,12 +1126,19 @@ run_pipeline() {
     fi
     log_message "Found brainstem segmentation: $seg_mask"
 
-    # Optional: pons subdivision mask (used for legacy fallback only)
-    local pons_mask=$(find "$RESULTS_DIR/segmentation" -name "*pons.nii.gz" ! -name "*dorsal*" ! -name "*ventral*" 2>/dev/null | head -1)
+    # Optional: a WHOLE-pons subdivision mask — INFORMATIONAL / legacy fallback
+    # only. The primary engine (detect_hyperintensities -> find_all_atlas_regions)
+    # analyses the full UNION of detailed_brainstem masks (FS parcels + Bianciardi/
+    # CIT168/AAL3 nuclei + subdivisions, see region_provenance.tsv), NOT this single
+    # pick; cluster analysis uses the gross-brainstem geometry reference (seg_orig).
+    # Exclude left/right so a bare glob can't grab e.g. bianciardi_left_pons.
+    local pons_mask
+    pons_mask=$(find "$RESULTS_DIR/segmentation" -name "*_pons.nii.gz" \
+      ! -iname "*left*" ! -iname "*right*" ! -iname "*dorsal*" ! -iname "*ventral*" 2>/dev/null | sort | head -1)
     if [ -n "$pons_mask" ]; then
-      log_message "Found pons segmentation: $pons_mask"
+      log_message "Whole-pons reference (informational; analysis uses the full region union): $pons_mask"
     else
-      log_formatted "WARNING" "Pons subdivision mask not found — using brainstem mask for analysis"
+      log_message "No whole-pons mask found — using brainstem mask as the informational pons reference"
       pons_mask="$seg_mask"
     fi
 
