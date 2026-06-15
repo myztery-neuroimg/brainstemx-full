@@ -822,7 +822,66 @@ run_pipeline() {
       return $ERR_VALIDATION
     fi
     log_formatted "SUCCESS" "Step validated: Registration"
-    
+
+    # ───────────────────────────────────────────────────────────────────────
+    # CONTRAST-MATCHED CASCADED REGISTRATION  (default OFF; no-op when disabled)
+    # ───────────────────────────────────────────────────────────────────────
+    # Register each present T2-weighted modality (T2, DWI, SWI) to the FLAIR
+    # anchor (same-contrast), then COMPOSE with the existing FLAIR->T1 transforms
+    # so the modality reaches T1 space in a single antsApplyTransforms call.
+    # Persists composed forward + inverse transform lists for downstream use
+    # (incl. the future DICOM cluster->source mapping).  This block runs only
+    # when CONTRAST_MATCHED_REGISTRATION=true, leaving the default path unchanged.
+    if [ "${CONTRAST_MATCHED_REGISTRATION:-false}" = "true" ]; then
+      log_formatted "INFO" "===== CONTRAST-MATCHED CASCADED REGISTRATION ====="
+      # The cascade treats T1 as the master.  It composes onto the existing
+      # FLAIR->T1 forward transforms, which only exist when T1 is the reference
+      # (moving=FLAIR, fixed=T1).  When FLAIR is the reference the transforms run
+      # the other way; skip cleanly rather than compose in the wrong direction.
+      if [ "$PIPELINE_REFERENCE_MODALITY" != "T1" ]; then
+        log_formatted "WARNING" "Contrast-matched cascade requires T1 as reference (PIPELINE_REFERENCE_MODALITY=$PIPELINE_REFERENCE_MODALITY) - skipping"
+      else
+        # The main registration above produced FLAIR(moving)->T1(fixed) transforms
+        # under this prefix; recover it from the standardized filenames.
+        local flair_to_t1_prefix="${reg_dir}/$(basename "$flair_std" .nii.gz)_to_$(basename "$t1_std" .nii.gz)"
+        if [ ! -f "${flair_to_t1_prefix}0GenericAffine.mat" ]; then
+          log_formatted "WARNING" "FLAIR->T1 transforms not found at ${flair_to_t1_prefix} - skipping contrast-matched cascade"
+        else
+          local cm_dir="${reg_dir}/${CONTRAST_MATCHED_SUBDIR:-contrast_matched}"
+          mkdir -p "$cm_dir"
+
+          # Locate present T2-weighted secondary modalities (T2/DWI/SWI).  These
+          # are not standardized like T1/FLAIR, so search the standard output dirs
+          # (brain_extraction -> bias_corrected -> extracted), excluding masks.
+          local cm_specs=()
+          local cm_mod cm_found cm_search_dir
+          for cm_mod in T2 DWI SWI; do
+            # Exclude the T2-SPACE-FLAIR (already the anchor) via the FLAIR filter below.
+            cm_found=""
+            for cm_search_dir in "${RESULTS_DIR}/brain_extraction" "${RESULTS_DIR}/bias_corrected" "${EXTRACT_DIR}"; do
+              [ -d "$cm_search_dir" ] || continue
+              cm_found=$(find "$cm_search_dir" -iname "*${cm_mod}*.nii.gz" ! -iname "*FLAIR*" ! -iname "*Mask*" ! -iname "*_mean.nii.gz" 2>/dev/null | head -1)
+              [ -n "$cm_found" ] && break
+            done
+            if [ -n "$cm_found" ]; then
+              log_message "Contrast-matched: found ${cm_mod} candidate: $cm_found"
+              cm_specs+=("${cm_mod}=${cm_found}")
+            else
+              log_message "Contrast-matched: no ${cm_mod} present (skipping)"
+            fi
+          done
+
+          if [ ${#cm_specs[@]} -eq 0 ]; then
+            log_message "No T2-weighted secondary modalities present; contrast-matched cascade has nothing to do"
+          else
+            register_contrast_matched_cascade \
+              "$t1_std" "$flair_std" "$flair_to_t1_prefix" "$cm_dir" "${cm_specs[@]}" \
+              || log_formatted "WARNING" "Contrast-matched cascade reported issues (non-fatal)"
+          fi
+        fi
+      fi
+    fi
+
     # Launch enhanced visual QA for registration (non-blocking) with better error handling
     log_message "DEBUG: About to call enhanced_launch_visual_qa from pipeline.sh"
     if declare -f enhanced_launch_visual_qa >/dev/null 2>&1; then
