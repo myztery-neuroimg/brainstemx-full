@@ -844,7 +844,9 @@ run_parallel_brain_extraction() {
   export -f validate_nifti validate_file
   export -f get_output_path get_module_dir create_module_dir
   export -f log_diagnostic execute_with_logging perform_brain_extraction execute_ants_command
-  
+  export -f synthstrip_available brain_extraction_synthstrip brain_extraction_ants
+  export -f brain_extraction_bet qc_posterior_fossa_coverage safe_fslmaths
+
   # Run in parallel using the common function
   run_parallel "extract_brain" "$pattern" "$input_dir" "$jobs" "$max_depth"
   local status=$?
