@@ -85,6 +85,11 @@ export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 #                the FS<->HO agreement is too low.
 #   atlas      : Harvard-Oxford gross Brain-Stem mask only (no substructures).
 #                (alias: harvard_oxford)
+#   multi_atlas: nucleus-level labeling from the Bianciardi BrainstemNavigator
+#                (+ CIT168, + optional AAL3) warped to subject space, layered on
+#                the Harvard-Oxford gross extent. Per-atlas enables below.
+#                (alias: bianciardi). Requires the atlases on disk under
+#                $FSLDIR/data/atlases — see multi_atlas.sh / docs.
 # Talairach has been removed entirely (single 1988 post-mortem brain; largest
 # MNI-mapping error inferiorly/posteriorly — worst exactly in the brainstem).
 export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
@@ -96,6 +101,28 @@ export FS_RECON_ALL_FLAG="${FS_RECON_ALL_FLAG:--all}"   # recon-all level (segme
 # FS<->HO agreement gate (mirrors the existing brain-mask Dice QC style):
 export FS_BS_AGREEMENT_DICE_MIN="${FS_BS_AGREEMENT_DICE_MIN:-0.7}"        # min Dice(FS union, HO Brain-Stem)
 export FS_BS_AGREEMENT_LEAKAGE_MAX="${FS_BS_AGREEMENT_LEAKAGE_MAX:-0.2}"  # max fraction of FS union outside HO
+
+# ---------------------------------------------------------------------------
+# Multi-atlas brainstem labeling (used when BRAINSTEM_SEGMENTATION_METHOD is
+# 'multi_atlas' or 'bianciardi'; see multi_atlas.sh and
+# docs/multi_atlas_integration_spec.md).
+# ---------------------------------------------------------------------------
+# Atlases must be pre-downloaded under $FSLDIR/data/atlases:
+#   Bianciardi/BrainstemNavigatorv1.0/1.0/{2a,2b}.* (MNI dirs only; IIT 1a/1b excluded)
+#   CIT168/MNI152/tpl-MNI152NLin6Asym_atlas-CIT168_res-01_dseg.nii.gz + CIT168_labels.txt
+#   AAL3/AAL3/AAL3v1_1mm.nii.gz + AAL3v1.nii.txt
+export ATLAS_DIR="${ATLAS_DIR:-${FSLDIR}/data/atlases}"
+# Derived/cached MNI dsegs live under each atlas's */derived subdir by default.
+export MULTI_ATLAS_CACHE_DIR="${MULTI_ATLAS_CACHE_DIR:-${ATLAS_DIR}}"
+# Per-atlas enables. AAL3 is whole-brain and OFF by default (brainstem subset
+# only when on); CIT168 + Bianciardi are brainstem/subcortical-focused.
+export USE_BIANCIARDI="${USE_BIANCIARDI:-true}"
+export USE_CIT168="${USE_CIT168:-true}"
+export USE_AAL3="${USE_AAL3:-false}"
+# Bianciardi thresholded-probabilistic level (matches the on-disk subdir name).
+export BIANCIARDI_PROB_THRESHOLD="${BIANCIARDI_PROB_THRESHOLD:-0.35}"
+# Bianciardi MNI source subdirs (relative to the BrainstemNavigator 1.0 root).
+export BIANCIARDI_MNI_SUBDIRS="${BIANCIARDI_MNI_SUBDIRS:-2a.BrainstemNucleiAtlas_MNI/labels_thresholded_probabilistic_${BIANCIARDI_PROB_THRESHOLD} 2b.DiencephalicNucleiAtlas_MNI/labels_thresholded_probabilistic_${BIANCIARDI_PROB_THRESHOLD}}"
 
 # Harvard-Oxford subcortical maxprob probability threshold for the gross
 # Brain-Stem extent. thr25 is tighter than the most-dilated thr0 variant; the
