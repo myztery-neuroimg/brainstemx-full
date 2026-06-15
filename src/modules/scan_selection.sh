@@ -644,6 +644,149 @@ analyze_dicom_headers() {
     return 0
 }
 
+# ----------------------------------------------------------------------------
+# SECONDARY-MODALITY scan selection (multi-modal: SWI / DWI trace / ADC / T2)
+# ----------------------------------------------------------------------------
+# The T1/FLAIR backbone is selected above. These helpers pick the best SECONDARY
+# T2-weighted series for the contrast-matched cascade + cross-modal analysis.
+# They are graceful: a modality that is absent simply yields nothing.
+
+# Echo the case-insensitive find -iname include patterns for a secondary modality.
+# DWI is the DERIVED TRACE (b>0), kept distinct from the ADC map. Patterns mirror
+# detect_modality() in preprocess.sh so selection and denoising agree.
+_secondary_modality_patterns() {
+    local modality="$1"
+    case "${modality^^}" in
+        T2)  echo "*T2*.nii.gz *SPACE*.nii.gz" ;;
+        SWI) echo "*SWI*.nii.gz *SWAN*.nii.gz *susceptib*.nii.gz *t2_hemo*.nii.gz *venobold*.nii.gz" ;;
+        DWI) echo "*DWI*.nii.gz *trace*.nii.gz *TRACE*.nii.gz *b1000*.nii.gz *diffusion*.nii.gz" ;;
+        ADC) echo "*ADC*.nii.gz *adc*.nii.gz" ;;
+        *)   echo "*${modality}*.nii.gz" ;;
+    esac
+}
+
+# Select the best present scan for ONE secondary modality from a directory.
+# Echoes the chosen file path (empty if none usable) and returns 0 if found.
+# Excludes the FLAIR anchor, masks, and known intermediate products, and skips
+# T2 candidates that are actually FLAIR/DWI/SWI (so "T2_SPACE_FLAIR" is NOT
+# mis-picked as T2). 2D / degenerate series are tolerated: selection still works
+# but the cascade validates dimensionality before registering.
+select_secondary_modality_scan() {
+    local modality="$1"
+    local directory="$2"
+    local reference_scan="${3:-}"
+    local selection_mode="${4:-${SCAN_SELECTION_MODE:-highest_resolution}}"
+
+    [ -d "$directory" ] || { echo ""; return 1; }
+
+    log_message "Selecting best ${modality} scan in $directory"
+
+    # Collect candidates across all patterns for this modality.
+    local patterns pat
+    patterns="$(_secondary_modality_patterns "$modality")"
+    local candidates=()
+    for pat in $patterns; do
+        while IFS= read -r f; do
+            [ -n "$f" ] && candidates+=("$f")
+        done < <(find "$directory" -maxdepth 1 -type f -iname "$pat" 2>/dev/null | sort)
+    done
+
+    if [ ${#candidates[@]} -eq 0 ]; then
+        log_message "No ${modality} candidates found"
+        echo ""
+        return 1
+    fi
+
+    # Filter out non-target / intermediate files. For T2 specifically, drop any
+    # FLAIR/DWI/SWI/ADC contaminant so a "T2_SPACE_FLAIR" is never chosen as T2.
+    local filtered=() c base
+    for c in "${candidates[@]}"; do
+        base="$(basename "$c")"
+        case "$base" in
+            *[Mm]ask*|*_mean.nii.gz|*_n4.nii.gz|*_std.nii.gz|*BrainExtraction*|*_brain.nii.gz|*Warped.nii.gz) continue ;;
+        esac
+        if [ "${modality^^}" = "T2" ]; then
+            case "${base,,}" in
+                *flair*|*dwi*|*trace*|*swi*|*swan*|*adc*) continue ;;
+            esac
+        fi
+        # ADC must not also be a trace; DWI trace must not be an ADC map.
+        if [ "${modality^^}" = "DWI" ]; then
+            case "${base,,}" in *adc*) continue ;; esac
+        fi
+        filtered+=("$c")
+    done
+
+    if [ ${#filtered[@]} -eq 0 ]; then
+        log_message "All ${modality} candidates filtered out as intermediates/contaminants"
+        echo ""
+        return 1
+    fi
+
+    # Build a glob the existing select_best_scan can use by handing it the FIRST
+    # matching pattern but restricting via a temp symlink dir would be overkill;
+    # instead score directly here when >1 candidate, reusing select_best_scan's
+    # quality metric by deferring to it on a single-pattern when possible.
+    if [ ${#filtered[@]} -eq 1 ]; then
+        log_message "Single ${modality} scan: ${filtered[0]}"
+        echo "${filtered[0]}"
+        return 0
+    fi
+
+    # Multiple candidates: pick the highest quality via evaluate_scan_quality.
+    # Default to the first candidate so a usable result is always returned even
+    # if every score parse fails.
+    local best="${filtered[0]}" best_score="-1" cand score cmp
+    for cand in "${filtered[@]}"; do
+        score="$(evaluate_scan_quality "$cand" "$modality" 2>/dev/null || echo 0)"
+        # evaluate_scan_quality may emit log lines; keep only the numeric tail.
+        score="$(echo "$score" | tail -1 | tr -dc '0-9.')"
+        # Reject anything that is not a clean number (e.g. empty, lone '.',
+        # multiple dots) so bc never receives a malformed expression.
+        if ! [[ "$score" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            score=0
+        fi
+        cmp="$(echo "$score > $best_score" | bc -l 2>/dev/null || echo 0)"
+        if [ "$cmp" = "1" ]; then
+            best_score="$score"
+            best="$cand"
+        fi
+    done
+
+    log_message "Selected ${modality}: $best (score $best_score)"
+    echo "$best"
+    return 0
+}
+
+# Discover the present secondary modalities under EXTRACT_DIR and echo, one per
+# line, "NAME=path" specs ready for register_contrast_matched_cascade. Only
+# modalities in MULTIMODAL_SECONDARY_MODALITIES that are present AND usable are
+# emitted. Absent modalities are silently skipped (graceful). Always returns 0.
+discover_secondary_modality_specs() {
+    local directory="$1"
+    local reference_scan="${2:-}"
+
+    # Default the list element-by-element (NOT "${arr[@]:-a b c}", which collapses
+    # the fallback into a single 'a b c' element when the array is unset).
+    # ${var+x} is the set-test that is safe under `set -u` even when fully unset.
+    local mods=()
+    if [ -n "${MULTIMODAL_SECONDARY_MODALITIES+x}" ] && \
+       [ "${#MULTIMODAL_SECONDARY_MODALITIES[@]}" -gt 0 ]; then
+        mods=("${MULTIMODAL_SECONDARY_MODALITIES[@]}")
+    else
+        mods=(T2 SWI DWI ADC)
+    fi
+
+    local mod chosen
+    for mod in "${mods[@]}"; do
+        chosen="$(select_secondary_modality_scan "$mod" "$directory" "$reference_scan" 2>/dev/null || true)"
+        if [ -n "$chosen" ] && [ -f "$chosen" ]; then
+            printf '%s=%s\n' "$mod" "$chosen"
+        fi
+    done
+    return 0
+}
+
 # Export functions
 export -f evaluate_scan_quality
 export -f calculate_pixdim_similarity
@@ -653,5 +796,8 @@ export -f calculate_aspect_ratio_similarity
 export -f check_exact_dimension_match
 export -f select_best_scan
 export -f analyze_dicom_headers
+export -f _secondary_modality_patterns
+export -f select_secondary_modality_scan
+export -f discover_secondary_modality_specs
 
 log_message "Scan selection module loaded with enhanced registration-aware selection modes"
