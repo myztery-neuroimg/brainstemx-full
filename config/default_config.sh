@@ -408,6 +408,53 @@ export SAMSEG_LESION_MASK_PATTERN="0 1" # one number per input (T1 FLAIR): 0=no 
 export SAMSEG_LESION_LABEL=99          # lesion label value in SAMSEG seg.mgz
 export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recommended when FLAIR shows pallidum)
 
+# ---------------------------------------------------------------------------
+# Small-lesion WMH detection - SHIVA-WMH  (src/modules/wmh_shiva.sh)
+# ---------------------------------------------------------------------------
+# SHIVA-WMH is a 3D U-Net trained specifically for SMALL / PUNCTATE white-matter
+# hyperintensities (Tran et al., Human Brain Mapping 2024;45(1):e26548, DOI
+# 10.1002/hbm.26548). It is a HIGH-SENSITIVITY / LOWER-SPECIFICITY detector:
+# unlike BIANCA / LST-AI / SAMSEG (tuned for confluent lesions), it is designed
+# to catch early, punctate WMH. Because it over-detects to maximise sensitivity,
+# its output is meant to be PAIRED WITH THE FP FILTER for specificity — the
+# pipeline's CSF / partial-volume + cortical-ribbon exclusion (analysis.sh) and
+# the brainstem-mask intersection performed by the module remove the spurious
+# small clusters SHIVA flags.
+#
+# Inputs: co-registered T1 + FLAIR (FLAIR aligned to T1); output is in T1 space.
+# Two back-ends, antspynet preferred for simplicity:
+#   - antspynet : `antspynet.shiva_wmh_segmentation(flair, t1=...)` (Python; ships
+#                 pretrained SHIVA weights, downloaded on first use). Install via
+#                 'uv add antspynet'. Run probe: uv run python -c "import antspynet".
+#   - container : the SHiVAi framework container (Docker/Apptainer);
+#                 https://github.com/pboutinaud/SHiVAi
+#
+# DEFAULT OFF: antspynet is NOT in the core dependency set, and the SHIVA weights
+# need download (and benefit from a GPU). With no back-end installed the module
+# logs a clear warning and skips gracefully (non-fatal).
+#
+# Entry point: run_shiva_wmh <flair> <t1> [out_dir]
+export WMH_SHIVA_ENABLED=false           # master switch; true = run SHIVA-WMH in analysis stage
+
+# Back-end selection: "auto" (prefer antspynet, then container), "antspynet", or "container".
+export SHIVA_WMH_BACKEND="auto"
+
+# antspynet options
+export SHIVA_WMH_MODEL="all"             # which_model: "all" (ensemble) or a fold index 0-4
+export SHIVA_WMH_VERBOSE=true            # print antspynet/segmentation progress
+
+# Thresholding / post-processing
+export SHIVA_WMH_THRESHOLD=0.5           # probability-map threshold -> binary WMH mask (0-1; SHIVA default 0.5)
+export SHIVA_WMH_MIN_CLUSTER_SIZE=0      # drop WMH clusters below this many voxels (0 = off; first-line FP guard)
+
+# SHiVAi container options (only used when the container back-end is selected)
+export SHIVA_WMH_CONTAINER_IMAGE=""      # Docker image name OR path to an Apptainer/Singularity .sif
+export SHIVA_WMH_CONTAINER_RUNTIME="auto" # "auto" | "docker" | "apptainer" | "singularity"
+# Full in-container processing command (the SHiVAi CLI varies by version). Use
+# placeholders {FLAIR} {T1} {OUTDIR} {IMAGE}; executed verbatim via eval, e.g.:
+#   docker run --rm -v {OUTDIR}:/out ... {IMAGE} shiva --in {FLAIR} ... --out /out
+export SHIVA_WMH_CONTAINER_CMD=""
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
