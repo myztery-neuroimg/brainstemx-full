@@ -47,6 +47,12 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------------------------
 # Defaults — must match config/default_config.sh GMM_* variables
 # ---------------------------------------------------------------------------
+# The fallback threshold has ONE authoritative source: config/default_config.sh
+# THRESHOLD_WM_SD_MULTIPLIER (1.2).  In the pipeline, analysis.sh always passes
+# this value explicitly via --fallback-threshold, so the literal below is only a
+# last-resort default for standalone invocation.  It MUST equal that config
+# value; tests/test_gmm_threshold.py enforces this so the two can't silently
+# drift apart again.
 DEFAULTS = {
     "max_components": 3,
     "min_voxels": 20,
@@ -59,7 +65,7 @@ DEFAULTS = {
     "moderate_weight_sd": 2.0,
     "floor_percentile": 95.0,
     "fallback_percentile": 97.5,
-    "fallback_threshold": 1.5,
+    "fallback_threshold": 1.2,
 }
 
 

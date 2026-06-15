@@ -191,6 +191,26 @@ export THRESHOLD_WM_SD_MULTIPLIER=1.2   # SD multiplier from local norm; used by
 export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cluster --minextent)
 
 # ---------------------------------------------------------------------------
+# CSF / partial-volume exclusion (posterior-fossa false-positive reduction)
+# ---------------------------------------------------------------------------
+# Posterior-fossa CSF pulsation/inflow around the 4th ventricle and basal
+# cisterns is the dominant FALSE-POSITIVE source for brainstem FLAIR.  FSL FAST
+# already produces a CSF PVE map (fast_pve_0 -> *_csf_prob.nii.gz) that was
+# previously computed but never used for detection.  When enabled, the per-region
+# GMM/z-score path removes high-CSF-probability voxels and the CSF-parenchyma
+# partial-volume boundary band from each region mask BEFORE z-scoring/GMM.
+export CSF_EXCLUSION_ENABLED=true       # Master switch; false = legacy behaviour
+export CSF_PVE_THRESHOLD=0.5            # Voxels with CSF PVE > this are excluded from detection
+export PV_EROSION_MM=1                  # Erode region mask by this many mm to drop CSF-parenchyma PV boundary
+
+# Connectivity-weighting SD multipliers (apply_connectivity_weighting in analysis.sh).
+# A voxel is kept if it is connected to a hyperintense seed AND above
+# CONNECTIVITY_CONNECTED_SD_MULT, OR is very high intensity (above
+# CONNECTIVITY_HIGH_SD_MULT) regardless of connectivity.
+export CONNECTIVITY_HIGH_SD_MULT=2.0       # mean + this*std: standalone "very high" threshold
+export CONNECTIVITY_CONNECTED_SD_MULT=1.5  # mean + this*std: lower threshold for connected voxels
+
+# ---------------------------------------------------------------------------
 # GMM per-region thresholding  (gmm_threshold.py --help for full docs)
 # ---------------------------------------------------------------------------
 # Maps 1:1 to gmm_threshold.py CLI args: GMM_<NAME> -> --<name> (underscores
