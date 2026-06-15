@@ -800,9 +800,16 @@ check_all_dependencies() {
     fi
   fi
   
+  # Optional / feature-gated dependency inventory (report-only, NON-fatal).
+  # Enumerates EVERY optional tool, container image, Python package and atlas the
+  # pipeline can use, grouped by feature, and cross-references the config toggles
+  # so the user sees upfront what will run vs skip. Never increments error_count
+  # (optional deps must never abort the run); it only emits informational lines.
+  check_optional_dependencies || true
+
   # Summary
   log_formatted "INFO" "==== Dependency Check Summary ===="
-  
+
   if [ $error_count -eq 0 ] && [ $warning_count -eq 0 ]; then
     log_formatted "SUCCESS" "All required dependencies are installed and configured correctly!"
     return 0
@@ -817,6 +824,319 @@ check_all_dependencies() {
     log_formatted "INFO" "Please install the missing dependencies before running the processing pipeline."
     return 1
   fi
+}
+
+# ------------------------------------------------------------------------------
+# Optional / feature-gated dependency inventory (report-only, NON-fatal)
+# ------------------------------------------------------------------------------
+# Enumerates EVERY optional external tool, Python package, container image and
+# atlas that any pipeline module can use, grouped by feature, and cross-checks
+# the config toggles that gate each feature. Output is a one-line-per-dependency
+# matrix:
+#
+#   <name> | REQ|OPT | present|absent (+path/version) | gates: <feature>
+#
+# This NEVER aborts the pipeline (every dependency here is optional); genuine
+# core requirements are still enforced by check_all_dependencies above. When a
+# feature is ENABLED via config but its dependency is missing, a clear WARNING
+# is logged ("X enabled but <tool> not found — will skip"). At the end it prints
+# counts and the concise list of optional features that WILL be skipped.
+
+# Probe a single command. Echoes "present|<path>" or "absent". Always returns 0.
+_dep_probe_cmd() {
+  local cmd="$1"
+  local path
+  if path="$(command -v "$cmd" 2>/dev/null)"; then
+    printf 'present|%s' "$path"
+  else
+    printf 'absent'
+  fi
+}
+
+# Probe an importable Python module via uv (Python 3.12.8; never bare python).
+# --no-sync so a mere availability probe never triggers a slow/network sync.
+# Short timeout so a broken environment can never hang startup. Echoes
+# "present" or "absent". Always returns 0.
+_dep_probe_pymodule() {
+  local module="$1"
+  if ! command -v uv >/dev/null 2>&1; then
+    printf 'absent'
+    return 0
+  fi
+  if _dep_timeout 25 uv run --no-sync python -c "import ${module}" >/dev/null 2>&1; then
+    printf 'present'
+  else
+    printf 'absent'
+  fi
+}
+
+# Portable bounded-time runner. Uses `timeout`/`gtimeout` when present; otherwise
+# falls back to a background-process watchdog so container/python probes can
+# never hang the startup check. Args: <seconds> <cmd...>. Returns the command's
+# exit status, or 124 on timeout (matching coreutils `timeout`).
+_dep_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+    return $?
+  fi
+  # Fallback watchdog (no coreutils timeout, e.g. stock macOS /bin/bash). A
+  # sentinel file lets us tell a real timeout (→124) from a command that simply
+  # exited non-zero on its own. Every kill is `|| true` so a race where the
+  # target already exited can never abort under the caller's set -e.
+  local timedout="${TMPDIR:-/tmp}/.dep_timeout.$$.$RANDOM"
+  "$@" &
+  local cmd_pid=$!
+  ( sleep "$secs"; : > "$timedout"; kill -TERM "$cmd_pid" 2>/dev/null || true ) &
+  local wd_pid=$!
+  local status=0
+  wait "$cmd_pid" 2>/dev/null || status=$?
+  kill -TERM "$wd_pid" 2>/dev/null || true
+  wait "$wd_pid" 2>/dev/null || true
+  if [ -f "$timedout" ]; then
+    rm -f "$timedout" 2>/dev/null || true
+    return 124
+  fi
+  return "$status"
+}
+
+# Probe a container image. Detects whether the image is materialised for an
+# available runtime (Docker image, or an Apptainer/Singularity .sif on disk).
+# Args: <docker_image_or_empty> <sif_path_or_empty>
+# Echoes "present|<detail>" or "absent". Always returns 0; short timeouts so a
+# wedged Docker daemon never hangs the startup check.
+_dep_probe_image() {
+  local docker_image="${1:-}"
+  local sif_path="${2:-}"
+
+  # Apptainer/Singularity .sif on disk (fast, no daemon).
+  if [ -n "$sif_path" ] && [ -f "$sif_path" ] && \
+     { command -v apptainer >/dev/null 2>&1 || command -v singularity >/dev/null 2>&1; }; then
+    printf 'present|sif:%s' "$sif_path"
+    return 0
+  fi
+  # A bare .sif may also be passed as the "docker_image" arg (SHIVA/segcsvd).
+  if [ -n "$docker_image" ] && [ -f "$docker_image" ] && \
+     { command -v apptainer >/dev/null 2>&1 || command -v singularity >/dev/null 2>&1; }; then
+    printf 'present|sif:%s' "$docker_image"
+    return 0
+  fi
+  # Docker image inspect (bounded; a hung daemon returns absent, never hangs).
+  if [ -n "$docker_image" ] && command -v docker >/dev/null 2>&1; then
+    if _dep_timeout 8 docker image inspect "$docker_image" >/dev/null 2>&1; then
+      printf 'present|docker:%s' "$docker_image"
+      return 0
+    fi
+  fi
+  printf 'absent'
+  return 0
+}
+
+# Emit one matrix line and (for OPT deps that gate an ENABLED feature but are
+# absent) a WARNING. Increments the module-scope counters by name reference.
+# Args: <name> <REQ|OPT> <probe-result> <gates-feature> [<enabled:true|false>]
+_dep_report() {
+  local name="$1" kind="$2" probe="$3" gates="$4" enabled="${5:-}"
+  local state detail
+  if [ "${probe%%|*}" = "present" ]; then
+    state="present"
+    detail="${probe#present}"; detail="${detail#|}"
+  else
+    state="absent"
+    detail=""
+  fi
+
+  local line
+  if [ -n "$detail" ]; then
+    line="  ${name} | ${kind} | ${state} (${detail}) | gates: ${gates}"
+  else
+    line="  ${name} | ${kind} | ${state} | gates: ${gates}"
+  fi
+
+  if [ "$state" = "present" ]; then
+    log_formatted "SUCCESS" "✓ ${line}"
+    _DEP_PRESENT=$((_DEP_PRESENT + 1))
+  else
+    log_formatted "INFO" "· ${line}"
+    _DEP_ABSENT=$((_DEP_ABSENT + 1))
+    # Enabled-but-missing → actionable WARNING + add to the skip list.
+    if [ "$kind" = "OPT" ] && [ "$enabled" = "true" ]; then
+      log_formatted "WARNING" "⚠ ${gates} is ENABLED but ${name} not found — that feature will be SKIPPED"
+      _DEP_SKIPPED_FEATURES+=("${gates} (missing ${name})")
+    fi
+  fi
+}
+
+check_optional_dependencies() {
+  log_formatted "INFO" "==== Optional / Feature-Gated Dependency Inventory ===="
+  log_message  "Legend: name | REQ/OPT | present/absent (+path/version) | gates-which-feature"
+
+  # Module-scope counters / lists (consumed by _dep_report and the summary).
+  _DEP_PRESENT=0
+  _DEP_ABSENT=0
+  _DEP_SKIPPED_FEATURES=()
+
+  # Resolve the effective config toggles (mirror config/default_config.sh
+  # defaults so the report is correct even if config has not been sourced yet).
+  local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
+  local seg_run_fs="${SEG_RUN_FREESURFER:-true}"
+  local seg_run_synthseg="${SEG_RUN_SYNTHSEG:-true}"
+  local use_synthsr="${USE_SYNTHSR:-false}"
+  local process_dwi="${PROCESS_DWI:-false}"
+  local wmh_bianca="${WMH_BIANCA_ENABLED:-false}"
+  local wmh_lstai="${WMH_LSTAI_ENABLED:-false}"
+  local wmh_samseg="${WMH_SAMSEG_ENABLED:-false}"
+  local wmh_synthseg="${WMH_SYNTHSEG_ENABLED:-true}"
+  local wmh_segcsvd="${WMH_SEGCSVD_ENABLED:-false}"
+  local wmh_shiva="${WMH_SHIVA_ENABLED:-true}"
+  local wmh_mars="${WMH_MARS_ENABLED:-true}"
+  local mars_brainstem="${MARS_BRAINSTEM_ENABLED:-false}"
+  local aanseg="${BRAINSTEM_AANSEG_ENABLED:-false}"
+
+  # FreeSurfer is needed when its seg path or any FS-backed WMH/seg feature runs.
+  local fs_enabled=false
+  if { [ "$seg_method" = "all" ] && [ "$seg_run_fs" = true ]; } || \
+     [ "$seg_method" = "freesurfer" ] || \
+     [ "$wmh_samseg" = true ] || [ "$wmh_synthseg" = true ] || \
+     [ "$use_synthsr" = true ] || [ "$aanseg" = true ]; then
+    fs_enabled=true
+  fi
+
+  # ── Core required tools (mirror check_ants/check_fsl extents, report-only) ──
+  # These are ALSO enforced (fatally) by check_all_dependencies; listing them
+  # here gives the user one authoritative inventory. Marked REQ.
+  log_formatted "INFO" "---- Core (REQUIRED) ----"
+  local t
+  for t in fslmaths flirt fast bet robustfov cluster fslstats fslinfo; do
+    _dep_report "$t" "REQ" "$(_dep_probe_cmd "$t")" "FSL core"
+  done
+  for t in antsRegistration antsApplyTransforms N4BiasFieldCorrection \
+           DenoiseImage Atropos ThresholdImage ImageMath ResampleImage \
+           antsRegistrationSyN.sh; do
+    _dep_report "$t" "REQ" "$(_dep_probe_cmd "$t")" "ANTs core"
+  done
+  _dep_report "dcm2niix" "REQ" "$(_dep_probe_cmd dcm2niix)" "DICOM import"
+  _dep_report "c3d"      "REQ" "$(_dep_probe_cmd c3d)"      "Convert3D ops"
+  _dep_report "uv"       "REQ" "$(_dep_probe_cmd uv)"       "Python (uv) runtime"
+  for t in nibabel numpy sklearn; do
+    _dep_report "python:${t}" "REQ" "$(_dep_probe_pymodule "$t")" "GMM / image I/O"
+  done
+
+  # ── FreeSurfer (OPTIONAL) ──
+  log_formatted "INFO" "---- FreeSurfer (OPTIONAL) ----"
+  local fs_home_probe="absent"
+  [ -n "${FREESURFER_HOME:-}" ] && [ -d "${FREESURFER_HOME:-}" ] && fs_home_probe="present|${FREESURFER_HOME}"
+  _dep_report "FREESURFER_HOME" "OPT" "$fs_home_probe" "FreeSurfer seg/recon" "$fs_enabled"
+  local fs_lic="absent"
+  if [ -n "${FS_LICENSE:-}" ] && [ -f "${FS_LICENSE:-}" ]; then
+    fs_lic="present|${FS_LICENSE}"
+  elif [ -f "${FREESURFER_HOME:-}/license.txt" ]; then
+    fs_lic="present|${FREESURFER_HOME}/license.txt"
+  elif [ -f "${FREESURFER_HOME:-}/.license" ]; then
+    fs_lic="present|${FREESURFER_HOME}/.license"
+  fi
+  # Only treat a missing license as a skip-cause when FREESURFER_HOME itself is
+  # present — otherwise the missing-FREESURFER_HOME warning above already covers
+  # the root cause and we would double-count the same "FreeSurfer not installed".
+  local lic_gate=""
+  [ "${fs_home_probe%%|*}" = present ] && lic_gate="$fs_enabled"
+  _dep_report "FreeSurfer license" "OPT" "$fs_lic" "FreeSurfer seg/recon" "$lic_gate"
+  _dep_report "recon-all"             "OPT" "$(_dep_probe_cmd recon-all)"             "FS brainstem (recon)" "$fs_enabled"
+  # segmentBS.sh OR segment_subregions satisfies the brainstem substructure path.
+  local segbs; segbs="$(_dep_probe_cmd segmentBS.sh)"
+  [ "${segbs%%|*}" != present ] && segbs="$(_dep_probe_cmd segment_subregions)"
+  _dep_report "segmentBS.sh/segment_subregions" "OPT" "$segbs" "FS brainstem substructures" "$fs_enabled"
+  _dep_report "SegmentAAN.sh"        "OPT" "$(_dep_probe_cmd SegmentAAN.sh)"          "AANSegment nuclei"        "$aanseg"
+  _dep_report "mri_synthseg"         "OPT" "$(_dep_probe_cmd mri_synthseg)"           "SynthSeg ML seg"          "$seg_run_synthseg"
+  _dep_report "mri_synthsr"          "OPT" "$(_dep_probe_cmd mri_synthsr)"            "SynthSR super-res"        "$use_synthsr"
+  _dep_report "mri_synthstrip"       "OPT" "$(_dep_probe_cmd mri_synthstrip)"         "SynthStrip brain extract"
+  _dep_report "mri_WMHsynthseg"      "OPT" "$(_dep_probe_cmd mri_WMHsynthseg)"        "WMH-SynthSeg"             "$wmh_synthseg"
+  _dep_report "mri_sclimbic_seg"     "OPT" "$(_dep_probe_cmd mri_sclimbic_seg)"       "ScLimbic harvest"
+  _dep_report "mri_segment_hypothalamic_subunits" "OPT" "$(_dep_probe_cmd mri_segment_hypothalamic_subunits)" "Hypothalamus harvest"
+  _dep_report "run_samseg"           "OPT" "$(_dep_probe_cmd run_samseg)"             "SAMSEG WMH"               "$wmh_samseg"
+
+  # ── MRtrix (OPTIONAL — DWI preprocessing) ──
+  log_formatted "INFO" "---- MRtrix (OPTIONAL) ----"
+  for t in dwidenoise mrdegibbs dwifslpreproc dwibiascorrect dwi2mask mrconvert; do
+    _dep_report "$t" "OPT" "$(_dep_probe_cmd "$t")" "DWI preprocessing (PROCESS_DWI)" "$process_dwi"
+  done
+
+  # Probe the container images up front: SHIVA and LST-AI each accept multiple
+  # ALTERNATIVE back-ends (any-of), so the enabled-but-missing WARNING must fire
+  # only when EVERY back-end is absent — never once per alternative (that would
+  # falsely claim a feature will skip when one of its back-ends is present).
+  local img_shiva img_lstai
+  img_shiva="$(_dep_probe_image "${SHIVA_WMH_CONTAINER_IMAGE:-}" "${SHIVA_WMH_CONTAINER_IMAGE:-}")"
+  img_lstai="$(_dep_probe_image "${LSTAI_DOCKER_IMAGE:-jqmcginnis/lst-ai:latest}" "")"
+
+  # ── WMH / ML tools (OPTIONAL) ──
+  log_formatted "INFO" "---- WMH / ML tools (OPTIONAL) ----"
+  _dep_report "bianca"          "OPT" "$(_dep_probe_cmd bianca)"          "FSL BIANCA WMH"  "$wmh_bianca"
+  _dep_report "make_bianca_mask" "OPT" "$(_dep_probe_cmd make_bianca_mask)" "FSL BIANCA mask" "$wmh_bianca"
+
+  # SHIVA-WMH: antspynet OR a SHiVAi container (any-of). Report each back-end as
+  # informational; warn ONCE only when both are absent and the feature is on.
+  local shiva_antspynet; shiva_antspynet="$(_dep_probe_pymodule antspynet)"
+  _dep_report "python:antspynet" "OPT" "$shiva_antspynet" "SHIVA-WMH (antspynet back-end)"
+  _dep_report "image:SHiVAi"     "OPT" "$img_shiva"        "SHIVA-WMH (container back-end)"
+  local shiva_any="absent"
+  { [ "${shiva_antspynet%%|*}" = present ] || [ "${img_shiva%%|*}" = present ]; } && shiva_any="present"
+  _dep_report "SHIVA-WMH back-end" "OPT" "$shiva_any" "SHIVA-WMH" "$wmh_shiva"
+
+  # LST-AI: 'lst' CLI OR importable lst_ai module OR Docker image (any-of).
+  local lstai_cli; lstai_cli="$(_dep_probe_cmd lst)"
+  [ "${lstai_cli%%|*}" != present ] && lstai_cli="$(_dep_probe_pymodule lst_ai)"
+  _dep_report "LST-AI (lst / lst_ai)" "OPT" "$lstai_cli" "LST-AI (CLI/module back-end)"
+  _dep_report "image:LST-AI"          "OPT" "$img_lstai"  "LST-AI (container back-end)"
+  local lstai_any="absent"
+  { [ "${lstai_cli%%|*}" = present ] || [ "${img_lstai%%|*}" = present ]; } && lstai_any="present"
+  _dep_report "LST-AI back-end" "OPT" "$lstai_any" "LST-AI WMH" "$wmh_lstai"
+
+  # ── Container runtimes + images (OPTIONAL) ──
+  log_formatted "INFO" "---- Container runtimes & images (OPTIONAL) ----"
+  _dep_report "docker"               "OPT" "$(_dep_probe_cmd docker)"      "containerised WMH tools"
+  local appt; appt="$(_dep_probe_cmd apptainer)"
+  [ "${appt%%|*}" != present ] && appt="$(_dep_probe_cmd singularity)"
+  _dep_report "apptainer/singularity" "OPT" "$appt" "containerised WMH tools (.sif)"
+  # Single-back-end containers: each is gated directly on its feature toggle.
+  _dep_report "image:segcsvd"        "OPT" "$(_dep_probe_image "${SEGCSVD_DOCKER_IMAGE:-segcsvd_rc03}" "${SEGCSVD_CONTAINER_IMAGE:-}")" "segcsvdWMH" "$wmh_segcsvd"
+  _dep_report "image:MARS-WMH"       "OPT" "$(_dep_probe_image "${MARS_WMH_DOCKER_IMAGE:-ghcr.io/miac-research/wmh-nnunet:latest}" "${MARS_WMH_SIF:-}")" "MARS-WMH" "$wmh_mars"
+  _dep_report "image:MARS-brainstem" "OPT" "$(_dep_probe_image "${MARS_BRAINSTEM_DOCKER_IMAGE:-ghcr.io/miac-research/dl-brainstem:latest}" "${MARS_BRAINSTEM_SIF:-}")" "MARS brainstem ROI" "$mars_brainstem"
+
+  # ── Atlases (OPTIONAL) — delegate the heavy on-disk probing to the dedicated
+  # check_atlas_availability (called separately from main() after config load).
+  log_formatted "INFO" "---- Atlases (OPTIONAL) ----"
+  log_message "Atlas presence/absence is reported in detail by the Atlas Availability Check (see below): Bianciardi / CIT168 / AAL3 / HarvardOxford under \${FSLDIR}/data/atlases"
+  local atlas_root="${FSLDIR:-}/data/atlases"
+  local ho_probe="absent"
+  if [ -d "${atlas_root}/${ATLAS_HARVARDOXFORD_REL:-HarvardOxford}" ]; then
+    ho_probe="present|${atlas_root}/${ATLAS_HARVARDOXFORD_REL:-HarvardOxford}"
+  fi
+  _dep_report "atlas:HarvardOxford" "OPT" "$ho_probe" "Harvard-Oxford gross extent"
+  local std_probe="absent"
+  if [ -d "${FSLDIR:-}/data/standard" ]; then
+    std_probe="present|${FSLDIR}/data/standard"
+  fi
+  _dep_report "FSL standard templates" "OPT" "$std_probe" "MNI registration targets"
+
+  # ── Inventory summary ──
+  log_formatted "INFO" "==== Optional Dependency Inventory Summary ===="
+  log_formatted "INFO" "Dependencies present: ${_DEP_PRESENT} | absent: ${_DEP_ABSENT}"
+  if [ "${#_DEP_SKIPPED_FEATURES[@]}" -eq 0 ]; then
+    log_formatted "SUCCESS" "✓ No ENABLED optional feature is missing its dependency."
+  else
+    log_formatted "WARNING" "⚠ Optional features that WILL be SKIPPED (enabled but missing deps):"
+    local f
+    for f in "${_DEP_SKIPPED_FEATURES[@]}"; do
+      log_formatted "WARNING" "    - ${f}"
+    done
+  fi
+
+  return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -1351,6 +1671,8 @@ initialize_environment() {
   export -f check_command
   export -f check_dependencies
   export -f check_all_dependencies
+  export -f check_optional_dependencies
+  export -f _dep_probe_cmd _dep_probe_pymodule _dep_probe_image _dep_report _dep_timeout
   export -f check_atlas_availability
   export -f standardize_datatype
   export -f get_output_path
