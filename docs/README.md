@@ -34,9 +34,10 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 - Orientation standardization
   - Uses `fslswapdim` + `fslorient` then ANTs transform to enforce RAS orientation
   - Fallback for missing/ambiguous header fields via header-driven heuristics in `src/modules/preprocess.sh`
-- Adaptive Rician denoising
-  - Iterative patch-based NLM via `antsDenoiseImage` tuned by local variance
-  - Auto-switch to FSL SUSAN when ANTs binaries are unavailable or memory-constrained
+- Modality-aware denoising
+  - T1/T2/FLAIR → iterative patch-based Rician NLM via `antsDenoiseImage` tuned by local variance; DWI → MP-PCA (`dwidenoise`, MRtrix); SWI/TOF skipped
+  - Full DWI preprocessing path (`dwi_preprocess.sh`: dwidenoise → optional Gibbs → bias correction), gated by `PROCESS_DWI`
+  - Auto-switch to FSL SUSAN for structural NLM when ANTs binaries are unavailable or memory-constrained
 - Metadata-driven parameter tuning
   - Python metadata extractor reads DICOM tags to set N4 smoothing and denoising patch sizes dynamically
   - Ensures consistency across scanners/field strengths without manual config
@@ -52,9 +53,9 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
   - DICOM backtrace JSON mapping results into original scanner coordinates for PACS validation
 
 ### Advanced Segmentation
-- **Harvard-Oxford subcortical atlas** (index 7 for brainstem) as the gold standard primary method
-- **Talairach atlas** for detailed brainstem subdivision (left/right medulla, pons, midbrain)
-- **Atlas-to-subject transformation** preserving native resolution by bringing MNI atlases to subject space
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`/`brainstemSsLabels`) for the detailed subdivision into midbrain / pons / medulla / SCP, selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`, fallback `atlas`)
+- **Harvard-Oxford subcortical atlas** (index 7, tightened to `maxprob-thr25`) used only for the gross brainstem extent mask and as the FreeSurfer fallback
+- **Atlas-to-subject transformation** preserving native resolution by bringing the MNI HO atlas to subject space; FreeSurfer segments the subject's own T1 directly
 - **Subject-specific brainstem refinement** using tissue segmentation to address shape variance in pathological cases
 - **FLAIR integration** for enhanced multi-modal segmentation with intensity information
 - Quantified "quality assessment" of the brain extraction, registration quality and segmentation accuracy with an extremely "over-the-top" QA module
@@ -71,21 +72,22 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 
 #### Preprocessing (preprocess.sh)
 - **RAS/LPS orientation enforcement** with header-heuristic fallback for missing/ambiguous DICOM orientation fields
-- **Iterative Rician NLM denoising** with automatic patch selection based on local image variance and noise characteristics
-- **N4 bias-field correction** with dynamic shrink-factor and convergence settings optimized per acquisition protocol
-- **Brain extraction** via ANTs BrainExtraction.sh with tissue-specific masks and morphological refinement
+- **Modality-aware denoising** with Rician NLM for T1/T2/FLAIR, MP-PCA (`dwidenoise`) for DWI, and SWI/TOF skipped; automatic patch selection based on local image variance and noise characteristics
+- **N4 bias-field correction** where field strength adjusts the b-spline mesh / spline distance (`-b`); FLAIR uses a gentler, lesion-aware preset so diffuse lesion contrast is not absorbed into the bias field
+- **Brain extraction** via SynthStrip (FreeSurfer `mri_synthstrip`, contrast-agnostic) primary, with an automatic SynthStrip → ANTs(Otsu) → BET fallback chain, a shared `robustfov` neck-removal pre-step, modality-specific BET `-f`, and a posterior-fossa QC gate (`BRAIN_EXTRACTION_METHOD`)
 - **Scanner metadata parameter optimization** automatically adjusts processing parameters based on field strength, vendor, and acquisition settings
 
 #### Registration Pipeline (registration.sh)
 - **Template & resolution detection** automatically selects MNI152 or custom atlas templates based on input voxel dimensions
 - **Multi-resolution registration stages** with white-matter mask weighting for improved anatomical correspondence
+- **Modality-aware SyN metric** Mutual Information for cross-modality (FLAIR↔T1), cross-correlation for same-modality, with `--winsorize-image-intensities`; atlases/masks warped with label-aware `GenericLabel` interpolation
 - **Emergency fallback triggers** using quantitative QA metrics (mutual information, cross-correlation thresholds) to switch methods
 - **Transform validation** outputs detailed QA plots and metrics for each registration stage with comprehensive error handling
 
 #### Enhanced Validation & Hyperintensity Analysis (enhanced_registration_validation.sh)
 - **Extended registration metrics** including cross-correlation, normalized mutual information, and histogram skewness analysis
 - **Coordinate-space and file-integrity checks** performed before each major processing step with detailed error reporting
-- **Multi-atlas intensity mask creation** across Harvard-Oxford subcortical and Talairach atlases
+- **Regional intensity mask creation** over the Harvard-Oxford gross brainstem extent and the FreeSurfer brainstem substructures
 - **Comprehensive cluster analysis** with volume quantification, morphological characterization, and interactive HTML visualization
 - **DICOM coordinate backtrace** maintains mapping between processed results and original scanner coordinate systems
 
@@ -104,6 +106,7 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 - **Cross-sequence compatibility analysis** calculates voxel similarity and aspect ratio matching between T1/FLAIR sequences
 
 #### Advanced Brain Extraction & Standardization (brain_extraction.sh)
+- **SynthStrip-primary extraction** (FreeSurfer `mri_synthstrip`, contrast-agnostic) with an automatic SynthStrip → ANTs(Otsu) → BET fallback chain, a shared `robustfov` neck-removal pre-step, modality-specific BET `-f` (T1 0.3 / FLAIR 0.2), and a posterior-fossa QC gate; selected via `BRAIN_EXTRACTION_METHOD`
 - **3D isotropic sequence detection** automatically identifies MPRAGE, SPACE, VISTA sequences to prevent quality degradation from multi-axial combination
 - **Enhanced resolution quality metrics** considers voxel anisotropy, total volume, and in-plane resolution for optimal processing path selection
 - **Multi-axial template construction** combines SAG/COR/AX orientations using antsMultivariateTemplateConstruction2.sh for 2D sequences
@@ -113,21 +116,24 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 #### Additional Pipeline Modules
 
 #### Advanced Segmentation (segmentation.sh)
-- **Harvard-Oxford atlas segmentation** using subcortical index 7 (brainstem) as the gold standard primary method
-- **Talairach atlas subdivision** for detailed brainstem regions: left/right medulla, pons, midbrain
-- **Atlas-to-subject transformation** preserving native resolution by bringing MNI atlases to subject space
+- **Harvard-Oxford gross brainstem extent** using subcortical index 7, tightened to `maxprob-thr25`, as the extent mask and the fallback
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`/`brainstemSsLabels`) for the detailed subdivision into midbrain / pons / medulla / SCP, selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`, fallback `atlas`) and gated by an FS↔HO agreement (Dice + leakage) QC check
+- **Atlas-to-subject transformation** preserving native resolution by bringing the MNI HO atlas to subject space; FreeSurfer segments the subject's own T1 directly
 - **Subject-specific refinement** using tissue segmentation (Atropos/FAST) to address shape variance in hydrocephalus & Chiari cases
 - **FLAIR enhancement integration** creating both T1 and FLAIR intensity versions for multi-modal analysis
 - **Native space preservation** maintains segmentation accuracy in subject's original high-resolution space rather than downsampling to template resolution
 
 #### Comprehensive Analysis Pipeline (analysis.sh, gmm_threshold.py)
-- **Atlas-based regional analysis** using all available Talairach brainstem regions for per-region hyperintensity detection
+- **Region-based analysis** using the FreeSurfer brainstem substructures (midbrain/pons/medulla/SCP) for per-region hyperintensity detection (falls back to the HO gross brainstem mask when substructures are absent)
 - **Standalone GMM threshold estimation** via `src/modules/gmm_threshold.py` — reads z-score and region mask NIfTI files directly, fits an adaptive Gaussian Mixture Model (2–3 components based on data density), and returns threshold parameters to the calling bash process via stdout (no intermediate files)
-- **Centralized configuration** — all 12 GMM tuning parameters (component limits, SD multipliers, weight cutoffs, floor/fallback percentiles) are set in `config/default_config.sh` and passed as CLI arguments, with defaults that match the config for standalone use
+- **CSF / partial-volume exclusion** subtracts a CSF mask derived from the FSL FAST CSF PVE map (posterior-fossa CSF is the dominant false-positive source) before thresholding
+- **Single authoritative fallback SD multiplier** (`THRESHOLD_WM_SD_MULTIPLIER`) reconciled across the bash path and `gmm_threshold.py`, applied when GMM is skipped
+- **Centralized configuration** — all GMM tuning parameters (component limits, SD multipliers, weight cutoffs, floor/fallback percentiles) are set in `config/default_config.sh` and passed as CLI arguments, with defaults that match the config for standalone use
 - **Per-region z-score normalization** addressing tissue inhomogeneity across different brainstem regions
 - **Connectivity weighting** for refined detection using 3D morphological operations (fslmaths)
 - **Multi-threshold hyperintensity detection** with configurable standard deviation multipliers and minimum cluster size filtering
 - **Cross-modality validation** analyzes both FLAIR hyperintensities and T1 hypointensities with statistical correlation
+- **Optional supervised WMH modules** (default-off): FSL BIANCA (`wmh_bianca.sh`) and LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), each intersecting results with the brainstem mask
 
 #### Advanced Visualization & QA (visualization.sh, qa.sh)
 - **Interactive 3D rendering** creates volume renderings of hyperintensity clusters with customizable opacity and color mapping
@@ -165,17 +171,18 @@ For a minimal pure-python implemention with synthetic data generation, LLM repor
 ### Actual Implementation Details
 
 #### Segmentation Module (segmentation.sh)
-The segmentation module implements a **two-tier atlas approach**:
+The segmentation module implements a **two-tier approach** (gross extent + substructures):
 
-1. **Harvard-Oxford Subcortical Atlas (Primary)**
-   - Uses index 7 specifically for brainstem segmentation
-   - Applied via `antsApplyTransforms` with trilinear interpolation + 0.5 thresholding
-   - Creates both `_brainstem.nii.gz` and `_brainstem_flair_intensity.nii.gz` versions
+1. **Harvard-Oxford Subcortical Atlas (Gross Extent)**
+   - Uses index 7 for the gross brainstem extent, tightened to `maxprob-thr25` (`HO_SUB_MAXPROB_THR`)
+   - Warped into subject space; creates both `_brainstem.nii.gz` and `_brainstem_flair_intensity.nii.gz`
+   - Always produced — serves as the FreeSurfer fallback and the reference for the FS↔HO agreement QC gate
 
-2. **Talairach Atlas (Detailed Subdivision)**
-   - Six brainstem regions: Left/Right Medulla, Pons, Midbrain
-   - Atlas indices: 172-177 for comprehensive brainstem coverage
-   - Same transformation methodology preserving partial volumes
+2. **FreeSurfer Brainstem Substructures (Detailed Subdivision)**
+   - Iglesias 2015 `segmentBS`/`brainstemSsLabels` → midbrain / pons / medulla / SCP masks in subject space (FreeSurfer segments the subject's own T1, no warp)
+   - Selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`; `atlas`/`harvard_oxford` = gross mask only)
+   - Gated by an FS↔HO agreement check (Dice + leakage); on disagreement or missing FreeSurfer/license, falls back to the HO gross mask and flags low confidence
+   - Talairach has been removed entirely (single 1988 post-mortem brain; largest MNI-mapping error inferiorly/posteriorly — worst exactly in the brainstem)
 
 3. **Subject-Specific Refinement**
    - Uses ANTs Atropos or FSL FAST tissue segmentation as fallback
@@ -183,26 +190,34 @@ The segmentation module implements a **two-tier atlas approach**:
    - Integrates CSF, gray matter, and white matter probability maps
 
 #### Analysis Module (analysis.sh + gmm_threshold.py)
-The analysis module implements **atlas-based regional hyperintensity detection**:
+The analysis module implements **region-based hyperintensity detection**:
 
 1. **GMM Threshold Estimation** (`src/modules/gmm_threshold.py`)
-   - Standalone Python script invoked per Talairach brainstem region
+   - Standalone Python script invoked per FreeSurfer brainstem substructure (falls back to the HO gross mask when substructures are absent)
    - Reads z-score NIfTI + region mask directly (no intermediate text files)
    - Adaptive component count (2–3) based on voxel density within each region
    - Weight-aware threshold adjustment: small hyperintense populations trigger more conservative thresholds to reduce false positives
    - Floor percentile prevents unreasonably low thresholds; data-driven fallback when GMM fit fails
    - All parameters configurable via `config/default_config.sh` (`GMM_*` variables)
+   - Single authoritative fallback SD multiplier (`THRESHOLD_WM_SD_MULTIPLIER`) reconciled across bash and Python, applied when GMM is skipped
    - Results emitted as key=value on stdout; diagnostics to stderr — no filesystem IPC
 
-2. **Multi-Modal Integration**
+2. **CSF / Partial-Volume Exclusion**
+   - Builds a CSF exclusion mask from the FSL FAST CSF PVE map (computed once per subject, reused per region)
+   - Removes posterior-fossa CSF (4th ventricle, basal cisterns), the dominant false-positive source, before thresholding
+
+3. **Multi-Modal Integration**
    - FLAIR hyperintensity detection with configurable SD thresholds
    - T1 hypointensity correlation analysis
    - Cross-modal validation using statistical correlation
 
-3. **Cluster Filtering**
+4. **Cluster Filtering**
    - 3D connectivity analysis with 26-neighbor connectivity (fslmaths)
    - Minimum cluster size filtering (configurable via `MIN_HYPERINTENSITY_SIZE`)
    - Morphological closing operations to eliminate noise
+
+5. **Optional Supervised WMH Modules** (default-off)
+   - FSL BIANCA (`wmh_bianca.sh`) and LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), each intersecting results with the brainstem mask
 
 #### QA Module (qa.sh)
 The QA module performs **20+ comprehensive validation checks**:
@@ -297,36 +312,40 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - **Intelligent metadata extraction** captures scanner parameters, field strength, acquisition settings for downstream optimization
 - **Quality assessment** validates DICOM integrity and performs initial sequence classification
 
-#### Stage 2: Preprocessing (Rician Denoising + N4 Bias Correction)
+#### Stage 2: Preprocessing (Modality-Aware Denoising + N4 Bias Correction)
 - **Adaptive reference space selection** analyzes scan quality and chooses optimal T1/FLAIR combination using [`select_optimal_reference_space()`](src/modules/reference_space_selection.sh:1)
 - **Registration-optimized scan selection** with multiple modes: `original`, `highest_resolution`, `registration_optimized`, `matched_dimensions`
-- **Enhanced N4 bias correction** with scanner-specific parameter optimization and iterative convergence
+- **Modality-aware denoising** routes T1/T2/FLAIR to Rician NLM, DWI to MP-PCA (`dwidenoise`), skips SWI/TOF; a full DWI path (`dwi_preprocess.sh`) is gated by `PROCESS_DWI`
+- **Enhanced N4 bias correction** where field strength tunes the b-spline mesh / spline distance (`-b`); FLAIR uses a gentler, lesion-aware preset
 - **Orientation consistency validation** performs detailed sform/qform matrix comparison with comprehensive error reporting
 
 #### Stage 3: Brain Extraction, Standardization & Cropping
 - **Smart resolution detection** via [`detect_optimal_resolution()`](src/modules/brain_extraction.sh:214) analyzes voxel dimensions across sequences
 - **Reference grid standardization** ensures T1 and FLAIR have identical matrix dimensions while preserving highest resolution
-- **Enhanced ANTs brain extraction** with tissue-specific masks and morphological refinement
+- **SynthStrip-primary brain extraction** (FreeSurfer `mri_synthstrip`, contrast-agnostic) with an automatic SynthStrip → ANTs(Otsu) → BET fallback chain, a shared `robustfov` neck-removal pre-step, modality-specific BET `-f`, and a posterior-fossa QC gate (`BRAIN_EXTRACTION_METHOD`)
 - **3D isotropic sequence detection** prevents quality degradation from unnecessary multi-axial combination
 
 #### Stage 4: Registration with Bidirectional Transform Management
 - **Multi-stage ANTs registration** Rigid → Affine → SyN with white-matter guided initialization
+- **Modality-aware SyN metric** Mutual Information for cross-modality (FLAIR↔T1), cross-correlation for same-modality, with `--winsorize-image-intensities`; atlases/masks warped with label-aware `GenericLabel` interpolation
 - **Bidirectional space mapping** calculates native ↔ MNI transforms without resampling high-resolution data
 - **Emergency fallback system** automatic SyNQuick or FSL FLIRT when quality metrics drop below thresholds
 - **Enhanced registration validation** comprehensive metrics including cross-correlation, mutual information, normalized CC
 
-#### Stage 5: Multi-Atlas Segmentation
-- **Harvard-Oxford gold standard** subcortical atlas (index 7) for reliable brainstem boundaries
-- **Talairach detailed subdivision** for left/right medulla, pons, midbrain regions
+#### Stage 5: Brainstem Segmentation
+- **Harvard-Oxford gross extent** subcortical atlas (index 7, `maxprob-thr25`) for the brainstem boundary mask and as the fallback
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`) for midbrain / pons / medulla / SCP, selected via `BRAINSTEM_SEGMENTATION_METHOD` (default `freesurfer`, fallback `atlas`) and gated by an FS↔HO agreement QC check
 - **Subject-specific refinement** using tissue segmentation to address shape variance in pathological cases
 - **Native space preservation** maintains segmentation accuracy in subject's original high-resolution space
 - **FLAIR integration** creates both T1 and FLAIR intensity versions for comprehensive analysis
 - **Volume consistency validation** with anatomical location verification and comprehensive QA reporting
 
 #### Stage 6: Comprehensive Hyperintensity Analysis
-- **Per-region GMM thresholding** via standalone `gmm_threshold.py` — adaptive 2–3 component Gaussian Mixture Models fitted per Talairach brainstem region, with all tuning parameters driven from `config/default_config.sh`
+- **Per-region GMM thresholding** via standalone `gmm_threshold.py` — adaptive 2–3 component Gaussian Mixture Models fitted per FreeSurfer brainstem substructure, with all tuning parameters driven from `config/default_config.sh` and a single authoritative fallback SD multiplier (`THRESHOLD_WM_SD_MULTIPLIER`)
+- **CSF / partial-volume exclusion** using the FSL FAST CSF PVE map before thresholding
 - **Multi-threshold detection** configurable SD multipliers with minimum cluster size filtering
 - **Cross-modality validation** analyzes hyperintensity patterns across T1/T2/FLAIR with statistical correlation
+- **Optional supervised WMH** FSL BIANCA and LST-AI + FreeSurfer SAMSEG modules (default-off), intersected with the brainstem mask
 - **Native-to-standard space mapping** enables analysis in both subject native and standardized coordinates
 - **DICOM cluster backtrace** creates coordinate lookup tables for medical imaging viewer navigation
 
@@ -352,7 +371,7 @@ The pipeline implements a sophisticated 8-stage processing workflow with intelli
 - Advanced Brain Extraction & Standardization → [`src/modules/brain_extraction.sh`](src/modules/brain_extraction.sh:1)
 - Preprocessing → [`src/modules/preprocess.sh`](src/modules/preprocess.sh:1)
 - Registration → [`src/modules/registration.sh`](src/modules/registration.sh:1)
-- Multi-Atlas Segmentation → [`src/modules/segmentation.sh`](src/modules/segmentation.sh:1)
+- Brainstem Segmentation (HO gross extent + FreeSurfer substructures) → [`src/modules/segmentation.sh`](src/modules/segmentation.sh:1), [`src/modules/brainstem_freesurfer.sh`](src/modules/brainstem_freesurfer.sh:1)
 - Comprehensive Analysis → [`src/modules/analysis.sh`](src/modules/analysis.sh:1), [`src/modules/gmm_threshold.py`](src/modules/gmm_threshold.py:1)
 - Enhanced Registration Validation → [`src/modules/enhanced_registration_validation.sh`](src/modules/enhanced_registration_validation.sh:1)
 - Advanced Visualization → [`src/modules/visualization.sh`](src/modules/visualization.sh:1)
@@ -481,8 +500,8 @@ BrainStem X leverages established neuroimaging tools, reinventing very little bu
 
 ### Atlases & Templates
 
-- **Harvard-Oxford Subcortical Structural Atlas** - Primary brainstem segmentation (index 7)
-- **Talairach Atlas** - Detailed brainstem subdivision (medulla, pons, midbrain)
+- **Harvard-Oxford Subcortical Structural Atlas** - Gross brainstem extent mask (index 7, `maxprob-thr25`)
+- **FreeSurfer brainstem substructures** (Iglesias 2015 `segmentBS`) - Detailed subdivision (midbrain, pons, medulla, SCP)
 - **MNI152 Standard Space Templates** - Registration targets with automatic resolution selection
 
 ### Programming Resources / Libraries (including..)

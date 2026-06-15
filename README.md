@@ -55,7 +55,7 @@ source ~/.bash_profile && src/pipeline.sh -i ../DiCOM -o ../mri_results -s patie
 The pipeline consists of 8 resumable stages:
 
 1. **import** - DICOM import and conversion
-2. **preprocess** - Rician denoising + N4 bias correction
+2. **preprocess** - Modality-aware denoising (Rician NLM for T1/T2/FLAIR, MP-PCA for DWI) + N4 bias correction
 3. **brain_extraction** - Brain extraction and standardization
 4. **registration** - Multi-stage alignment to standard space
 5. **segmentation** - Brainstem and pons region extraction
@@ -81,8 +81,8 @@ Active development as of June 2026. While functional, improvements are ongoing. 
 This pipeline leverages established neuroimaging tools:
 - **ANTs** - Advanced Normalizations Tools
 - **FSL** - FMRIB Software Library
-- **FreeSurfer** - 3D visualization
-- **Harvard-Oxford & Talairach Atlases** - Brainstem segmentation
+- **FreeSurfer** - Brainstem substructure segmentation (Iglesias 2015 `segmentBS`) + 3D visualization
+- **Harvard-Oxford Atlas** - Gross brainstem extent mask
 - **MNI152 Templates** - Registration targets
 
 ## License
