@@ -501,39 +501,137 @@ run_pipeline() {
   log_message "Selected file: $(basename "$selected_file")"
   log_message "Rationale: $selection_rationale"
   
-  # Assign files based on selection result
-  if [ "$selected_modality" == "T1" ]; then
-    local t1_file="$selected_file"
+  # ---------------------------------------------------------------------------
+  # Assign files based on selection result, with external anatomical T1
+  # adoption (Unit A) when no in-study T1 is available.
+  #
+  # Resolution order (executed once; ANATOMICAL_REFERENCE_T1 is considered
+  # only when the in-study T1 is absent or reference selection failed):
+  #
+  #   1. Reference selection chose T1             → use it directly.
+  #   2. Reference selection chose FLAIR          → look for an in-study T1;
+  #      if none found and ANATOMICAL_REFERENCE_T1 is set, adopt it (below).
+  #   3. Reference selection failed entirely      → if ANATOMICAL_REFERENCE_T1
+  #      is set, adopt it and find the best FLAIR in EXTRACT_DIR; else abort.
+  #
+  # When ANATOMICAL_REFERENCE_T1 is unset/empty (the default), none of the
+  # adoption code below is reachable — behaviour is byte-identical to before.
+  # ---------------------------------------------------------------------------
+  local t1_file="" flair_file=""
+  # Tracks whether the external anatomical T1 adoption fired (used when setting
+  # PIPELINE_REFERENCE_MODALITY below so we don't confuse "T1 selected by
+  # selection" with "T1 from adoption").
+  local _external_t1_adopted="false"
+
+  if [ "$selected_modality" = "T1" ]; then
+    t1_file="$selected_file"
     # Find the best FLAIR for this T1
-    local flair_file=$(select_best_scan "SPACE_FLAIR" "*SPACE_FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
-  elif [ "$selected_modality" == "FLAIR" ]; then
-    local flair_file="$selected_file"
-    # Find the best T1 for this FLAIR
-    local t1_file=$(select_best_scan "T1" "*T1*.nii.gz" "$EXTRACT_DIR" "$flair_file" "${T1_SELECTION_MODE:-highest_resolution}")
+    flair_file=$(select_best_scan "SPACE_FLAIR" "*SPACE_FLAIR*.nii.gz" "$EXTRACT_DIR" "$t1_file" "${FLAIR_SELECTION_MODE:-registration_optimized}")
+  elif [ "$selected_modality" = "FLAIR" ]; then
+    flair_file="$selected_file"
+    # Find the best in-study T1 for this FLAIR
+    t1_file=$(select_best_scan "T1" "*T1*.nii.gz" "$EXTRACT_DIR" "$flair_file" "${T1_SELECTION_MODE:-highest_resolution}")
+    # If no in-study T1, fall through to the adoption block below.
   else
-    log_error "Reference space selection failed: $selection_rationale" $ERR_DATA_MISSING
-    return $ERR_DATA_MISSING
+    # Reference selection returned neither T1 nor FLAIR (or failed).  If
+    # ANATOMICAL_REFERENCE_T1 is supplied we can still proceed; otherwise abort.
+    if [ -z "${ANATOMICAL_REFERENCE_T1:-}" ]; then
+      log_error "Reference space selection failed and ANATOMICAL_REFERENCE_T1 is not set: $selection_rationale" $ERR_DATA_MISSING
+      return $ERR_DATA_MISSING
+    fi
+    log_formatted "WARNING" "Reference space selection found no usable reference: $selection_rationale — will attempt adoption of ANATOMICAL_REFERENCE_T1"
+    # t1_file remains empty; the adoption block below sets it.
+    # Discover FLAIR independently (no T1 anchor available yet).
+    flair_file=$(select_best_scan "SPACE_FLAIR" "*SPACE_FLAIR*.nii.gz" "$EXTRACT_DIR" "" "${FLAIR_SELECTION_MODE:-registration_optimized}")
   fi
-  
-  # Set global variables to track the authoritative reference space decision
-  if [ "$selected_modality" == "T1" ]; then
+
+  # ---------------------------------------------------------------------------
+  # External anatomical T1 adoption (Unit A — borrowed/external anchor)
+  # ---------------------------------------------------------------------------
+  # Fires when no in-study T1 was found AND ANATOMICAL_REFERENCE_T1 is a
+  # non-empty path to an existing file.
+  # The external T1 is COPIED into EXTRACT_DIR under a fixed name so that all
+  # downstream discovery treats it like a normal in-study T1.
+  # The copy is refreshed when ANATOMICAL_REFERENCE_T1 changes between runs
+  # (detected by byte-size mismatch against the destination), so a changed
+  # external reference is never silently ignored on resume.
+  # Provenance is written once per run directory (overwrite = idempotent).
+  # When ANATOMICAL_REFERENCE_T1 is unset/empty this block is a complete no-op.
+  # ---------------------------------------------------------------------------
+  if [ -z "${t1_file:-}" ] && [ -n "${ANATOMICAL_REFERENCE_T1:-}" ]; then
+    if [ ! -f "${ANATOMICAL_REFERENCE_T1}" ]; then
+      log_error "ANATOMICAL_REFERENCE_T1 set but file not found: ${ANATOMICAL_REFERENCE_T1}" $ERR_DATA_MISSING
+      return $ERR_DATA_MISSING
+    fi
+    # Require .nii.gz input — raw .nii would be copied byte-for-byte into a
+    # .nii.gz-named destination, producing an invalid compressed file that FSL
+    # and NIfTI readers would reject or misparse.
+    if [[ "${ANATOMICAL_REFERENCE_T1}" != *.nii.gz ]]; then
+      log_error "ANATOMICAL_REFERENCE_T1 must be a compressed NIfTI (.nii.gz); got: ${ANATOMICAL_REFERENCE_T1}" $ERR_DATA_MISSING
+      return $ERR_DATA_MISSING
+    fi
+    local adopted_t1="${EXTRACT_DIR}/external_anatomical_T1.nii.gz"
+    local ref_label="${ANATOMICAL_REFERENCE_LABEL:-${ANATOMICAL_REFERENCE_T1}}"
+    log_formatted "WARNING" "No in-study T1 found; adopting EXTERNAL anatomical T1 reference: ${ref_label}"
+    # Refresh the copy when source and destination sizes differ (covers both the
+    # first run and a changed ANATOMICAL_REFERENCE_T1 on a subsequent resume).
+    local _src_size _dst_size
+    _src_size=$(wc -c < "${ANATOMICAL_REFERENCE_T1}" 2>/dev/null || echo 0)
+    _dst_size=$([ -f "${adopted_t1}" ] && wc -c < "${adopted_t1}" 2>/dev/null || echo 0)
+    if [ "${_src_size}" != "${_dst_size}" ] || [ ! -f "${adopted_t1}" ]; then
+      log_message "Copying external anatomical T1 into extract dir (source size: ${_src_size} bytes)"
+      if ! cp "${ANATOMICAL_REFERENCE_T1}" "${adopted_t1}"; then
+        log_error "Failed to copy external anatomical T1 reference into EXTRACT_DIR" $ERR_DATA_MISSING
+        return $ERR_DATA_MISSING
+      fi
+    else
+      log_message "External anatomical T1 already present in extract dir (size matches; skipping copy)"
+    fi
+    # Sanity-check the adopted file: must exist and be non-empty.
+    local _adopted_size
+    _adopted_size=$(wc -c < "${adopted_t1}" 2>/dev/null || echo 0)
+    if [ ! -f "${adopted_t1}" ] || [ "${_adopted_size}" -eq 0 ]; then
+      log_error "Adopted external anatomical T1 is missing or empty: ${adopted_t1}" $ERR_DATA_MISSING
+      return $ERR_DATA_MISSING
+    fi
+    t1_file="${adopted_t1}"
+    _external_t1_adopted="true"
+    # Record provenance (overwrite = idempotent across resumes).
+    printf 'source=%s\nlabel=%s\ntype=external\nadopted_as=%s\n' \
+      "${ANATOMICAL_REFERENCE_T1}" "${ref_label}" "${adopted_t1}" \
+      > "${RESULTS_DIR}/anatomical_reference_provenance.txt"
+    log_message "External anatomical T1 adopted as: ${adopted_t1}"
+    log_message "Provenance recorded in: ${RESULTS_DIR}/anatomical_reference_provenance.txt"
+  fi
+  # ---------------------------------------------------------------------------
+
+  # Set global variables to track the authoritative reference space decision.
+  # The external T1 is always the fixed anatomical anchor when adoption fired
+  # (PIPELINE_REFERENCE_MODALITY=T1, FLAIR registers to it).  In the normal
+  # path the selection result drives the choice exactly as before.
+  if [ "$_external_t1_adopted" = "true" ]; then
+    # The external T1 is the fixed anchor; FLAIR registers TO it.
+    export PIPELINE_REFERENCE_MODALITY="T1"
+    export PIPELINE_REFERENCE_FILE="${t1_file}"
+    export PIPELINE_MOVING_FILE="${flair_file:-}"
+  elif [ "$selected_modality" = "T1" ]; then
     export PIPELINE_REFERENCE_MODALITY="T1"
     export PIPELINE_REFERENCE_FILE="$t1_file"
-    export PIPELINE_MOVING_FILE="$flair_file"
+    export PIPELINE_MOVING_FILE="${flair_file:-}"
   else
     export PIPELINE_REFERENCE_MODALITY="FLAIR"
-    export PIPELINE_REFERENCE_FILE="$flair_file"
-    export PIPELINE_MOVING_FILE="$t1_file"
+    export PIPELINE_REFERENCE_FILE="${flair_file:-}"
+    export PIPELINE_MOVING_FILE="${t1_file:-}"
   fi
-  
+
   log_formatted "INFO" "===== Authoritative Reference Space Set ====="
-  log_message "PIPELINE_REFERENCE_MODALITY: $PIPELINE_REFERENCE_MODALITY"
-  log_message "PIPELINE_REFERENCE_FILE:     $(basename "$PIPELINE_REFERENCE_FILE")"
-  log_message "PIPELINE_MOVING_FILE:        $(basename "$PIPELINE_MOVING_FILE")"
+  log_message "PIPELINE_REFERENCE_MODALITY: ${PIPELINE_REFERENCE_MODALITY:-}"
+  log_message "PIPELINE_REFERENCE_FILE:     $(basename "${PIPELINE_REFERENCE_FILE:-<unset>}")"
+  log_message "PIPELINE_MOVING_FILE:        $(basename "${PIPELINE_MOVING_FILE:-<unset>}")"
   log_message "==========================================="
 
   # Log detailed resolution information about selected scans
-  if [ -n "$t1_file" ] && [ -n "$flair_file" ]; then
+  if [ -n "${t1_file:-}" ] && [ -n "${flair_file:-}" ]; then
     log_message "======== Selected Scan Information ========"
     log_message "T1 scan: $t1_file"
     log_message "T1 dimensions: $(fslinfo "$t1_file" | grep -E "^dim[1-3]" | awk '{print $1 "=" $2}' | tr '\n' ' ')"
@@ -546,13 +644,17 @@ run_pipeline() {
     log_message "Resolution comparison: $(calculate_pixdim_similarity "$t1_file" "$flair_file")/100"
     log_message "======================================="
   fi
-  
-  if [ -z "$t1_file" ]; then
-    log_error "T1 file not found in $EXTRACT_DIR" $ERR_DATA_MISSING
+
+  if [ -z "${t1_file:-}" ]; then
+    if [ -n "${ANATOMICAL_REFERENCE_T1:-}" ]; then
+      log_error "No in-study T1 found and ANATOMICAL_REFERENCE_T1 is set but adoption did not succeed" $ERR_DATA_MISSING
+    else
+      log_error "No in-study T1 found in ${EXTRACT_DIR} and ANATOMICAL_REFERENCE_T1 is not set" $ERR_DATA_MISSING
+    fi
     return $ERR_DATA_MISSING
   fi
-  
-  if [ -z "$flair_file" ]; then
+
+  if [ -z "${flair_file:-}" ]; then
     log_error "FLAIR file not found in $EXTRACT_DIR" $ERR_DATA_MISSING
     return $ERR_DATA_MISSING
   fi

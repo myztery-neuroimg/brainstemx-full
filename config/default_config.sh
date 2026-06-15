@@ -74,6 +74,29 @@ export OUTPUT_DATATYPE="int"        # final int16
 export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 
 # ---------------------------------------------------------------------------
+# External anatomical T1 reference  (Unit A — borrowed/external anchor)
+# ---------------------------------------------------------------------------
+# Allows an external non-contrast T1 (from another acquisition of the same
+# subject) to serve as the anatomical anchor when the current study has NO
+# usable in-study T1.  Default empty = current behaviour (unaffected).
+#
+#   ANATOMICAL_REFERENCE_T1    : absolute path to an external full-head
+#                                non-contrast T1 NIfTI.  When non-empty AND
+#                                the file exists, and no in-study T1 is found,
+#                                the pipeline ADOPTS it (copies into EXTRACT_DIR,
+#                                records provenance) instead of aborting.
+#                                Subject-specific paths must never be committed;
+#                                supply via operator config or environment only.
+#   ANATOMICAL_REFERENCE_LABEL : free-text provenance label recorded in outputs
+#                                (e.g. session name or acquisition date).
+#   PREFER_EXTERNAL_NONCONTRAST_T1 : (reserved for Unit C — contrast-T1
+#                                detection; declared here so config files that
+#                                reference it are forward-compatible).
+export ANATOMICAL_REFERENCE_T1="${ANATOMICAL_REFERENCE_T1:-}"
+export ANATOMICAL_REFERENCE_LABEL="${ANATOMICAL_REFERENCE_LABEL:-}"
+export PREFER_EXTERNAL_NONCONTRAST_T1="${PREFER_EXTERNAL_NONCONTRAST_T1:-false}"
+
+# ---------------------------------------------------------------------------
 # Brainstem segmentation method
 # ---------------------------------------------------------------------------
 # Controls how the brainstem and its substructures (midbrain/pons/medulla/SCP)
