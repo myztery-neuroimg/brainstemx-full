@@ -85,6 +85,11 @@ export DEFAULT_TEMPLATE_RES="${DEFAULT_TEMPLATE_RES:-1mm}"
 #                the FS<->HO agreement is too low.
 #   atlas      : Harvard-Oxford gross Brain-Stem mask only (no substructures).
 #                (alias: harvard_oxford)
+#   multi_atlas: nucleus-level labeling from the Bianciardi BrainstemNavigator
+#                (+ CIT168, + optional AAL3) warped to subject space, layered on
+#                the Harvard-Oxford gross extent. Per-atlas enables below.
+#                (alias: bianciardi). Requires the atlases on disk under
+#                $FSLDIR/data/atlases — see multi_atlas.sh / docs.
 # Talairach has been removed entirely (single 1988 post-mortem brain; largest
 # MNI-mapping error inferiorly/posteriorly — worst exactly in the brainstem).
 export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
@@ -96,6 +101,28 @@ export FS_RECON_ALL_FLAG="${FS_RECON_ALL_FLAG:--all}"   # recon-all level (segme
 # FS<->HO agreement gate (mirrors the existing brain-mask Dice QC style):
 export FS_BS_AGREEMENT_DICE_MIN="${FS_BS_AGREEMENT_DICE_MIN:-0.7}"        # min Dice(FS union, HO Brain-Stem)
 export FS_BS_AGREEMENT_LEAKAGE_MAX="${FS_BS_AGREEMENT_LEAKAGE_MAX:-0.2}"  # max fraction of FS union outside HO
+
+# ---------------------------------------------------------------------------
+# Multi-atlas brainstem labeling (used when BRAINSTEM_SEGMENTATION_METHOD is
+# 'multi_atlas' or 'bianciardi'; see multi_atlas.sh and
+# docs/multi_atlas_integration_spec.md).
+# ---------------------------------------------------------------------------
+# Atlases must be pre-downloaded under $FSLDIR/data/atlases:
+#   Bianciardi/BrainstemNavigatorv1.0/1.0/{2a,2b}.* (MNI dirs only; IIT 1a/1b excluded)
+#   CIT168/MNI152/tpl-MNI152NLin6Asym_atlas-CIT168_res-01_dseg.nii.gz + CIT168_labels.txt
+#   AAL3/AAL3/AAL3v1_1mm.nii.gz + AAL3v1.nii.txt
+export ATLAS_DIR="${ATLAS_DIR:-${FSLDIR}/data/atlases}"
+# Derived/cached MNI dsegs live under each atlas's */derived subdir by default.
+export MULTI_ATLAS_CACHE_DIR="${MULTI_ATLAS_CACHE_DIR:-${ATLAS_DIR}}"
+# Per-atlas enables. AAL3 is whole-brain and OFF by default (brainstem subset
+# only when on); CIT168 + Bianciardi are brainstem/subcortical-focused.
+export USE_BIANCIARDI="${USE_BIANCIARDI:-true}"
+export USE_CIT168="${USE_CIT168:-true}"
+export USE_AAL3="${USE_AAL3:-false}"
+# Bianciardi thresholded-probabilistic level (matches the on-disk subdir name).
+export BIANCIARDI_PROB_THRESHOLD="${BIANCIARDI_PROB_THRESHOLD:-0.35}"
+# Bianciardi MNI source subdirs (relative to the BrainstemNavigator 1.0 root).
+export BIANCIARDI_MNI_SUBDIRS="${BIANCIARDI_MNI_SUBDIRS:-2a.BrainstemNucleiAtlas_MNI/labels_thresholded_probabilistic_${BIANCIARDI_PROB_THRESHOLD} 2b.DiencephalicNucleiAtlas_MNI/labels_thresholded_probabilistic_${BIANCIARDI_PROB_THRESHOLD}}"
 
 # Harvard-Oxford subcortical maxprob probability threshold for the gross
 # Brain-Stem extent. thr25 is tighter than the most-dilated thr0 variant; the
@@ -417,6 +444,196 @@ export SAMSEG_LESION_THRESHOLD=0.3     # lesion posterior threshold (run_samseg 
 export SAMSEG_LESION_MASK_PATTERN="0 1" # one number per input (T1 FLAIR): 0=no constraint, 1=brighter-than-GM
 export SAMSEG_LESION_LABEL=99          # lesion label value in SAMSEG seg.mgz
 export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recommended when FLAIR shows pallidum)
+
+# ===========================================================================
+# Contrast-agnostic WMH detection — FreeSurfer WMH-SynthSeg (mri_WMHsynthseg)
+# ---------------------------------------------------------------------------
+# Optional, pretrained, contrast/resolution-agnostic WMH + whole-brain
+# segmentation implemented in src/modules/wmh_synthseg.sh (entry fn:
+# run_wmh_synthseg). OFF by default; requires FreeSurfer (>=7.4.x) with the
+# WMH-SynthSeg model installed at
+# $FREESURFER_HOME/models/WMH-SynthSeg_v10_231110.pth — NOT part of the core
+# pipeline dependency set.
+#
+# WMH-SynthSeg (Laso et al., ISBI 2024; arXiv:2312.05119) is a domain-
+# randomized SynthSeg variant that jointly segments WMH (FreeSurfer LUT label
+# 77) plus ~36 brain regions on ANY contrast/resolution (incl. low-field), with
+# no retraining, at 1mm isotropic.
+#
+# CAVEAT: independent evals find it the LEAST accurate for boundary delineation
+# and it tends to OVER-FLAG hyperintense pathology as WMH — dangerous near
+# brainstem CSF-flow artifacts. Position it as a ROBUSTNESS/PORTABILITY +
+# ANATOMY/NORMALIZATION option, NOT the primary lesion mask; ALWAYS pair its
+# output with the FP-filter.
+# ===========================================================================
+export WMH_SYNTHSEG_ENABLED=false       # master switch; true => run WMH-SynthSeg when available
+export WMH_SYNTHSEG_LABEL=77            # WMH label value in the mri_WMHsynthseg output (FreeSurfer LUT 77)
+export WMH_SYNTHSEG_DEVICE="cpu"        # "cpu" or a GPU id (e.g. "0") passed to --device
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Deep-learning WMH detection - segcsvdWMH (AICONSlab)   (src/modules/wmh_segcsvd.sh)
+# ---------------------------------------------------------------------------
+# segcsvdWMH is a two-stage CNN for quantifying WMH in heterogeneous cohorts
+# (Gibson et al., Human Brain Mapping 2024;45(18):e70104, DOI 10.1002/hbm.70104;
+# https://github.com/AICONSlab/segcsvd).  It is FLAIR-ONLY for the lesion CNN
+# (T1 is used only for upstream SynthSeg / ICV) and ships pretrained weights,
+# most conveniently as the AICONSlab container (Apptainer/Singularity .sif, or
+# Docker).  It requires a FreeSurfer SynthSeg v2 (with CSF) parcellation of the
+# subject as a second input; the module builds this with 'mri_synthseg' when one
+# is not supplied.
+#
+# DEFAULT OFF: with no container image / module and no SynthSeg available, the
+# module logs a clear warning and skips gracefully (non-fatal).  Enable only
+# once you have the segcsvd container (and FreeSurfer for SynthSeg) installed.
+#
+# Entry point: run_segcsvd_wmh <flair> [t1] [out_dir]
+export WMH_SEGCSVD_ENABLED=false         # master switch; true = run segcsvdWMH in analysis stage
+
+# --- Tool location (choose ONE back-end; all empty/absent = graceful skip) ---
+# Apptainer/Singularity .sif image (preferred distribution form). Absolute path.
+export SEGCSVD_CONTAINER_IMAGE=""        # e.g. /opt/segcsvd/segcsvd_rc03.sif
+# Docker image tag (used only if the .sif above is unset/absent and the image is
+# present locally, e.g. after 'docker pull'/'docker load').
+export SEGCSVD_DOCKER_IMAGE="segcsvd_rc03"
+# Native Python module name (last-resort back-end, invoked via 'uv run python -m').
+# Leave empty unless you have segcsvd importable in the uv environment.
+export SEGCSVD_PY_MODULE=""
+
+# --- SynthSeg parcellation (required second input) --------------------------
+# Optional precomputed SynthSeg v2 (with CSF) parcellation. When set + present,
+# it is reused instead of running mri_synthseg.
+export SEGCSVD_SYNTHSEG_FILE=""          # e.g. /data/sub01/synthseg.nii.gz
+# Extra flags appended to 'mri_synthseg --i ... --o ...' (word-split; e.g. "--robust --parc").
+export SEGCSVD_SYNTHSEG_EXTRA_OPTS=""
+
+# --- segcsvdWMH parameters --------------------------------------------------
+export SEGCSVD_THRESHOLD=0.35            # WMH probability threshold -> binary mask (0-1; tool default 0.35)
+export SEGCSVD_PATCH_SIZE="96,128"       # CNN patch-size spec passed to segment_wmh (tool default)
+export SEGCSVD_SKIP_MASK_AND_BIAS=false  # 'skip_mask_and_bias' positional flag (true skips brain mask + bias correction)
+export SEGCSVD_CLEANUP=true              # 'cleanup' positional flag (remove container temp files) AND remove the module's input-staging copies after the run
+# Extra args appended to the native-module invocation (word-split; module back-end only).
+export SEGCSVD_MODULE_EXTRA_OPTS=""
+
+# ===========================================================================
+# EXPLORATORY brainstem arousal-network nuclei (FreeSurfer AANSegment)
+#   module: src/modules/brainstem_aanseg.sh   entry fn: run_aanseg
+# ===========================================================================
+# Olchanyi et al., "Automated MRI Segmentation of Brainstem Nuclei Critical to
+# Consciousness," Human Brain Mapping 2025;46(14):e70357 (DOI 10.1002/hbm.70357).
+# FreeSurfer-shipped 'SegmentAAN.sh' Bayesian segmenter of ~10 brainstem AAN
+# nuclei (DR, MnR, LC, LDTg, PTg, parabrachial, PnO, midbrain RF, VTA, PAG).
+#
+# *** EXPLORATORY / RESEARCH-ONLY. DEFAULT OFF. ***  Honor these caveats:
+#   1. Reliable ONLY at <= 1 mm input resolution. Clinical FLAIR slice thickness
+#      (3-5 mm) gives UNRELIABLE volumetrics - the module warns and skips.
+#   2. License CC BY-NC-ND 4.0 (NON-COMMERCIAL, NO DERIVATIVES): we only INVOKE
+#      the FreeSurfer tool; we never modify or redistribute it.
+#   3. Degrades on large brainstem lesions - interpret with extreme caution.
+# Requires FreeSurfer + a FreeSurfer license + a prior 'recon-all' for the
+# subject (the module never runs the hours-long recon-all itself). Absence of any
+# dependency is a graceful, non-fatal skip.
+export BRAINSTEM_AANSEG_ENABLED=false    # master switch; true = run AANSegment (EXPLORATORY)
+export AANSEG_MAX_VOXEL_MM=1.0           # max per-axis voxel size (mm); coarser => unreliable
+export AANSEG_SKIP_IF_COARSE=true        # true => skip when input is coarser than the limit
+export AANSEG_WRITE_REGION_MASKS=false   # true => also stage nuclei labels under segmentation/ (NOT wired into analysis)
+# Path overrides (empty = auto-detect). SegmentAAN.sh / FS license / subjects dir.
+export AANSEG_SUBJECTS_DIR=""            # optional explicit FreeSurfer SUBJECTS_DIR with the recon
+export AANSEG_OUTPUT_DIR=""              # optional explicit output dir (default: RESULTS_DIR/brainstem_aanseg)
+
+# ---------------------------------------------------------------------------
+# Small-lesion WMH detection - SHIVA-WMH  (src/modules/wmh_shiva.sh)
+# ---------------------------------------------------------------------------
+# SHIVA-WMH is a 3D U-Net trained specifically for SMALL / PUNCTATE white-matter
+# hyperintensities (Tran et al., Human Brain Mapping 2024;45(1):e26548, DOI
+# 10.1002/hbm.26548). It is a HIGH-SENSITIVITY / LOWER-SPECIFICITY detector:
+# unlike BIANCA / LST-AI / SAMSEG (tuned for confluent lesions), it is designed
+# to catch early, punctate WMH. Because it over-detects to maximise sensitivity,
+# its output is meant to be PAIRED WITH THE FP FILTER for specificity — the
+# pipeline's CSF / partial-volume + cortical-ribbon exclusion (analysis.sh) and
+# the brainstem-mask intersection performed by the module remove the spurious
+# small clusters SHIVA flags.
+#
+# Inputs: co-registered T1 + FLAIR (FLAIR aligned to T1); output is in T1 space.
+# Two back-ends, antspynet preferred for simplicity:
+#   - antspynet : `antspynet.shiva_wmh_segmentation(flair, t1=...)` (Python; ships
+#                 pretrained SHIVA weights, downloaded on first use). Install via
+#                 'uv add antspynet'. Run probe: uv run python -c "import antspynet".
+#   - container : the SHiVAi framework container (Docker/Apptainer);
+#                 https://github.com/pboutinaud/SHiVAi
+#
+# DEFAULT OFF: antspynet is NOT in the core dependency set, and the SHIVA weights
+# need download (and benefit from a GPU). With no back-end installed the module
+# logs a clear warning and skips gracefully (non-fatal).
+#
+# Entry point: run_shiva_wmh <flair> <t1> [out_dir]
+export WMH_SHIVA_ENABLED=false           # master switch; true = run SHIVA-WMH in analysis stage
+
+# Back-end selection: "auto" (prefer antspynet, then container), "antspynet", or "container".
+export SHIVA_WMH_BACKEND="auto"
+
+# antspynet options
+export SHIVA_WMH_MODEL="all"             # which_model: "all" (ensemble) or a fold index 0-4
+export SHIVA_WMH_VERBOSE=true            # print antspynet/segmentation progress
+
+# Thresholding / post-processing
+export SHIVA_WMH_THRESHOLD=0.5           # probability-map threshold -> binary WMH mask (0-1; SHIVA default 0.5)
+export SHIVA_WMH_MIN_CLUSTER_SIZE=0      # drop WMH clusters below this many voxels (0 = off; first-line FP guard)
+
+# SHiVAi container options (only used when the container back-end is selected)
+export SHIVA_WMH_CONTAINER_IMAGE=""      # Docker image name OR path to an Apptainer/Singularity .sif
+export SHIVA_WMH_CONTAINER_RUNTIME="auto" # "auto" | "docker" | "apptainer" | "singularity"
+# Full in-container processing command (the SHiVAi CLI varies by version). Use
+# placeholders {FLAIR} {T1} {OUTDIR} {IMAGE}; executed verbatim via eval, e.g.:
+#   docker run --rm -v {OUTDIR}:/out ... {IMAGE} shiva --in {FLAIR} ... --out /out
+export SHIVA_WMH_CONTAINER_CMD=""
+
+# ===========================================================================
+# Deep-learning WMH detection - MARS-WMH        (src/modules/wmh_mars.sh)
+# ===========================================================================
+# MARS-WMH (Gesierich et al., Cereb Circ Cogn Behav 2025;9:100393,
+# DOI 10.1016/j.cccb.2025.100393) is an nnU-Net / MD-GRU deep-learning WMH
+# segmentation tool from MIAC. It is the best-validated WMH tool in the
+# literature for scan-rescan, inter-scanner, and longitudinal robustness.
+# Inputs co-registered FLAIR + T1; produces a whole-brain WMH mask. The module
+# intersects that mask with the brainstem ROI (a MARS-brainstem ROI if available,
+# else the pipeline's *brainstem*mask*.nii.gz) for a brainstem-restricted burden.
+#
+# !! NON-COMMERCIAL LICENSE !!  MARS-WMH and MARS-brainstem
+# (https://github.com/miac-research/MARS-WMH, .../dl-brainstem) ship as prebuilt
+# Docker/Apptainer containers under a NON-COMMERCIAL license. They are NOT part
+# of the core dependency set and NOT installed by `uv sync`. Obtaining/running
+# them is the operator's responsibility, subject to that license.
+#
+# DEFAULT OFF: with no container/CLI present the module logs a clear warning and
+# skips gracefully (non-fatal). Enable only after pulling the container.
+#
+# Entry point: run_mars_wmh <flair.nii.gz> <t1.nii.gz> [<out_dir>]
+export WMH_MARS_ENABLED=false             # master switch; true = run MARS-WMH
+
+# --- Back-end selection / images --------------------------------------------
+# "auto" tries Docker image, then an Apptainer .sif, then a native CLI.
+# Force a single back-end with "docker" | "apptainer" | "cli".
+export MARS_WMH_BACKEND="auto"
+export MARS_WMH_DOCKER_IMAGE="miac/mars-wmh:latest"  # Docker image tag (adjust to your pull)
+export MARS_WMH_SIF=""                    # path to an Apptainer/Singularity .sif image
+export MARS_WMH_CLI="mars-wmh"            # native CLI name on PATH (if installed)
+export MARS_WMH_DOCKER_OPTS=""            # extra `docker run` opts (e.g. "--gpus all")
+export MARS_WMH_APPTAINER_OPTS=""         # extra apptainer/singularity run opts (e.g. "--nv")
+
+# --- Thresholding ------------------------------------------------------------
+export MARS_WMH_THRESHOLD=0.5             # prob-map threshold -> binary WMH mask (0-1)
+
+# --- Optional MARS-brainstem ROI (preferred over the pipeline brainstem mask) -
+# When enabled and available, MARS-brainstem defines the brainstem ROI used for
+# the WMH intersection; otherwise the module falls back to the pipeline mask.
+export MARS_BRAINSTEM_ENABLED=false       # true = try MARS-brainstem to build the ROI
+export MARS_BRAINSTEM_ROI=""              # explicit pre-computed brainstem ROI (takes precedence)
+export MARS_BRAINSTEM_DOCKER_IMAGE="miac/dl-brainstem:latest"  # MARS-brainstem Docker image
+export MARS_BRAINSTEM_SIF=""              # path to a MARS-brainstem Apptainer .sif image
+export MARS_BRAINSTEM_CLI="mars-brainstem"  # native MARS-brainstem CLI name on PATH
+export MARS_BRAINSTEM_DOCKER_OPTS=""      # extra `docker run` opts for MARS-brainstem
+export MARS_BRAINSTEM_APPTAINER_OPTS=""   # extra apptainer/singularity run opts for MARS-brainstem
 
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then

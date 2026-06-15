@@ -44,7 +44,8 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   preprocess.sh          # Rician denoising, N4 bias correction
   brain_extraction.sh    # BET / ANTs brain extraction
   registration.sh        # multi-stage ANTs registration (~600 line register_to_reference())
-  segmentation.sh        # Harvard-Oxford + Talairach atlas
+  segmentation.sh        # Harvard-Oxford gross extent + FreeSurfer substructures (dispatch)
+  multi_atlas.sh         # Bianciardi + CIT168 + AAL3 → subject-space per-region masks
   analysis.sh            # hyperintensity detection, cluster analysis
   gmm_threshold.py       # standalone GMM thresholder (called by analysis.sh)
   visualization.sh       # 3D rendering, HTML reports
@@ -91,6 +92,9 @@ _MODULE_LOADED=1
 | `SCAN_SELECTION_MODE` | `registration_optimized` \| `highest_resolution` \| `interactive` |
 | `THRESHOLD_WM_SD_MULTIPLIER` | authoritative fallback threshold (GMM inherits this) |
 | `GMM_*` (11 vars) | GMM per-region thresholding — see `config/default_config.sh` |
+| `BRAINSTEM_SEGMENTATION_METHOD` | `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |
+| `USE_BIANCIARDI` / `USE_CIT168` / `USE_AAL3` | per-atlas enables for `multi_atlas` (AAL3 off by default) |
+| `ATLAS_DIR` | atlas root, default `${FSLDIR}/data/atlases` |
 
 ## Runtime notes
 
@@ -100,3 +104,6 @@ _MODULE_LOADED=1
 - Logs: `$RESULTS_DIR/logs/`
 - Python: always invoke via `uv run`, never bare `python`/`python3`
 - Environment: `source ~/.bash_profile` before running the pipeline
+- Multi-atlas labeling (`BRAINSTEM_SEGMENTATION_METHOD=multi_atlas`/`bianciardi`)
+  requires the Bianciardi/CIT168/AAL3 atlases on disk under `$FSLDIR/data/atlases`
+  — see `docs/multi_atlas_integration_spec.md`. Caches build under `*/derived/`.
