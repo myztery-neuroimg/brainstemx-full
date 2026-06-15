@@ -11,6 +11,8 @@ An end-to-end neuroimaging pipeline for analyzing T2/FLAIR hyperintensity and T1
 - **8-stage resumable pipeline** with intelligent checkpoint detection
 - **DICOM backtrace capability** for clinical validation in native scanner format
 - **Adaptive processing** handles both high-end research and routine clinical protocols
+- **Optional multi-atlas brainstem nuclei labeling** (Bianciardi/CIT168/AAL3) warped into subject space
+- **Optional supervised/DL WMH modules** (BIANCA, LST-AI/SAMSEG, segcsvdWMH, SHIVA-WMH, MARS-WMH, WMH-SynthSeg) — default OFF
 
 ## Quick Start
 
@@ -56,9 +58,9 @@ The pipeline consists of 8 resumable stages:
 
 1. **import** - DICOM import and conversion
 2. **preprocess** - Modality-aware denoising (Rician NLM for T1/T2/FLAIR, MP-PCA for DWI) + N4 bias correction
-3. **brain_extraction** - Brain extraction and standardization
-4. **registration** - Multi-stage alignment to standard space
-5. **segmentation** - Brainstem and pons region extraction
+3. **brain_extraction** - SynthStrip primary (ANTs/BET fallback) + robustfov + posterior-fossa QC, plus standardization
+4. **registration** - Multi-stage ANTs alignment to standard space (cross-modality SyN uses Mutual Information)
+5. **segmentation** - Brainstem/pons segmentation — FreeSurfer substructures (default) or Harvard-Oxford gross extent (thr25), with an optional multi-atlas warp (Bianciardi/CIT168/AAL3); selectable via `BRAINSTEM_SEGMENTATION_METHOD`
 6. **analysis** - Hyperintensity detection and clustering
 7. **visualization** - Generate reports and visualizations
 8. **tracking** - Pipeline progress validation
@@ -68,8 +70,10 @@ Use `-t STAGE` to resume from any stage (e.g., `-t 4` or `-t registration`).
 ## Documentation
 
 - **[Technical Overview](docs/TECHNICAL_OVERVIEW.md)** - Comprehensive technical documentation
+- **[Multi-Atlas Integration](docs/multi_atlas_integration_spec.md)** - Optional Bianciardi/CIT168/AAL3 brainstem labeling
 - **[Scan Selection](docs/README_scan_selection.md)** - Details on intelligent scan selection
 - **[Reference Space Selection](docs/README_reference_space_selection.md)** - Reference space optimization
+- **[Synthetic Test Data](docs/synthetic_test_data.md)** - Generating synthetic phantoms for testing
 - **[Testing Guide](docs/README_tests.md)** - Testing framework and validation
 
 ## Project Status
@@ -84,6 +88,11 @@ This pipeline leverages established neuroimaging tools:
 - **FreeSurfer** - Brainstem substructure segmentation (Iglesias 2015 `segmentBS`) + 3D visualization
 - **Harvard-Oxford Atlas** - Gross brainstem extent mask
 - **MNI152 Templates** - Registration targets
+
+Optional multi-atlas brainstem labeling (warped MNI→subject, GenericLabel):
+- **Bianciardi Brainstem Navigator** - Probabilistic brainstem-nuclei atlas (Bianciardi et al., *Brain Connect* 2015)
+- **CIT168** - Subcortical atlas (Pauli, Nili & Tyszka, *Sci Data* 2018;5:180063)
+- **AAL3** - Anatomical atlas (Rolls et al., *NeuroImage* 2020;206:116189)
 
 ## License
 
