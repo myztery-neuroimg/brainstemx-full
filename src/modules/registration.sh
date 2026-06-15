@@ -1494,6 +1494,31 @@ register_contrast_matched_modality() {
 
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
 
+    # --- Handle 4D modality inputs (e.g. DWI trace+ADC / multi-b) ----------------
+    # antsApplyTransforms -d 3 aborts immediately on a 4D input, and every
+    # downstream stage expects a single 3D image.  If the modality has more than
+    # one volume, extract volume 0 ONCE and use it for BOTH the FLAIR registration
+    # and the composed resample so the moving image stays consistent with the
+    # transform.  Output naming stays tied to the original modality basename.
+    local modality_input="$modality_image"
+    local mod_ndim
+    mod_ndim=$(fslval "$modality_image" dim0 2>/dev/null | tr -d ' ')
+    if [ "${mod_ndim:-3}" = "4" ]; then
+        local mod_nvol
+        mod_nvol=$(fslval "$modality_image" dim4 2>/dev/null | tr -d ' ')
+        if [ "${mod_nvol:-1}" -gt 1 ] 2>/dev/null; then
+            local modality_3d="${output_dir}/$(basename "$modality_image" .nii.gz)_vol0.nii.gz"
+            log_formatted "WARNING" "${modality_name} image is 4D (${mod_nvol} volumes); using volume 0 for the cascade: $modality_3d"
+            if [ ! -s "$modality_3d" ]; then
+                if ! fslroi "$modality_image" "$modality_3d" 0 1; then
+                    log_formatted "ERROR" "Failed to extract a 3D volume from the 4D ${modality_name} image"
+                    return "${ERR_PREPROC:-1}"
+                fi
+            fi
+            modality_input="$modality_3d"
+        fi
+    fi
+
     # --- Step 1: register the modality to the FLAIR anchor (same-contrast). -----
     # Reuse register_to_reference (multi-stage rigid->affine->SyN).  The metric is
     # chosen inside perform_multistage_registration: same modality name => CC,
@@ -1510,7 +1535,7 @@ register_contrast_matched_modality() {
         # Capture status without tripping `set -e` if a caller invokes this
         # function outside an if/|| context.
         local reg_status=0
-        register_to_reference "$flair_anchor" "$modality_image" "$modality_name" "$mod_to_flair_prefix" || reg_status=$?
+        register_to_reference "$flair_anchor" "$modality_input" "$modality_name" "$mod_to_flair_prefix" || reg_status=$?
         if [ "$reg_status" -ne 0 ] || [ ! -f "$mod_to_flair_warped" ]; then
             log_formatted "ERROR" "${modality_name}->FLAIR registration failed (status $reg_status)"
             return "${ERR_REGISTRATION:-1}"
@@ -1585,7 +1610,7 @@ register_contrast_matched_modality() {
         "Composed ${modality_name}->FLAIR->T1 resample (single application)" \
         "${ants_bin}/antsApplyTransforms" \
         -d 3 \
-        -i "$modality_image" \
+        -i "$modality_input" \
         -r "$t1_reference" \
         -o "$composed_warped" \
         "${forward_args[@]}" \
