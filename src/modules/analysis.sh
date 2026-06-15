@@ -15,6 +15,62 @@
 # - Analysis QA integration
 #
 
+# Return 0 if two images occupy the SAME voxel space, 1 otherwise.
+# A matrix-dimension match alone is NOT sufficient: two volumes can share dims
+# yet differ in voxel size (pixdim) or world transform (sform/qform), which would
+# silently misalign a copied mask.  This compares dim1-3, pixdim1-3 AND the world
+# transform so the caller only skips resampling when the grids truly coincide.
+#
+# Conservative by design: when the world transform cannot be CONFIRMED equal
+# (sform missing/degenerate on either image, falling through to a degenerate
+# qform), this returns 1 (NOT same space) so the caller resamples via the header
+# transform — which is a safe no-op if the grids actually do match, but avoids a
+# silent misalignment if they don't.
+_analysis_same_space() {
+    local a="$1" b="$2"
+    [ -f "$a" ] && [ -f "$b" ] || return 1
+
+    local a_dims b_dims a_pix b_pix
+    a_dims=$(fslinfo "$a" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x')
+    b_dims=$(fslinfo "$b" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x')
+    [ "$a_dims" = "$b_dims" ] || return 1
+
+    a_pix=$(fslinfo "$a" | grep -E "^pixdim[123]" | awk '{printf "%.4f ", $2}')
+    b_pix=$(fslinfo "$b" | grep -E "^pixdim[123]" | awk '{printf "%.4f ", $2}')
+    [ "$a_pix" = "$b_pix" ] || return 1
+
+    # Compare the world transform (rounded). Prefer sform; fall back to qform.
+    # A matrix that is empty or all-zeros (sform_code/qform_code = 0) is treated
+    # as UNUSABLE — two unusable matrices must NOT be compared as "equal", since
+    # that would let genuinely different spaces slip through (the exact failure
+    # this helper exists to prevent).
+    local a_world b_world
+    a_world=$(_analysis_world_matrix "$a")
+    b_world=$(_analysis_world_matrix "$b")
+    if [ -z "$a_world" ] || [ -z "$b_world" ]; then
+        # Cannot confirm the world transform -> be conservative, force resample.
+        return 1
+    fi
+    [ "$a_world" = "$b_world" ] || return 1
+    return 0
+}
+
+# Echo a rounded, single-line world matrix (sform preferred, qform fallback) for
+# an image, or echo nothing when neither is usable (empty or all-zeros).
+_analysis_world_matrix() {
+    local img="$1" m
+    local xform
+    for xform in getsform getqform; do
+        m=$(fslorient "-${xform}" "$img" 2>/dev/null | awk '{for(i=1;i<=NF;i++) printf "%.3f ", $i}')
+        # Reject empty or all-zero (degenerate / code 0) matrices.
+        if [ -n "$m" ] && echo "$m" | grep -qE '[1-9]'; then
+            echo "$m"
+            return 0
+        fi
+    done
+    return 0
+}
+
 # Function to detect hyperintensities with improved false positive reduction
 detect_hyperintensities() {
     # Usage: detect_hyperintensities <FLAIR_input.nii.gz> <output_prefix> [<T1_input.nii.gz>]
@@ -205,6 +261,11 @@ detect_hyperintensities() {
     if [ ${#atlas_regions[@]} -gt 0 ]; then
         log_message "Found ${#atlas_regions[@]} atlas-based region masks for sophisticated per-region analysis"
         
+        # Reset any value left over from a previous subject (batch mode) so a
+        # stale export can't be mistaken for this subject's result if the GMM
+        # step exits without setting it.
+        export ATLAS_GMM_RESULT=""
+
         # Apply GMM-based analysis to each atlas region separately
         apply_per_region_gmm_analysis "$flair_brain" atlas_regions "$temp_dir" "$out_prefix"
         
@@ -228,8 +289,12 @@ detect_hyperintensities() {
             local final_mask="${out_prefix}_threshATLAS_GMM.nii.gz"
             local cleaned="${out_prefix}_cleanedATLAS_GMM.nii.gz"
             
-            # Use the combined atlas GMM result
-            if [ -n "$ATLAS_GMM_RESULT" ] && [ -f "$ATLAS_GMM_RESULT" ]; then
+            # Use the combined atlas GMM result. apply_per_region_gmm_analysis
+            # only exports ATLAS_GMM_RESULT when >=1 region succeeds; under
+            # `set -u` an unset reference would hard-abort the run (now reachable
+            # because detect_hyperintensities is the default primary engine), so
+            # default it to empty and let the [ -n ]/[ -f ] guard handle absence.
+            if [ -n "${ATLAS_GMM_RESULT:-}" ] && [ -f "${ATLAS_GMM_RESULT:-}" ]; then
                 cp "$ATLAS_GMM_RESULT" "$cleaned"
                 
                 # Apply minimum cluster size filtering
@@ -809,14 +874,17 @@ build_csf_exclusion_mask() {
     work_dir=$(mktemp -d)
 
     # CSF PVE map may be in a different space than the reference; resample if so.
+    # Use a full same-space check (dims + pixdim + sform), not dims alone, so we
+    # never skip resampling on a grid that merely shares matrix dimensions.
     local csf_resampled="$csf_prob"
-    local ref_dims csf_dims
-    ref_dims=$(fslinfo "$reference_image" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-    csf_dims=$(fslinfo "$csf_prob" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-    if [ "$ref_dims" != "$csf_dims" ]; then
+    if ! _analysis_same_space "$reference_image" "$csf_prob"; then
         csf_resampled="${work_dir}/csf_resampled.nii.gz"
         log_message "Resampling CSF PVE map to reference space..."
-        if ! flirt -in "$csf_prob" -ref "$reference_image" -out "$csf_resampled" -interp trilinear -dof 6; then
+        # -applyxfm -usesqform uses the stored sform/qform to map between the
+        # two grids (header-based resample), which is correct here because the
+        # CSF PVE map and the reference are already in the same physical space
+        # and only differ in sampling grid (no rigid registration needed).
+        if ! flirt -in "$csf_prob" -ref "$reference_image" -out "$csf_resampled" -applyxfm -usesqform -interp trilinear; then
             log_formatted "WARNING" "CSF PVE resampling failed; CSF subtraction will be skipped"
             rm -rf "$work_dir"
             return 1
@@ -1014,28 +1082,27 @@ apply_per_region_gmm_analysis() {
         local gmm_temp_dir="${region_work_dir}/gmm_analysis"
         mkdir -p "$gmm_temp_dir"
         
-        # Check if mask needs resampling to match FLAIR space
+        # Check if mask needs resampling to match FLAIR space.  Use the full
+        # same-space check (dims + pixdim + sform), not dims alone, and resample
+        # via the header transform (-applyxfm -usesqform) with nearestneighbour
+        # to preserve the discrete label mask.
         local region_resampled="${region_work_dir}/${region_base}_resampled.nii.gz"
-        local mask_dims=$(fslinfo "$region_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-        local flair_dims=$(fslinfo "$flair_image" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-        
-        if [ "$mask_dims" = "$flair_dims" ]; then
+        if _analysis_same_space "$region_mask" "$flair_image"; then
             cp "$region_mask" "$region_resampled"
         else
             log_message "Resampling $region_base mask to FLAIR space..."
-            flirt -in "$region_mask" -ref "$flair_image" -out "$region_resampled" -interp nearestneighbour -dof 6
+            flirt -in "$region_mask" -ref "$flair_image" -out "$region_resampled" -applyxfm -usesqform -interp nearestneighbour
         fi
-        
+
         # CRITICAL: Pre-filter segmentation mask with brain mask BEFORE any analysis
         local region_brain_masked="${region_work_dir}/${region_base}_brain_masked.nii.gz"
         log_message "Pre-filtering $region_base with brain mask to exclude non-brain voxels..."
-        
-        # Resample brain mask to match region if needed
+
+        # Resample brain mask to match region if needed (same-space check + header resample)
         local brain_mask_resampled="$brain_mask"
-        local brain_dims=$(fslinfo "$brain_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-        if [ "$brain_dims" != "$flair_dims" ]; then
+        if ! _analysis_same_space "$brain_mask" "$flair_image"; then
             brain_mask_resampled="${region_work_dir}/brain_mask_resampled.nii.gz"
-            flirt -in "$brain_mask" -ref "$flair_image" -out "$brain_mask_resampled" -interp nearestneighbour -dof 6
+            flirt -in "$brain_mask" -ref "$flair_image" -out "$brain_mask_resampled" -applyxfm -usesqform -interp nearestneighbour
         fi
         
         # Apply brain mask to region mask
@@ -1906,492 +1973,16 @@ transform_segmentation_to_original() {
     return 0
 }
 
-# Helper function to analyze a specific region and modality
-analyze_region_modality() {
-    local region="$1"
-    local region_mask="$2"
-    local image_file="$3"
-    local modality="$4"        # "FLAIR" or "T1"
-    local intensity_type="$5"  # "hyper" or "hypo"
-    local base_hyper_dir="$6"
-    
-    # Create modality-specific output directory
-    local region_output_dir="${base_hyper_dir}/${region}_${modality}"
-    mkdir -p "$region_output_dir"
-    
-    # Create masked image for this region
-    local region_image="${region_output_dir}/${region}_${modality}.nii.gz"
-    if ! fslmaths "$image_file" -mas "$region_mask" "$region_image"; then
-        log_formatted "WARNING" "Failed to create masked ${modality} for $region"
-        return 1
-    fi
-    
-    # Get region statistics for adaptive thresholding
-    local region_stats=$(fslstats "$region_image" -k "$region_mask" -M -S)
-    local region_mean=$(echo "$region_stats" | awk '{print $1}')
-    local region_std=$(echo "$region_stats" | awk '{print $2}')
-    
-    if [ "$region_mean" = "0.000000" ] || [ -z "$region_std" ]; then
-        log_message "Skipping ${modality} ${intensity_type}intensities in $region - no signal detected"
-        return 1
-    fi
-    
-    log_message "$region ${modality} statistics - Mean: $region_mean, StdDev: $region_std"
-    
-    # Apply modality-specific thresholding with different multipliers for T1 vs FLAIR
-    # Fallback literal must equal config THRESHOLD_WM_SD_MULTIPLIER (the single
-    # authoritative fallback) so the legacy path agrees with the GMM path.
-    local base_threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.2}"
-    local threshold_multiplier
-    local threshold_val
-    local abnormality_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities.nii.gz"
-    
-    # CRITICAL FIX: Use higher thresholds for T1 hypointensities than FLAIR hyperintensities
-    if [ "$modality" = "T1" ]; then
-        # T1 hypointensities need higher threshold (double the base threshold)
-        threshold_multiplier=$(echo "$base_threshold_multiplier * 2.0" | bc -l)
-        log_message "Using enhanced T1 threshold multiplier: $threshold_multiplier (2x base for hypointensities)"
-    else
-        # FLAIR hyperintensities use standard threshold
-        threshold_multiplier="$base_threshold_multiplier"
-        log_message "Using standard FLAIR threshold multiplier: $threshold_multiplier"
-    fi
-    
-    if [ "$intensity_type" = "hyper" ]; then
-        # FLAIR hyperintensities: mean + multiplier * std (above threshold)
-        threshold_val=$(echo "$region_mean + $threshold_multiplier * $region_std" | bc -l)
-        log_message "Using ${modality} hyperintensity threshold: $threshold_val for $region (multiplier: $threshold_multiplier)"
-        
-        # Create hyperintensity mask (above threshold)
-        if ! fslmaths "$region_image" -thr "$threshold_val" -bin "$abnormality_mask"; then
-            log_formatted "WARNING" "Failed to create ${modality} hyperintensity mask for $region"
-            return 1
-        fi
-    else
-        # T1 hypointensities: mean - multiplier * std (below threshold)
-        threshold_val=$(echo "$region_mean - $threshold_multiplier * $region_std" | bc -l)
-        log_message "Using ${modality} hypointensity threshold: $threshold_val for $region (multiplier: $threshold_multiplier)"
-        
-        # Create hypointensity mask (below threshold)
-        if ! fslmaths "$region_image" -uthr "$threshold_val" -bin "$abnormality_mask"; then
-            log_formatted "WARNING" "Failed to create ${modality} hypointensity mask for $region"
-            return 1
-        fi
-    fi
-    
-    # Apply minimum cluster size filtering
-    local min_size="${MIN_HYPERINTENSITY_SIZE:-4}"
-    local filtered_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities_filtered.nii.gz"
-    
-    if cluster --in="$abnormality_mask" --thresh=0.5 \
-               --connectivity=26 --minextent="$min_size" \
-               --oindex="$filtered_mask" > /dev/null 2>&1; then
-        log_message "✓ Applied clustering filter (min size: $min_size voxels) to ${modality} $region"
-    else
-        log_message "Clustering failed for ${modality} $region, using unfiltered mask"
-        cp "$abnormality_mask" "$filtered_mask"
-    fi
-    
-    # Create intensity version
-    local abnormality_intensity="${region_output_dir}/${region}_${modality}_${intensity_type}intensities_intensity.nii.gz"
-    fslmaths "$region_image" -mas "$filtered_mask" "$abnormality_intensity"
-    
-    # Create RGB overlay for visualization
-    local overlay="${region_output_dir}/overlay.nii.gz"
-    log_message "Creating ${modality} RGB overlay for $region..."
-    
-    # Check dimensions match
-    local image_dims=$(fslinfo "$region_image" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-    local mask_dims=$(fslinfo "$filtered_mask" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
-    
-    if [ "$image_dims" = "$mask_dims" ]; then
-        # Create RGB channels
-        local temp_dir=$(mktemp -d)
-        
-        # Red channel - background image
-        local max_val=$(fslstats "$region_image" -k "$region_mask" -R | awk '{print $2}')
-        if [ "$max_val" != "0.000000" ] && [ -n "$max_val" ]; then
-            fslmaths "$region_image" -div "$max_val" "${temp_dir}/r.nii.gz"
-        else
-            fslmaths "$region_image" -mul 0 "${temp_dir}/r.nii.gz"
-        fi
-        
-        # Green channel - abnormalities (hyperintensities green, hypointensities blue)
-        if [ "$intensity_type" = "hyper" ]; then
-            fslmaths "$filtered_mask" -mul 0.8 "${temp_dir}/g.nii.gz"
-            fslmaths "$filtered_mask" -mul 0 "${temp_dir}/b.nii.gz"
-        else
-            fslmaths "$filtered_mask" -mul 0 "${temp_dir}/g.nii.gz"
-            fslmaths "$filtered_mask" -mul 0.8 "${temp_dir}/b.nii.gz"
-        fi
-        
-        # Blue channel - mask outline (or hypointensities)
-        if [ "$intensity_type" = "hyper" ]; then
-            fslmaths "$region_mask" -edge -bin -mul 0.3 "${temp_dir}/b.nii.gz"
-        fi
-        
-        # Merge RGB channels
-        if fslmerge -t "$overlay" "${temp_dir}/r.nii.gz" "${temp_dir}/g.nii.gz" "${temp_dir}/b.nii.gz"; then
-            log_message "✓ Created ${modality} RGB overlay for $region"
-        else
-            log_formatted "WARNING" "Failed to create ${modality} RGB overlay for $region"
-            # Create fallback overlay
-            fslmaths "$region_image" -add "$filtered_mask" "$overlay"
-        fi
-        
-        rm -rf "$temp_dir"
-    else
-        log_formatted "WARNING" "Dimension mismatch for ${modality} $region overlay - creating fallback"
-        fslmaths "$region_image" -add "$filtered_mask" "$overlay"
-    fi
-    
-    # Quantify results
-    local abnormal_voxels=$(fslstats "$filtered_mask" -V | awk '{print $1}')
-    local abnormal_volume=$(fslstats "$filtered_mask" -V | awk '{print $2}')
-    local region_voxels=$(fslstats "$region_mask" -V | awk '{print $1}')
-    local region_volume=$(fslstats "$region_mask" -V | awk '{print $2}')
-    
-    local percentage="0"
-    if [ "$region_voxels" -gt 0 ]; then
-        percentage=$(echo "scale=2; $abnormal_voxels * 100 / $region_voxels" | bc)
-    fi
-    
-    log_message "✓ $region ${modality} ${intensity_type}intensities results:"
-    log_message "   Abnormal voxels: $abnormal_voxels ($abnormal_volume mm³)"
-    log_message "   Region coverage: ${percentage}%"
-    
-    # Create region summary
-    {
-        echo "Talairach Region ${modality} ${intensity_type^}intensity Analysis"
-        echo "=============================================="
-        echo "Region: $region"
-        echo "Modality: $modality"
-        echo "Analysis type: ${intensity_type}intensities"
-        echo "Date: $(date)"
-        echo ""
-        echo "Input files:"
-        echo "  Image: $(basename "$image_file")"
-        echo "  Mask: $(basename "$region_mask")"
-        echo ""
-        echo "Analysis parameters:"
-        echo "  Threshold multiplier: $threshold_multiplier"
-        echo "  Threshold value: $threshold_val"
-        echo "  Threshold direction: $([ "$intensity_type" = "hyper" ] && echo "above (>)" || echo "below (<)")"
-        echo "  Minimum cluster size: $min_size voxels"
-        echo ""
-        echo "Results:"
-        echo "  Region volume: $region_volume mm³ ($region_voxels voxels)"
-        echo "  Abnormal volume: $abnormal_volume mm³ ($abnormal_voxels voxels)"
-        echo "  Percentage affected: ${percentage}%"
-        echo ""
-        echo "Output files:"
-        echo "  Abnormality mask: $(basename "$filtered_mask")"
-        echo "  Abnormality intensity: $(basename "$abnormality_intensity")"
-        echo "  RGB overlay: $(basename "$overlay")"
-    } > "${region_output_dir}/${region}_${modality}_${intensity_type}intensity_report.txt"
-    
-    log_message "✓ Created ${modality} analysis report: ${region_output_dir}/${region}_${modality}_${intensity_type}intensity_report.txt"
-    
-    return 0
-}
-
-# Function to analyze intensity abnormalities in Talairach brainstem regions (both FLAIR and T1)
-analyze_talairach_hyperintensities() {
-    local flair_file="$1"
-    local analysis_dir="$2"
-    local output_basename="$3"
-    local t1_file="${4:-}"  # Optional T1 file
-    
-    log_formatted "INFO" "===== TALAIRACH INTENSITY ABNORMALITY ANALYSIS ====="
-    log_message "FLAIR input: $flair_file"
-    log_message "T1 input: ${t1_file:-none provided}"
-    log_message "Analysis directory: $analysis_dir"
-    log_message "Output basename: $output_basename"
-    
-    # Validate inputs
-    if [ ! -f "$flair_file" ]; then
-        log_formatted "ERROR" "FLAIR file not found: $flair_file"
-        return 1
-    fi
-    
-    if [ ! -d "$analysis_dir" ]; then
-        log_formatted "ERROR" "Analysis directory not found: $analysis_dir"
-        return 1
-    fi
-    
-    # Try to find T1 file if not provided
-    if [ -z "$t1_file" ] || [ ! -f "$t1_file" ]; then
-        log_message "Searching for T1 file..."
-        local t1_candidates=(
-            "${RESULTS_DIR}/standardized/"*"T1"*"_std.nii.gz"
-            "${RESULTS_DIR}/bias_corrected/"*"T1"*".nii.gz"
-            "${RESULTS_DIR}/preprocessing/"*"T1"*".nii.gz"
-        )
-        
-        for candidate in "${t1_candidates[@]}"; do
-            if [ -f "$candidate" ]; then
-                t1_file="$candidate"
-                log_message "Found T1 file: $t1_file"
-                break
-            fi
-        done
-        
-        if [ ! -f "$t1_file" ]; then
-            log_formatted "WARNING" "No T1 file found - will only analyze FLAIR hyperintensities"
-            t1_file=""
-        fi
-    fi
-    
-    # Create hyperintensities output directory
-    local hyper_dir="${RESULTS_DIR}/comprehensive_analysis/hyperintensities"
-    mkdir -p "$hyper_dir"
-    
-    # Find all Talairach region masks
-    local talairach_regions=(
-        "left_medulla"
-        "right_medulla"
-        "left_pons"
-        "right_pons"
-        "left_midbrain"
-        "right_midbrain"
-        "pons"  # combined pons
-    )
-    
-    log_message "Analyzing intensity abnormalities in Talairach brainstem regions..."
-    log_message "Will analyze: FLAIR (hyperintensities) and T1 (hypointensities)"
-    
-    # Process each Talairach region for both modalities
-    for region in "${talairach_regions[@]}"; do
-        # Look for region mask files
-        local region_mask=""
-        local region_files=(
-            "${analysis_dir}/${output_basename}_${region}_flair_space.nii.gz"
-            "${analysis_dir}/${output_basename}_${region}.nii.gz"
-        )
-        
-        for mask_file in "${region_files[@]}"; do
-            if [ -f "$mask_file" ]; then
-                region_mask="$mask_file"
-                break
-            fi
-        done
-        
-        if [ -z "$region_mask" ] || [ ! -f "$region_mask" ]; then
-            log_message "Skipping $region - mask not found"
-            continue
-        fi
-        
-        log_message "Processing intensity abnormalities in $region..."
-        log_message "Using mask: $(basename "$region_mask")"
-        
-        # Process FLAIR hyperintensities
-        analyze_region_modality "$region" "$region_mask" "$flair_file" "FLAIR" "hyper" "$hyper_dir"
-        
-        # Process T1 hypointensities if T1 available
-        if [ -n "$t1_file" ] && [ -f "$t1_file" ]; then
-            analyze_region_modality "$region" "$region_mask" "$t1_file" "T1" "hypo" "$hyper_dir"
-        fi
-    done
-    
-    # Create combined summary across all Talairach regions
-    log_message "Creating combined Talairach intensity abnormality summary..."
-    
-    local combined_report="${hyper_dir}/talairach_intensity_abnormality_summary.txt"
-    {
-        echo "Talairach Brainstem Intensity Abnormality Analysis Summary"
-        echo "========================================================="
-        echo "Date: $(date)"
-        echo "FLAIR input: $(basename "$flair_file")"
-        if [ -n "$t1_file" ] && [ -f "$t1_file" ]; then
-            echo "T1 input: $(basename "$t1_file")"
-        else
-            echo "T1 input: Not available"
-        fi
-        echo ""
-        echo "FLAIR HYPERINTENSITIES (lesions appear bright)"
-        echo "=============================================="
-        echo "Region | Volume (mm³) | Hyperintensities (mm³) | % Affected"
-        echo "-------|--------------|-------------------------|----------"
-        
-        for region in "${talairach_regions[@]}"; do
-            local flair_report="${hyper_dir}/${region}_FLAIR/${region}_FLAIR_hyperintensity_report.txt"
-            if [ -f "$flair_report" ]; then
-                local region_vol=$(grep "Region volume:" "$flair_report" | awk '{print $3}')
-                local abnormal_vol=$(grep "Abnormal volume:" "$flair_report" | awk '{print $3}')
-                local percentage=$(grep "Percentage affected:" "$flair_report" | awk '{print $3}')
-                printf "%-6s | %12s | %23s | %8s\n" "$region" "$region_vol" "$abnormal_vol" "$percentage"
-            else
-                printf "%-6s | %12s | %23s | %8s\n" "$region" "N/A" "N/A" "N/A"
-            fi
-        done
-        
-        if [ -n "$t1_file" ] && [ -f "$t1_file" ]; then
-            echo ""
-            echo "T1 HYPOINTENSITIES (lesions appear dark)"
-            echo "========================================"
-            echo "Region | Volume (mm³) | Hypointensities (mm³) | % Affected"
-            echo "-------|--------------|------------------------|----------"
-            
-            for region in "${talairach_regions[@]}"; do
-                local t1_report="${hyper_dir}/${region}_T1/${region}_T1_hypointensity_report.txt"
-                if [ -f "$t1_report" ]; then
-                    local region_vol=$(grep "Region volume:" "$t1_report" | awk '{print $3}')
-                    local abnormal_vol=$(grep "Abnormal volume:" "$t1_report" | awk '{print $3}')
-                    local percentage=$(grep "Percentage affected:" "$t1_report" | awk '{print $3}')
-                    printf "%-6s | %12s | %22s | %8s\n" "$region" "$region_vol" "$abnormal_vol" "$percentage"
-                else
-                    printf "%-6s | %12s | %22s | %8s\n" "$region" "N/A" "N/A" "N/A"
-                fi
-            done
-        fi
-        
-        echo ""
-        echo "Analysis Parameters:"
-        echo "  Threshold multiplier: ${THRESHOLD_WM_SD_MULTIPLIER:-1.2}"
-        echo "  Minimum cluster size: ${MIN_HYPERINTENSITY_SIZE:-4} voxels"
-        echo "  FLAIR thresholding: mean + multiplier × std (above threshold)"
-        echo "  T1 thresholding: mean - multiplier × std (below threshold)"
-        
-    } > "$combined_report"
-    
-    log_formatted "SUCCESS" "Talairach hyperintensity analysis complete"
-    log_message "Combined summary: $combined_report"
-    log_message "Individual reports in: $hyper_dir"
-    
-    return 0
-}
-
-# Function to run comprehensive analysis (wrapper for analyze_talairach_hyperintensities)
-run_comprehensive_analysis() {
-    local orig_t1="$1"
-    local orig_flair="$2"
-    local t1_std="$3"
-    local flair_std="$4"
-    local segmentation_dir="$5"
-    local comprehensive_dir="$6"
-    
-    log_formatted "INFO" "===== RUNNING COMPREHENSIVE ANALYSIS ====="
-    log_message "Original T1: $orig_t1"
-    log_message "Original FLAIR: $orig_flair"
-    log_message "Standardized T1: $t1_std"
-    log_message "Standardized FLAIR: $flair_std"
-    log_message "Segmentation directory: $segmentation_dir"
-    log_message "Output directory: $comprehensive_dir"
-    
-    # Validate inputs
-    if [ ! -f "$orig_flair" ]; then
-        log_formatted "ERROR" "Original FLAIR file not found: $orig_flair"
-        return 1
-    fi
-    
-    if [ ! -d "$segmentation_dir" ]; then
-        log_formatted "ERROR" "Segmentation directory not found: $segmentation_dir"
-        return 1
-    fi
-    
-    # Create comprehensive analysis output directory
-    mkdir -p "$comprehensive_dir"
-    
-    # Find Talairach analysis directory with masks
-    local analysis_dir=""
-    local output_basename=""
-    
-    # Look for Talairach masks in multiple possible locations
-    local possible_dirs=(
-        "${comprehensive_dir}/original_space"
-        "${segmentation_dir}/detailed_brainstem"
-        "${segmentation_dir}/../comprehensive_analysis/original_space"
-    )
-    
-    # Create the original_space directory if it doesn't exist
-    mkdir -p "${comprehensive_dir}/original_space"
-    
-    for dir in "${possible_dirs[@]}"; do
-        if [ -d "$dir" ]; then
-            # Look for Talairach region files to determine the correct basename
-            local sample_files=($(find "$dir" -name "*_left_medulla*.nii.gz" -o -name "*_left_pons*.nii.gz" 2>/dev/null | head -2))
-            
-            if [ ${#sample_files[@]} -gt 0 ]; then
-                analysis_dir="$dir"
-                # Extract basename from first file (remove region suffix)
-                local sample_file=$(basename "${sample_files[0]}" .nii.gz)
-                output_basename=$(echo "$sample_file" | sed -E 's/_(left|right)_(medulla|pons|midbrain).*$//')
-                log_message "Found Talairach masks in: $analysis_dir"
-                log_message "Using output basename: $output_basename"
-                break
-            fi
-        fi
-    done
-    
-    # If no existing Talairach masks found, use original_space and derive basename from input
-    if [ -z "$analysis_dir" ]; then
-        analysis_dir="${comprehensive_dir}/original_space"
-        # Derive basename from FLAIR file (common approach)
-        local flair_basename=$(basename "$orig_flair" .nii.gz)
-        # Remove common suffixes to get clean basename
-        output_basename=$(echo "$flair_basename" | sed -E 's/_(brain|std|n4|FLAIR|flair).*$//' | sed -E 's/_[0-9]+$//')
-        
-        log_message "No existing Talairach masks found"
-        log_message "Will use analysis directory: $analysis_dir"
-        log_message "Will use output basename: $output_basename"
-        
-        # Check if we have any segmentation data to work with
-        local seg_files=($(find "$segmentation_dir" -name "*.nii.gz" 2>/dev/null))
-        if [ ${#seg_files[@]} -eq 0 ]; then
-            log_formatted "ERROR" "No segmentation files found in $segmentation_dir"
-            return 1
-        fi
-        
-        log_message "Found ${#seg_files[@]} segmentation files to analyze"
-    fi
-    
-    # Determine which FLAIR and T1 files to use for analysis
-    # For hyperintensity detection, original space is often preferred for native resolution
-    local analysis_flair="$orig_flair"
-    local analysis_t1="$orig_t1"
-    
-    # Check if we should use standardized versions based on mask location
-    if [[ "$analysis_dir" == *"standardized"* ]] || [[ "$analysis_dir" == *"std"* ]]; then
-        log_message "Analysis directory suggests standardized space, using standardized images"
-        analysis_flair="$flair_std"
-        analysis_t1="$t1_std"
-    fi
-    
-    log_message "Using FLAIR for analysis: $analysis_flair"
-    log_message "Using T1 for analysis: $analysis_t1"
-    
-    # Call the main Talairach hyperintensity analysis function
-    log_message "Running Talairach hyperintensity analysis..."
-    if analyze_talairach_hyperintensities "$analysis_flair" "$analysis_dir" "$output_basename" "$analysis_t1"; then
-        log_formatted "SUCCESS" "Comprehensive analysis completed successfully"
-        
-        # Create summary of results
-        local summary_file="${comprehensive_dir}/comprehensive_analysis_summary.txt"
-        {
-            echo "Comprehensive Analysis Summary"
-            echo "============================="
-            echo "Date: $(date)"
-            echo "Analysis directory: $analysis_dir"
-            echo "Output basename: $output_basename"
-            echo "FLAIR input: $(basename "$analysis_flair")"
-            echo "T1 input: $(basename "$analysis_t1")"
-            echo ""
-            echo "Analysis completed successfully."
-            echo "Results available in: ${comprehensive_dir}/hyperintensities/"
-            echo "Detailed reports in individual region subdirectories."
-        } > "$summary_file"
-        
-        # Create comprehensive FLAIR visualizations for all segmentations
-        log_message "Creating comprehensive FLAIR segmentation visualizations..."
-        create_comprehensive_flair_visualizations "$analysis_flair" "$analysis_dir" "${comprehensive_dir}/visualizations" "comprehensive_flair"
-        
-        log_message "Summary report created: $summary_file"
-        return 0
-    else
-        log_formatted "ERROR" "Talairach hyperintensity analysis failed"
-        return 1
-    fi
-}
+# DEPRECATED / REMOVED: Talairach intensity-abnormality analysis layer.
+#
+# analyze_region_modality(), analyze_talairach_hyperintensities() and the
+# analysis.sh wrapper run_comprehensive_analysis() (Talairach NAWM SD-threshold
+# over *_left_medulla*/*_pons* mask globs) were retired here. The live analysis
+# path now uses detect_hyperintensities() (FreeSurfer/multi-atlas
+# detailed_brainstem regions via find_all_atlas_regions + CSF/PV exclusion +
+# per-region GMM) as the PRIMARY engine, with run_comprehensive_analysis()
+# (enhanced_registration_validation.sh) as the guarded legacy fallback. No live
+# Talairach analysis capability remains.
 
 # Function to create comprehensive 3D visualization script using both fsleyes and freeview
 create_3d_visualization_script() {
@@ -2602,7 +2193,7 @@ fi
     # Look for brainstem segmentation masks
     log_message "Searching for segmentation overlays in $output_dir"
     
-    # Brainstem region masks (Talairach atlas)
+    # Brainstem region masks (FreeSurfer / multi-atlas substructures)
     local regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain" "pons")
     for region in "${regions[@]}"; do
         # Look for region masks in various formats
@@ -2811,310 +2402,13 @@ EOF
     return 0
 }
 
-# Function to create comprehensive FLAIR segmentation visualizations
-create_comprehensive_flair_visualizations() {
-    local flair_file="$1"
-    local segmentation_dir="$2"
-    local output_dir="${3:-${segmentation_dir}/visualizations}"
-    local analysis_name="${4:-flair_comprehensive}"
-    
-    log_formatted "INFO" "===== COMPREHENSIVE FLAIR SEGMENTATION VISUALIZATION ====="
-    log_message "FLAIR input: $flair_file"
-    log_message "Segmentation directory: $segmentation_dir"
-    log_message "Output directory: $output_dir"
-    
-    # Validate inputs
-    if [ ! -f "$flair_file" ]; then
-        log_formatted "ERROR" "FLAIR file not found: $flair_file"
-        return 1
-    fi
-    
-    if [ ! -d "$segmentation_dir" ]; then
-        log_formatted "ERROR" "Segmentation directory not found: $segmentation_dir"
-        return 1
-    fi
-    
-    # Create output directory
-    mkdir -p "$output_dir"
-    
-    # Find all FLAIR-related segmentation files
-    log_message "Searching for FLAIR segmentation files..."
-    local flair_masks=()
-    local flair_intensities=()
-    
-    # Look for various types of FLAIR segmentation files
-    local search_patterns=(
-        "*flair*space*.nii.gz"
-        "*FLAIR*.nii.gz"
-        "*hyperintensit*.nii.gz"
-        "*_flair_*.nii.gz"
-        "*talairach*flair*.nii.gz"
-        "*medulla*.nii.gz"
-        "*pons*.nii.gz"
-        "*midbrain*.nii.gz"
-        "*left_medulla*.nii.gz"
-        "*right_medulla*.nii.gz"
-        "*left_pons*.nii.gz"
-        "*right_pons*.nii.gz"
-        "*left_midbrain*.nii.gz"
-        "*right_midbrain*.nii.gz"
-        "*brainstem*.nii.gz"
-        "*talairach*.nii.gz"
-    )
-    
-    for pattern in "${search_patterns[@]}"; do
-        while IFS= read -r -d '' file; do
-            if [[ "$file" == *"_intensity"* ]] || [[ "$file" == *"_clustered"* ]]; then
-                flair_intensities+=("$file")
-            else
-                flair_masks+=("$file")
-            fi
-        done < <(find "$segmentation_dir" -name "$pattern" -type f -print0 2>/dev/null)
-    done
-    
-    # Also search in comprehensive analysis and Talairach-specific directories
-    local additional_dirs=(
-        "${segmentation_dir}/../comprehensive_analysis"
-        "${segmentation_dir}/../segmentation/detailed_brainstem"
-        "${segmentation_dir}/detailed_brainstem"
-        "${segmentation_dir}/../talairach"
-        "${segmentation_dir}/talairach"
-        "${RESULTS_DIR}/comprehensive_analysis/original_space"
-        "${RESULTS_DIR}/segmentation/detailed_brainstem"
-        "${RESULTS_DIR}/talairach"
-    )
-    
-    for comp_dir in "${additional_dirs[@]}"; do
-        if [ -d "$comp_dir" ]; then
-            log_message "Searching Talairach directory: $comp_dir"
-            for pattern in "${search_patterns[@]}"; do
-                while IFS= read -r -d '' file; do
-                    if [[ "$file" == *"_intensity"* ]] || [[ "$file" == *"_clustered"* ]]; then
-                        flair_intensities+=("$file")
-                    else
-                        flair_masks+=("$file")
-                    fi
-                done < <(find "$comp_dir" -name "$pattern" -type f -print0 2>/dev/null)
-            done
-        fi
-    done
-    
-    # Remove duplicates and sort
-    if [ ${#flair_masks[@]} -gt 0 ]; then
-        readarray -t flair_masks < <(printf '%s\n' "${flair_masks[@]}" | sort -u)
-    fi
-    if [ ${#flair_intensities[@]} -gt 0 ]; then
-        readarray -t flair_intensities < <(printf '%s\n' "${flair_intensities[@]}" | sort -u)
-    fi
-    
-    log_message "Found ${#flair_masks[@]} FLAIR mask files"
-    log_message "Found ${#flair_intensities[@]} FLAIR intensity files"
-    
-    if [ ${#flair_masks[@]} -eq 0 ] && [ ${#flair_intensities[@]} -eq 0 ]; then
-        log_formatted "WARNING" "No FLAIR segmentation files found"
-        return 1
-    fi
-    
-    # Create comprehensive visualization script
-    local viz_script="${output_dir}/${analysis_name}_all_segmentations.sh"
-    cat > "$viz_script" << 'EOF'
-#!/usr/bin/env bash
-#
-# Comprehensive FLAIR Segmentation Visualization
-# Generated automatically for all FLAIR-related segmentations
-#
-
-echo "Starting comprehensive FLAIR segmentation visualization..."
-echo "This will show all FLAIR segmentations and analysis results"
-echo ""
-
-# Check available visualization tools
-FSLEYES_AVAILABLE=false
-FREEVIEW_AVAILABLE=false
-
-if command -v fsleyes &> /dev/null; then
-    FSLEYES_AVAILABLE=true
-fi
-
-if command -v freeview &> /dev/null; then
-    FREEVIEW_AVAILABLE=true
-fi
-
-if [ "$FSLEYES_AVAILABLE" = false ] && [ "$FREEVIEW_AVAILABLE" = false ]; then
-    echo "ERROR: No visualization tools found (fsleyes or freeview)"
-    exit 1
-fi
-
-echo "Available tools:"
-[ "$FSLEYES_AVAILABLE" = true ] && echo "  - FSLeyes (FSL)"
-[ "$FREEVIEW_AVAILABLE" = true ] && echo "  - FreeView (FreeSurfer)"
-echo ""
-
-# Choose visualization tool
-if [ "$FSLEYES_AVAILABLE" = true ]; then
-    echo "Using FSLeyes for comprehensive overlay visualization..."
-    VISUALIZATION_CMD="fsleyes"
-elif [ "$FREEVIEW_AVAILABLE" = true ]; then
-    echo "Using FreeView for visualization..."
-    VISUALIZATION_CMD="freeview -v"
-fi
-
-EOF
-
-    # Add FLAIR background
-    echo "# Add FLAIR background image" >> "$viz_script"
-    echo "VISUALIZATION_CMD=\"\$VISUALIZATION_CMD '$flair_file'\"" >> "$viz_script"
-    echo "echo \"Background: $(basename "$flair_file")\"" >> "$viz_script"
-    echo "" >> "$viz_script"
-    
-    # Add each mask file with appropriate colormap
-    local overlay_count=0
-    for mask in "${flair_masks[@]}"; do
-        if [ -f "$mask" ]; then
-            local basename_mask=$(basename "$mask" .nii.gz)
-            local colormap="random"
-            local alpha="50"
-            
-            # Choose appropriate colormap based on file type (enhanced for Talairach)
-            if [[ "$basename_mask" == *"hyperintens"* ]]; then
-                colormap="hot"
-                alpha="70"
-            elif [[ "$basename_mask" == *"hypointens"* ]]; then
-                colormap="cool"
-                alpha="70"
-            elif [[ "$basename_mask" == *"left_medulla"* ]]; then
-                colormap="red"
-                alpha="65"
-            elif [[ "$basename_mask" == *"right_medulla"* ]]; then
-                colormap="red-yellow"
-                alpha="65"
-            elif [[ "$basename_mask" == *"medulla"* ]]; then
-                colormap="red"
-                alpha="60"
-            elif [[ "$basename_mask" == *"left_pons"* ]]; then
-                colormap="blue"
-                alpha="65"
-            elif [[ "$basename_mask" == *"right_pons"* ]]; then
-                colormap="blue-lightblue"
-                alpha="65"
-            elif [[ "$basename_mask" == *"pons"* ]]; then
-                colormap="blue"
-                alpha="60"
-            elif [[ "$basename_mask" == *"left_midbrain"* ]]; then
-                colormap="green"
-                alpha="65"
-            elif [[ "$basename_mask" == *"right_midbrain"* ]]; then
-                colormap="green-blue"
-                alpha="65"
-            elif [[ "$basename_mask" == *"midbrain"* ]]; then
-                colormap="green"
-                alpha="60"
-            elif [[ "$basename_mask" == *"brainstem"* ]]; then
-                colormap="subcortical"
-                alpha="55"
-            elif [[ "$basename_mask" == *"talairach"* ]]; then
-                colormap="random"
-                alpha="50"
-            fi
-            
-            cat >> "$viz_script" << EOF
-# Add $(basename "$mask")
-if [ -f "$mask" ]; then
-    if [ "\$FSLEYES_AVAILABLE" = true ]; then
-        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$mask' -cm $colormap -a $alpha"
-    else
-        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$mask':colormap=$colormap:opacity=0.$alpha"
-    fi
-    echo "Added overlay: $(basename "$mask") (${colormap})"
-fi
-
-EOF
-            ((overlay_count++))
-        fi
-    done
-    
-    # Add intensity files
-    for intensity in "${flair_intensities[@]}"; do
-        if [ -f "$intensity" ]; then
-            cat >> "$viz_script" << EOF
-# Add $(basename "$intensity")
-if [ -f "$intensity" ]; then
-    if [ "\$FSLEYES_AVAILABLE" = true ]; then
-        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$intensity' -cm hot -a 80"
-    else
-        VISUALIZATION_CMD="\$VISUALIZATION_CMD '$intensity':colormap=heat:opacity=0.8"
-    fi
-    echo "Added intensity overlay: $(basename "$intensity")"
-fi
-
-EOF
-            ((overlay_count++))
-        fi
-    done
-    
-    # Complete the script
-    cat >> "$viz_script" << 'EOF'
-# Launch visualization
-echo ""
-echo "Launching visualization with $overlay_count overlays..."
-echo "Command: $VISUALIZATION_CMD"
-echo ""
-echo "Visualization Controls:"
-if [ "$FSLEYES_AVAILABLE" = true ]; then
-    echo "  FSLeyes:"
-    echo "    - Mouse: Navigate through slices"
-    echo "    - Right-click overlays: Adjust properties"
-    echo "    - Checkboxes: Toggle overlay visibility"
-    echo "    - 3D button: Switch to volume rendering"
-else
-    echo "  FreeView:"
-    echo "    - Mouse: Rotate, pan, zoom"
-    echo "    - View menu: Change display options"
-    echo "    - Right-click: Context menu"
-fi
-echo ""
-
-# Execute visualization
-eval "$VISUALIZATION_CMD"
-EOF
-
-    chmod +x "$viz_script"
-    
-    # Create summary report
-    local summary="${output_dir}/${analysis_name}_visualization_summary.txt"
-    {
-        echo "Comprehensive FLAIR Segmentation Visualization Summary"
-        echo "====================================================="
-        echo "Generated: $(date)"
-        echo "FLAIR input: $(basename "$flair_file")"
-        echo "Segmentation directory: $segmentation_dir"
-        echo ""
-        echo "Files included in visualization:"
-        echo "--------------------------------"
-        echo "Total overlays: $overlay_count"
-        echo ""
-        echo "Mask files (${#flair_masks[@]}):"
-        for mask in "${flair_masks[@]}"; do
-            echo "  - $(basename "$mask")"
-        done
-        echo ""
-        echo "Intensity files (${#flair_intensities[@]}):"
-        for intensity in "${flair_intensities[@]}"; do
-            echo "  - $(basename "$intensity")"
-        done
-        echo ""
-        echo "To view: ./${analysis_name}_all_segmentations.sh"
-    } > "$summary"
-    
-    log_formatted "SUCCESS" "Comprehensive FLAIR visualization created"
-    log_message "Visualization script: $viz_script"
-    log_message "Summary report: $summary"
-    log_message "Total overlays: $overlay_count"
-    
-    return 0
-}
+# REMOVED: create_comprehensive_flair_visualizations() — an orphaned visualization
+# helper whose only caller was the retired Talairach run_comprehensive_analysis()
+# wrapper. It carried *talairach* mask globs; deleted with the Talairach layer.
 
 # Export functions
+export -f _analysis_same_space
+export -f _analysis_world_matrix
 export -f detect_hyperintensities
 export -f create_supratentorial_mask
 export -f find_all_atlas_regions
@@ -3134,9 +2428,6 @@ export -f create_multi_threshold_comparison
 export -f create_3d_rendering
 export -f create_intensity_profiles
 export -f transform_segmentation_to_original
-export -f analyze_talairach_hyperintensities
-export -f run_comprehensive_analysis
 export -f create_3d_visualization_script
-export -f create_comprehensive_flair_visualizations
 
 log_message "Analysis module loaded with enhanced regional adaptive thresholding"

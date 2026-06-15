@@ -45,35 +45,9 @@ ensure_safe_fslmaths() {
     return 0
 }
 
-# Function to ensure analysis module is available
-ensure_analysis_module() {
-    if ! declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
-        log_formatted "WARNING" "analyze_talairach_hyperintensities function not available, attempting to source analysis.sh"
-        
-        # Try to find and source analysis.sh
-        local analysis_paths=(
-            "$(dirname "${BASH_SOURCE[0]}")/analysis.sh"
-            "${SCRIPT_DIR}/modules/analysis.sh"
-            "./src/modules/analysis.sh"
-            "../src/modules/analysis.sh"
-        )
-        
-        for analysis_path in "${analysis_paths[@]}"; do
-            if [ -f "$analysis_path" ]; then
-                log_message "Found analysis.sh at: $analysis_path"
-                source "$analysis_path"
-                if declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
-                    log_formatted "SUCCESS" "analyze_talairach_hyperintensities function loaded successfully"
-                    return 0
-                fi
-            fi
-        done
-        
-        log_formatted "WARNING" "Could not load analyze_talairach_hyperintensities function"
-        return 1
-    fi
-    return 0
-}
+# NOTE: ensure_analysis_module() was removed alongside the retired Talairach
+# analysis layer (it existed only to lazily source analyze_talairach_hyperintensities,
+# which no longer exists). analysis.sh is sourced by pipeline.sh before this module.
 
 # Emergency path validation function
 emergency_validate_paths() {
@@ -591,7 +565,7 @@ analyze_hyperintensities_in_all_masks() {
     local t1_file="$2"           # T1 image in standard space
     local segmentation_dir="$3"  # Directory containing segmentation masks
     local output_dir="$4"        # Output directory
-    local threshold="${5:-${THRESHOLD_WM_SD_MULTIPLIER:-1.5}}"  # Use config threshold or default to 1.25 SD above mean
+    local threshold="${5:-${THRESHOLD_WM_SD_MULTIPLIER:-1.2}}"  # Use config threshold; falls back to the authoritative 1.2 SD multiplier
     
     log_formatted "INFO" "===== ANALYZING HYPERINTENSITIES IN ALL SEGMENTATION MASKS ====="
     log_message "FLAIR: $flair_file"
@@ -643,7 +617,7 @@ analyze_hyperintensities_in_all_masks() {
         log_formatted "WARNING" "No pons mask found with standardized naming (*pons_mask_orig.nii.gz or *pons_mask_flair_space.nii.gz) in $segmentation_dir"
     fi
     
-    # Talairach detailed brainstem subdivisions - STANDARDIZED NAMING ONLY
+    # FreeSurfer / multi-atlas brainstem subdivisions - STANDARDIZED NAMING ONLY
     local detailed_regions=("left_medulla" "right_medulla" "left_pons" "right_pons" "left_midbrain" "right_midbrain")
     
     for region in "${detailed_regions[@]}"; do
@@ -666,16 +640,8 @@ analyze_hyperintensities_in_all_masks() {
         fi
     done
     
-    # Talairach atlas - STANDARDIZED NAMING ONLY
-    local talairach_mask=$(find "$segmentation_dir" -name "*talairach_mask_orig.nii.gz" | head -1)
-    if [ -f "$talairach_mask" ]; then
-        log_message "Found Talairach atlas mask: $talairach_mask"
-        mask_files+=("$talairach_mask")
-        mask_names+=("talairach")
-    else
-        log_formatted "WARNING" "No Talairach atlas mask found with standardized naming (*talairach_mask_orig.nii.gz) in $segmentation_dir"
-    fi
-    
+    # (Talairach atlas mask discovery retired — no live Talairach analysis remains.)
+
     # Gold standard - STANDARDIZED NAMING ONLY
     local gold_mask=$(find "$segmentation_dir" -name "*gold_mask_orig.nii.gz" | head -1)
     if [ -f "$gold_mask" ]; then
@@ -1746,39 +1712,16 @@ run_comprehensive_analysis() {
     log_message "Step 5: Analyzing hyperintensities in all masks using standardized FLAIR..."
     analyze_hyperintensities_in_all_masks "$flair_std" "$t1_std" "$orig_space_dir" "${output_dir}/hyperintensities"
     
-    # 6. Analyze hyperintensities in Talairach brainstem regions
-    log_message "Step 6: Analyzing hyperintensities in Talairach brainstem regions..."
-    
-    # Ensure analysis module is loaded and check if the analyze_talairach_hyperintensities function is available
-    if ensure_analysis_module && declare -f analyze_talairach_hyperintensities >/dev/null 2>&1; then
-        # Check if Talairach analysis files exist
-        if [ -d "${RESULTS_DIR}/comprehensive_analysis/original_space" ]; then
-            # Find the appropriate output basename for Talairach files
-            local talairach_basename=""
-            for basename_candidate in $(find "${RESULTS_DIR}/comprehensive_analysis/original_space" -name "*_left_medulla_flair_space.nii.gz" | head -1 | xargs basename 2>/dev/null | sed 's/_left_medulla_flair_space.nii.gz//' 2>/dev/null || echo ""); do
-                if [ -n "$basename_candidate" ]; then
-                    talairach_basename="$basename_candidate"
-                    break
-                fi
-            done
-            
-            if [ -n "$talairach_basename" ]; then
-                log_message "Found Talairach segmentation with basename: $talairach_basename"
-                analyze_talairach_hyperintensities "$flair_std" "${RESULTS_DIR}/comprehensive_analysis/original_space" "$talairach_basename" "$t1_std"
-            else
-                log_message "No Talairach segmentation files found - skipping Talairach hyperintensity analysis"
-            fi
-        else
-            log_message "No original space directory found - skipping Talairach hyperintensity analysis"
-        fi
-    else
-        log_message "Talairach hyperintensity analysis function not available - ensure analysis module is loaded"
-    fi
-    
+    # 6. (Retired) Talairach brainstem hyperintensity hunt.
+    # The dedicated Talairach analysis layer (analyze_talairach_hyperintensities)
+    # has been removed; the modern detect_hyperintensities() engine in
+    # analysis.sh now covers brainstem substructures (FreeSurfer / multi-atlas
+    # detailed_brainstem) with CSF/PV exclusion + per-region GMM as the live path.
+
     # 7. Create combined visualization
     log_message "Step 7: Creating combined visualization..."
     # This is done inside analyze_hyperintensities_in_all_masks
-    
+
     log_formatted "SUCCESS" "Comprehensive validation and analysis complete"
     log_message "Results available in: $output_dir"
     
@@ -1918,6 +1861,5 @@ verify_pipeline_step_outputs() {
 # Export verification function
 export -f verify_pipeline_step_outputs
 export -f emergency_validate_paths
-export -f ensure_analysis_module
 
 log_message "Enhanced registration validation module loaded with coordinate space validation"

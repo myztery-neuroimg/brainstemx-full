@@ -130,6 +130,21 @@ fi
 
 #source src/modules/extract_dicom_metadata.py
 
+# Locate the binary hyperintensity mask produced by run_comprehensive_analysis
+# (legacy/fallback engine).  Prefers harvard_brainstem, then pons, then any.
+# Echoes the path (empty if none found).
+_find_comprehensive_hyperintensity_mask() {
+  local comprehensive_dir="$1"
+  local m="${comprehensive_dir}/hyperintensities/harvard_brainstem/hyperintensities_bin.nii.gz"
+  if [ ! -f "$m" ]; then
+    m="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
+  fi
+  if [ ! -f "$m" ]; then
+    m=$(find "${comprehensive_dir}/hyperintensities" -name "hyperintensities_bin.nii.gz" 2>/dev/null | head -1)
+  fi
+  [ -n "$m" ] && [ -f "$m" ] && echo "$m"
+}
+
 # Load configuration file
 load_config() {
   local config_file="$1"
@@ -1093,58 +1108,164 @@ run_pipeline() {
     
     log_message "Using registered FLAIR: $flair_registered"
     
-    # Run comprehensive analysis instead of just dorsal pons hyperintensity detection
-    # This analyzes ALL segmentation masks and validates registration
+    # Hyperintensity analysis (Step 6 core).
+    #
+    # PRIMARY (default, ANALYSIS_PRIMARY_ENGINE=detect_hyperintensities):
+    #   detect_hyperintensities() (analysis.sh) discovers the FreeSurfer
+    #   brainstem substructures + multi-atlas nuclei under
+    #   segmentation/detailed_brainstem (find_all_atlas_regions), applies the
+    #   CSF/partial-volume exclusion (#114) and the per-region GMM thresholding
+    #   engine.  This is what a normal run uses.
+    # FALLBACK (ANALYSIS_PRIMARY_ENGINE=comprehensive, or automatic when the
+    #   primary engine fails): run_comprehensive_analysis() (the legacy NAWM
+    #   SD-threshold path) — kept for backward compatibility and as a safety net.
     local comprehensive_dir=$(create_module_dir "comprehensive_analysis")
-    
-    log_formatted "INFO" "===== RUNNING COMPREHENSIVE ANALYSIS ====="
-    log_message "This will analyze hyperintensities in ALL segmentation masks"
-    log_message "and validate registration quality across spaces"
-    
-    # Pass all relevant images and directories to the comprehensive analysis
-    run_comprehensive_analysis \
-      "$orig_t1" \
-      "$orig_flair" \
-      "$t1_std" \
-      "$flair_std" \
-      "$RESULTS_DIR/segmentation" \
-      "$comprehensive_dir"
-    
-    # For backward compatibility, create a link to the traditional hyperintensity mask
     local hyperintensities_dir=$(create_module_dir "hyperintensities")
-    # Look for hyperintensity mask — harvard_brainstem preferred, then pons, then any
-    local hyperintensity_mask="${comprehensive_dir}/hyperintensities/harvard_brainstem/hyperintensities_bin.nii.gz"
-    if [ ! -f "$hyperintensity_mask" ]; then
-      hyperintensity_mask="${comprehensive_dir}/hyperintensities/pons/hyperintensities_bin.nii.gz"
-    fi
-    if [ ! -f "$hyperintensity_mask" ]; then
-      hyperintensity_mask=$(find "${comprehensive_dir}/hyperintensities" -name "hyperintensities_bin.nii.gz" 2>/dev/null | head -1)
-    fi
-    
-    if [ -f "$hyperintensity_mask" ]; then
-      local seg_basename=$(basename "$seg_mask" .nii.gz | sed 's/_brainstem$//')
-      local legacy_mask="${hyperintensities_dir}/${seg_basename}_brainstem_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
-      ln -sf "$hyperintensity_mask" "$legacy_mask"
-      log_message "Created link to comprehensive analysis result: $legacy_mask"
-    else
-      log_formatted "WARNING" "Comprehensive analysis didn't produce expected hyperintensity mask"
-      log_message "Falling back to traditional hyperintensity detection using brainstem mask..."
+    local seg_basename=$(basename "$seg_mask" .nii.gz | sed 's/_brainstem$//')
+    local hyperintensity_mask=""
 
-      local seg_basename=$(basename "$seg_mask" .nii.gz | sed 's/_brainstem$//')
+    local primary_engine="${ANALYSIS_PRIMARY_ENGINE:-detect_hyperintensities}"
+    log_formatted "INFO" "===== STEP 6: HYPERINTENSITY ANALYSIS (primary engine: ${primary_engine}) ====="
+
+    if [ "$primary_engine" = "detect_hyperintensities" ]; then
+      # --- PRIMARY: modern per-region GMM + CSF/PV engine -------------------
+      log_message "Running detect_hyperintensities (FS/multi-atlas detailed_brainstem + CSF/PV + per-region GMM)..."
       local hyperintensities_prefix="${hyperintensities_dir}/${seg_basename}_brainstem"
-      detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"
-      hyperintensity_mask="${hyperintensities_prefix}_thresh${THRESHOLD_WM_SD_MULTIPLIER:-1.25}_bin.nii.gz"
-      analyze_hyperintensity_clusters "$hyperintensity_mask" "$seg_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5
+      if detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"; then
+        # detect_hyperintensities emits the binary mask as *_threshATLAS_GMM_bin.nii.gz
+        hyperintensity_mask="${hyperintensities_prefix}_threshATLAS_GMM_bin.nii.gz"
+        if [ ! -f "$hyperintensity_mask" ]; then
+          # tolerate any thresh*_bin produced by a config-driven fallback inside the engine
+          hyperintensity_mask=$(find "$hyperintensities_dir" -name "${seg_basename}_brainstem_thresh*_bin.nii.gz" 2>/dev/null | head -1)
+        fi
+        if [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ]; then
+          log_formatted "SUCCESS" "Primary analysis (detect_hyperintensities) produced: $hyperintensity_mask"
+          analyze_hyperintensity_clusters "$hyperintensity_mask" "$seg_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5 || \
+            log_formatted "WARNING" "Cluster analysis reported a non-fatal failure"
+        else
+          log_formatted "WARNING" "detect_hyperintensities returned success but no mask found; falling back to comprehensive analysis"
+        fi
+      else
+        log_formatted "WARNING" "detect_hyperintensities failed; falling back to comprehensive analysis"
+      fi
+
+      # Automatic fallback to the legacy engine if the primary produced nothing.
+      if [ -z "$hyperintensity_mask" ] || [ ! -f "$hyperintensity_mask" ]; then
+        log_formatted "INFO" "===== FALLBACK: COMPREHENSIVE ANALYSIS ====="
+        run_comprehensive_analysis \
+          "$orig_t1" "$orig_flair" "$t1_std" "$flair_std" \
+          "$RESULTS_DIR/segmentation" "$comprehensive_dir" || \
+          log_formatted "WARNING" "Comprehensive (fallback) analysis reported a non-fatal failure"
+        hyperintensity_mask=$(_find_comprehensive_hyperintensity_mask "$comprehensive_dir" || true)
+        if [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ]; then
+          local legacy_mask="${hyperintensities_dir}/${seg_basename}_brainstem_threshATLAS_GMM_bin.nii.gz"
+          ln -sf "$hyperintensity_mask" "$legacy_mask"
+          log_message "Linked comprehensive fallback result: $legacy_mask"
+        fi
+      fi
+    else
+      # --- PRIMARY: legacy comprehensive analysis (config opt-in) -----------
+      log_formatted "INFO" "===== RUNNING COMPREHENSIVE ANALYSIS (legacy primary) ====="
+      log_message "This analyzes hyperintensities in ALL segmentation masks and validates registration"
+      run_comprehensive_analysis \
+        "$orig_t1" "$orig_flair" "$t1_std" "$flair_std" \
+        "$RESULTS_DIR/segmentation" "$comprehensive_dir" || \
+        log_formatted "WARNING" "Comprehensive analysis reported a non-fatal failure"
+      hyperintensity_mask=$(_find_comprehensive_hyperintensity_mask "$comprehensive_dir" || true)
+
+      if [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ]; then
+        local legacy_mask="${hyperintensities_dir}/${seg_basename}_brainstem_threshATLAS_GMM_bin.nii.gz"
+        ln -sf "$hyperintensity_mask" "$legacy_mask"
+        log_message "Created link to comprehensive analysis result: $legacy_mask"
+      else
+        log_formatted "WARNING" "Comprehensive analysis produced no mask; falling back to detect_hyperintensities"
+        local hyperintensities_prefix="${hyperintensities_dir}/${seg_basename}_brainstem"
+        if detect_hyperintensities "$orig_flair" "$hyperintensities_prefix" "$orig_t1"; then
+          hyperintensity_mask="${hyperintensities_prefix}_threshATLAS_GMM_bin.nii.gz"
+          [ -f "$hyperintensity_mask" ] || hyperintensity_mask=$(find "$hyperintensities_dir" -name "${seg_basename}_brainstem_thresh*_bin.nii.gz" 2>/dev/null | head -1)
+          if [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ]; then
+            analyze_hyperintensity_clusters "$hyperintensity_mask" "$seg_orig" "$orig_t1" "${hyperintensities_dir}/clusters" 5 || \
+              log_formatted "WARNING" "Cluster analysis reported a non-fatal failure"
+          fi
+        fi
+      fi
     fi
-    
-    # NEW: DICOM Cluster Mapping Integration
+
+    # --- Optional WMH / nuclei modules (each self-gated; default OFF) -------
+    # Every run_* below no-ops unless its *_ENABLED flag is "true", so default
+    # behaviour is unchanged. Outputs land under analysis/wmh/<tool>.
+    local wmh_out_dir="${RESULTS_DIR}/analysis/wmh"
+    mkdir -p "$wmh_out_dir"
+    if declare -f run_bianca_wmh >/dev/null 2>&1; then
+      run_bianca_wmh "$flair_std" "${wmh_out_dir}/bianca" "$t1_std" "" || \
+        log_formatted "WARNING" "run_bianca_wmh reported a non-fatal failure"
+    fi
+    if declare -f run_supervised_wmh_lst_samseg >/dev/null 2>&1; then
+      run_supervised_wmh_lst_samseg "$orig_flair" "$orig_t1" "${wmh_out_dir}/lst_samseg" || \
+        log_formatted "WARNING" "run_supervised_wmh_lst_samseg reported a non-fatal failure"
+    fi
+    if declare -f run_wmh_synthseg >/dev/null 2>&1; then
+      run_wmh_synthseg "$orig_flair" "${wmh_out_dir}/synthseg" || \
+        log_formatted "WARNING" "run_wmh_synthseg reported a non-fatal failure"
+    fi
+    if declare -f run_segcsvd_wmh >/dev/null 2>&1; then
+      run_segcsvd_wmh "$orig_flair" "$orig_t1" "${wmh_out_dir}/segcsvd" || \
+        log_formatted "WARNING" "run_segcsvd_wmh reported a non-fatal failure"
+    fi
+    if declare -f run_shiva_wmh >/dev/null 2>&1; then
+      run_shiva_wmh "$orig_flair" "$orig_t1" "${wmh_out_dir}/shiva" || \
+        log_formatted "WARNING" "run_shiva_wmh reported a non-fatal failure"
+    fi
+    if declare -f run_mars_wmh >/dev/null 2>&1; then
+      run_mars_wmh "$orig_flair" "$orig_t1" "${wmh_out_dir}/mars" || \
+        log_formatted "WARNING" "run_mars_wmh reported a non-fatal failure"
+    fi
+    if declare -f run_aanseg >/dev/null 2>&1; then
+      run_aanseg "$orig_t1" "$SUBJECT_ID" "$seg_mask" "${RESULTS_DIR}/analysis/aanseg" || \
+        log_formatted "WARNING" "run_aanseg reported a non-fatal failure"
+    fi
+
+    # --- Post-detection false-positive filter (self-gated; default OFF) -----
+    # Operates on the detected lesion mask. No-op (pass-through) unless
+    # FP_FILTER_ENABLED=true, so default behaviour is unchanged.
+    if declare -f run_fp_filter >/dev/null 2>&1 && [ -n "$hyperintensity_mask" ] && [ -f "$hyperintensity_mask" ]; then
+      # CSF probability map written by detect_hyperintensities (FSL FAST PVE 0).
+      # `|| true` keeps a transient find failure from aborting under set -e.
+      local fp_csf_prob=""
+      fp_csf_prob=$(find "$hyperintensities_dir" -name "*_csf_prob.nii.gz" 2>/dev/null | head -1 || true)
+      # Whole-brain mask for the brain-edge erosion stage. Prefer the brain mask
+      # detect_hyperintensities emitted (already in the lesion mask's space);
+      # fall back to the brain-extraction mask. NOT the brainstem segmentation
+      # ($seg_orig) — eroding that would delete legitimate brainstem-edge lesions.
+      local fp_brain_mask=""
+      fp_brain_mask=$(find "$hyperintensities_dir" -name "*_brain_mask.nii.gz" 2>/dev/null | head -1 || true)
+      if [ -z "$fp_brain_mask" ]; then
+        fp_brain_mask=$(find "${RESULTS_DIR}/brain_extraction" -iname "*BrainExtractionMask.nii.gz" 2>/dev/null | head -1 || true)
+      fi
+      local fp_filtered="${hyperintensity_mask%.nii.gz}_fpfiltered.nii.gz"
+      if run_fp_filter "$hyperintensity_mask" "$fp_filtered" "$fp_brain_mask" "$fp_csf_prob"; then
+        if [ "${FP_FILTER_ENABLED:-false}" = "true" ] && [ -f "$fp_filtered" ]; then
+          log_message "FP filter applied; using filtered lesion mask: $fp_filtered"
+          hyperintensity_mask="$fp_filtered"
+        fi
+      else
+        log_formatted "WARNING" "run_fp_filter reported a non-fatal failure"
+      fi
+    fi
+
+    # DICOM Cluster Mapping Integration (STOPGAP: gated OFF by default).
+    # The cluster-to-DICOM coordinate mapping stage is known-broken and pending a
+    # separate rewrite, so it is skipped unless RUN_DICOM_MAPPING=true.
+    if [ "${RUN_DICOM_MAPPING:-false}" != "true" ]; then
+      log_formatted "INFO" "Skipping DICOM cluster mapping (RUN_DICOM_MAPPING != true; stage pending rewrite)"
+    else
     log_formatted "INFO" "===== MAPPING CLUSTERS TO DICOM SPACE ====="
     log_message "Performing cluster-to-DICOM coordinate mapping for medical viewer compatibility"
-    
+
     # Create DICOM mapping directory
     local dicom_mapping_dir="${RESULTS_DIR}/dicom_cluster_mapping"
     mkdir -p "$dicom_mapping_dir"
-    
+
     # Find cluster analysis results — check comprehensive analysis first, then legacy
     local cluster_analysis_dir="${comprehensive_dir}/hyperintensities/harvard_brainstem/cluster_analysis"
     if [ ! -d "$cluster_analysis_dir" ]; then
@@ -1189,7 +1310,8 @@ run_pipeline() {
       log_formatted "WARNING" "Cluster analysis directory not found - skipping DICOM mapping"
       log_message "Expected cluster analysis at: $cluster_analysis_dir"
     fi
-    
+    fi  # end RUN_DICOM_MAPPING gate
+
     # Validate hyperintensity detection using the known output path
     if [ ! -f "$hyperintensity_mask" ]; then
       log_error "Hyperintensity mask missing: $hyperintensity_mask" $ERR_VALIDATION
@@ -1268,14 +1390,25 @@ run_pipeline() {
     local pons_mask=""
     local flair_file=""
     
-    # Look for hyperintensity mask in comprehensive analysis results first
-    if [ -d "${RESULTS_DIR}/comprehensive_analysis/hyperintensities" ]; then
-      hyperintensity_mask=$(find "${RESULTS_DIR}/comprehensive_analysis/hyperintensities" -name "*hyperintensities_bin.nii.gz" | head -1)
+    # Prefer the final lesion mask from the primary engine (detect_hyperintensities):
+    # the FP-filtered variant first, then the canonical ATLAS_GMM binary mask. Only
+    # then fall back to the comprehensive engine's mask and finally to any *_bin
+    # (the generic glob can otherwise pick an intermediate like a region/brain mask).
+    if [ -d "${RESULTS_DIR}/hyperintensities" ]; then
+      hyperintensity_mask=$(find "${RESULTS_DIR}/hyperintensities" -name "*_threshATLAS_GMM_bin_fpfiltered.nii.gz" 2>/dev/null | head -1)
+      if [ -z "$hyperintensity_mask" ]; then
+        hyperintensity_mask=$(find "${RESULTS_DIR}/hyperintensities" -name "*_threshATLAS_GMM_bin.nii.gz" 2>/dev/null | head -1)
+      fi
     fi
-    
-    # Fallback to traditional hyperintensities directory
+
+    # Comprehensive (legacy/fallback) engine result.
+    if [ -z "$hyperintensity_mask" ] && [ -d "${RESULTS_DIR}/comprehensive_analysis/hyperintensities" ]; then
+      hyperintensity_mask=$(find "${RESULTS_DIR}/comprehensive_analysis/hyperintensities" -name "*hyperintensities_bin.nii.gz" 2>/dev/null | head -1)
+    fi
+
+    # Last-resort generic fallback.
     if [ -z "$hyperintensity_mask" ] && [ -d "${RESULTS_DIR}/hyperintensities" ]; then
-      hyperintensity_mask=$(find "${RESULTS_DIR}/hyperintensities" -name "*_bin.nii.gz" | head -1)
+      hyperintensity_mask=$(find "${RESULTS_DIR}/hyperintensities" -name "*_bin.nii.gz" 2>/dev/null | head -1)
     fi
     
     # Find pons mask
