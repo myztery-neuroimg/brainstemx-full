@@ -98,6 +98,24 @@ export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfe
 # FREESURFER_HOME / FS_LICENSE are honoured from the environment; the module
 # detects them and degrades to the HO gross mask when absent.
 export FS_RECON_ALL_FLAG="${FS_RECON_ALL_FLAG:--all}"   # recon-all level (segmentBS needs aseg/norm)
+# May carry multiple flags, e.g. "-autorecon1 -autorecon2" for a lighter level
+# that produces the volumetric outputs (norm.mgz/aseg) segmentBS needs while
+# skipping the cortical-surface stages (where the topology segfault occurs). The
+# module word-splits this value into recon-all's argv.
+# --- recon-all input + debug (CRITICAL) ----------------------------------
+# recon-all expects a FULL-HEAD, native-resolution T1 (it runs its own skull
+# strip / intensity normalisation / conform). Feeding it the pipeline's
+# brain-extracted + dimension-standardized image builds a topologically broken
+# WM surface (Euler eno<0) and segfaults at Fix-Topology / QSphere. The module
+# therefore auto-selects the full-head bias-corrected T1 from
+# ${RESULTS_DIR}/bias_corrected (the *_n4 / *N4Corrected file, pre brain
+# extraction). Override with an explicit full-head T1 path here if needed:
+export FREESURFER_T1_INPUT="${FREESURFER_T1_INPUT:-}"    # explicit full-head T1 for recon-all (auto-detected if empty)
+# When 'true', recon-all's stdout/stderr is streamed to the console in addition
+# to its own scripts/recon-all.log. On FAILURE the log tail + error lines are
+# ALWAYS surfaced regardless of this flag.
+export FS_RECON_VERBOSE="${FS_RECON_VERBOSE:-false}"     # stream recon-all output live to console
+export FS_RECON_LOG_TAIL_LINES="${FS_RECON_LOG_TAIL_LINES:-30}"  # lines of recon-all.log to surface on failure
 # FS<->HO agreement gate (mirrors the existing brain-mask Dice QC style):
 export FS_BS_AGREEMENT_DICE_MIN="${FS_BS_AGREEMENT_DICE_MIN:-0.7}"        # min Dice(FS union, HO Brain-Stem)
 export FS_BS_AGREEMENT_LEAKAGE_MAX="${FS_BS_AGREEMENT_LEAKAGE_MAX:-0.2}"  # max fraction of FS union outside HO
