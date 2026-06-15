@@ -11,6 +11,7 @@ Run:
 """
 
 import os
+import re
 import subprocess
 import sys
 
@@ -70,6 +71,28 @@ def default_cfg(**overrides):
     cfg = dict(DEFAULTS)
     cfg.update(overrides)
     return cfg
+
+
+def read_config_threshold_wm_sd_multiplier():
+    """Parse THRESHOLD_WM_SD_MULTIPLIER from config/default_config.sh.
+
+    Parsed with a regex (not by sourcing bash) so the test has no FSL/ANTs
+    dependency.  Returns the value as a float.
+    """
+    config_path = os.path.join(
+        os.path.dirname(__file__), "..", "config", "default_config.sh"
+    )
+    with open(config_path, encoding="utf-8") as handle:
+        for line in handle:
+            match = re.match(
+                r"^\s*export\s+THRESHOLD_WM_SD_MULTIPLIER=([0-9]+(?:\.[0-9]+)?)",
+                line,
+            )
+            if match:
+                return float(match.group(1))
+    raise AssertionError(
+        "THRESHOLD_WM_SD_MULTIPLIER not found in config/default_config.sh"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +464,19 @@ class TestDefaults:
         """Percentile values are between 0 and 100."""
         for key in ["floor_percentile", "fallback_percentile"]:
             assert 0 < DEFAULTS[key] < 100, f"{key} should be in (0, 100)"
+
+    def test_fallback_threshold_matches_config(self):
+        """The Python fallback default MUST equal config THRESHOLD_WM_SD_MULTIPLIER.
+
+        There is one authoritative fallback SD multiplier.  This guards against
+        the two values silently drifting apart (the historical 1.5 vs 1.2 bug).
+        """
+        config_value = read_config_threshold_wm_sd_multiplier()
+        assert DEFAULTS["fallback_threshold"] == pytest.approx(config_value), (
+            f"gmm_threshold.py DEFAULTS['fallback_threshold']="
+            f"{DEFAULTS['fallback_threshold']} must equal config "
+            f"THRESHOLD_WM_SD_MULTIPLIER={config_value}"
+        )
 
 
 # ---------------------------------------------------------------------------
