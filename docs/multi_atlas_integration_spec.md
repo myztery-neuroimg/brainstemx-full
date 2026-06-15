@@ -196,4 +196,45 @@ cases are unchanged; an unknown value still falls back to the HO gross mask.
 | `BIANCIARDI_MNI_SUBDIRS` | `2a…/2b…` | Bianciardi MNI source subdirs |
 | `REG_LABEL_INTERPOLATION` | `GenericLabel` | Label-aware warp interpolation |
 | `BRAINSTEM_SEGMENTATION_METHOD` | `freesurfer` | `multi_atlas`/`bianciardi` to enable |
-```
+
+## References
+
+Method-specific references for the atlases and the labeling approach used here.
+
+**Atlases**
+- **Bianciardi BrainstemNavigator** — Bianciardi M, et al. *Toward an in vivo
+  neuroimaging template of human brainstem nuclei of the ascending arousal,
+  autonomic, and motor systems.* Brain Connect 2015;5(10):597-607. Toolkit v1.0
+  release: Hannanu FF, et al., ISMRM 2025 #0950 (NITRC) — *conference abstract;
+  treat as provisional.*
+- **CIT168** — Pauli WM, Nili AN, Tyszka JM. *A high-resolution probabilistic
+  in vivo atlas of human subcortical brain nuclei.* Sci Data 2018;5:180063.
+- **AAL3** — Rolls ET, et al. *Automated anatomical labelling atlas 3.*
+  NeuroImage 2020;206:116189.
+- **Harvard-Oxford (gross extent baseline)** — Desikan RS, et al. NeuroImage
+  2006;31(3):968-980 (Makris N, et al. 2006).
+
+**Registration / label warping**
+- **SyN** (the MNI→subject transform reused per atlas) — Avants BB, et al.
+  *Symmetric diffeomorphic image registration with cross-correlation.* Med Image
+  Anal 2008;12(1):26-41.
+
+**Exploratory nucleus segmentation (not wired into multi-atlas split)**
+- **AANSegment** (arousal-network nuclei; `brainstem_aanseg.sh`) — Olchanyi MD,
+  et al. *Automated MRI segmentation of brainstem nuclei critical to
+  consciousness.* Hum Brain Mapp 2025;46(14):e70357. *Caveat: ≤1 mm input only;
+  CC BY-NC-ND; large-lesion-sensitive — exploratory.*
+
+### Why argmax + an overlay set (not a single dseg)
+
+A winner-take-all *argmax* collapses Bianciardi's *overlapping* probabilistic
+prob maps into a single integer dseg, which is the natural representation for the
+downstream per-region `safe_fslmaths -thr/-uthr` split. The trade-off is that a
+single-label dseg cannot encode overlap, so the 12 overlapping reticular-formation
+nuclei lose all voxels to neighbours; the hybrid build keeps those as an
+individually-warped **overlay set** rather than dropping them (see *CRITICAL
+CORRECTION* above). This argmax/maximum-probability rule for combining
+overlapping probabilistic atlases is the standard label-fusion choice; the
+multi-atlas-warp-then-combine rationale follows the general nonlinear-registration
+and label-propagation literature (Avants 2008, above; Klein A, et al. *Evaluation
+of 14 nonlinear deformation algorithms…* NeuroImage 2009;46(3):786-802).

@@ -5,6 +5,11 @@
 # This module contains a fully ANTs-based approach for:
 # - T2-SPACE-FLAIR to T1MPRAGE registration with white matter guided alignment
 # - Multi-modality registration (T2, DWI, SWI) to T1
+# - Multi-stage Rigid -> Affine -> SyN (Avants 2008) with a modality-aware
+#   metric: Mutual Information for cross-modality pairs (FLAIR<->T1),
+#   cross-correlation for same-modality, with --winsorize-image-intensities
+# - Label-aware warping (GenericLabel interpolation) when applying transforms
+#   to atlases / masks, to avoid label blurring
 # - Registration visualization and quality assessment
 # - Complete methodological consistency with ANTs throughout the pipeline
 #
