@@ -411,6 +411,78 @@ run_contrast_matched_cascade_stage() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# adopt_external_anatomical_t1 <source_path> <reason>
+# ---------------------------------------------------------------------------
+# Shared helper used by BOTH Unit A (no in-study T1) and Unit C (contrast-
+# enhanced T1 swap).  Copies <source_path> into EXTRACT_DIR as
+# external_anatomical_T1.nii.gz (idempotent: only re-copies on size change),
+# sanity-checks the result, sets the caller's local `t1_file` and
+# `_external_t1_adopted` vars via `eval`, and writes provenance.
+#
+# Preconditions (caller must verify before invoking):
+#   - EXTRACT_DIR is set and the directory exists
+#   - RESULTS_DIR is set
+#   - <source_path> exists and is a .nii.gz file
+#   - ERR_DATA_MISSING is defined
+#
+# Sets (in the caller's scope via eval):
+#   t1_file            → path to the adopted file in EXTRACT_DIR
+#   _external_t1_adopted → "true"
+#
+# Appends optional extra provenance key=value pairs as a 3rd argument string
+# (each line written verbatim after the base keys), e.g.:
+#   "contrast_enhanced_original=/path\nreason=some reason"
+# ---------------------------------------------------------------------------
+adopt_external_anatomical_t1() {
+  local _src_path="$1"
+  local _reason="$2"
+  local _extra_provenance="${3:-}"
+
+  local _adopted_path="${EXTRACT_DIR}/external_anatomical_T1.nii.gz"
+  local _ref_label="${ANATOMICAL_REFERENCE_LABEL:-${_src_path}}"
+
+  log_formatted "WARNING" "Adopting external anatomical T1 (${_reason}): ${_ref_label}"
+
+  # Copy — refresh when source and destination sizes differ.
+  local _s _d
+  _s=$(wc -c < "${_src_path}" 2>/dev/null || echo 0)
+  _d=$([ -f "${_adopted_path}" ] && wc -c < "${_adopted_path}" 2>/dev/null || echo 0)
+  if [ "${_s}" != "${_d}" ] || [ ! -f "${_adopted_path}" ]; then
+    log_message "adopt_external_anatomical_t1: copying into extract dir (source size: ${_s} bytes)"
+    if ! cp "${_src_path}" "${_adopted_path}"; then
+      log_error "adopt_external_anatomical_t1: failed to copy ${_src_path} into EXTRACT_DIR" "$ERR_DATA_MISSING"
+      return "$ERR_DATA_MISSING"
+    fi
+  else
+    log_message "adopt_external_anatomical_t1: already present in extract dir (size matches; skipping copy)"
+  fi
+
+  # Sanity-check: must exist and be non-empty.
+  local _adopted_size
+  _adopted_size=$(wc -c < "${_adopted_path}" 2>/dev/null || echo 0)
+  if [ ! -f "${_adopted_path}" ] || [ "${_adopted_size}" -eq 0 ]; then
+    log_error "adopt_external_anatomical_t1: adopted file is missing or empty: ${_adopted_path}" "$ERR_DATA_MISSING"
+    return "$ERR_DATA_MISSING"
+  fi
+
+  # Write provenance (overwrite = idempotent across resumes).
+  {
+    printf 'source=%s\nlabel=%s\ntype=%s\nadopted_as=%s\n' \
+      "${_src_path}" "${_ref_label}" "${_reason}" "${_adopted_path}"
+    if [ -n "${_extra_provenance}" ]; then
+      printf '%s\n' "${_extra_provenance}"
+    fi
+  } > "${RESULTS_DIR}/anatomical_reference_provenance.txt"
+
+  # Propagate to caller scope.
+  eval 't1_file="${_adopted_path}"'
+  eval '_external_t1_adopted="true"'
+
+  log_message "adopt_external_anatomical_t1: adopted as ${_adopted_path}"
+  log_message "adopt_external_anatomical_t1: provenance written to ${RESULTS_DIR}/anatomical_reference_provenance.txt"
+}
+
 # Run the pipeline
 run_pipeline() {
   local subject_id="$SUBJECT_ID"
@@ -570,38 +642,62 @@ run_pipeline() {
       log_error "ANATOMICAL_REFERENCE_T1 must be a compressed NIfTI (.nii.gz); got: ${ANATOMICAL_REFERENCE_T1}" $ERR_DATA_MISSING
       return $ERR_DATA_MISSING
     fi
-    local adopted_t1="${EXTRACT_DIR}/external_anatomical_T1.nii.gz"
-    local ref_label="${ANATOMICAL_REFERENCE_LABEL:-${ANATOMICAL_REFERENCE_T1}}"
-    log_formatted "WARNING" "No in-study T1 found; adopting EXTERNAL anatomical T1 reference: ${ref_label}"
-    # Refresh the copy when source and destination sizes differ (covers both the
-    # first run and a changed ANATOMICAL_REFERENCE_T1 on a subsequent resume).
-    local _src_size _dst_size
-    _src_size=$(wc -c < "${ANATOMICAL_REFERENCE_T1}" 2>/dev/null || echo 0)
-    _dst_size=$([ -f "${adopted_t1}" ] && wc -c < "${adopted_t1}" 2>/dev/null || echo 0)
-    if [ "${_src_size}" != "${_dst_size}" ] || [ ! -f "${adopted_t1}" ]; then
-      log_message "Copying external anatomical T1 into extract dir (source size: ${_src_size} bytes)"
-      if ! cp "${ANATOMICAL_REFERENCE_T1}" "${adopted_t1}"; then
-        log_error "Failed to copy external anatomical T1 reference into EXTRACT_DIR" $ERR_DATA_MISSING
-        return $ERR_DATA_MISSING
+    adopt_external_anatomical_t1 "${ANATOMICAL_REFERENCE_T1}" "external" || return $?
+  fi
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # Unit C — contrast-enhanced T1 preference
+  # ---------------------------------------------------------------------------
+  # Fires ONLY when ALL of the following hold:
+  #   1. PREFER_EXTERNAL_NONCONTRAST_T1=true   (default false → complete no-op)
+  #   2. An in-study T1 was found (t1_file is non-empty)
+  #   3. The external adoption block did NOT already fire (_external_t1_adopted=false)
+  #   4. is_contrast_enhanced_t1 reports the in-study T1 is post-gadolinium
+  #   5. ANATOMICAL_REFERENCE_T1 is set and points to an existing .nii.gz file
+  #
+  # When it fires, the external non-contrast T1 is adopted as the anatomical
+  # anchor for recon-all/segmentation using the same copy+provenance mechanism
+  # as Unit A.  The contrast-enhanced in-study T1 is NOT deleted — it stays on
+  # disk and remains available as an enhancement signal for downstream analysis.
+  #
+  # When PREFER_EXTERNAL_NONCONTRAST_T1=false (the default), this block is
+  # completely unreachable and pipeline behaviour is byte-identical to before.
+  # ---------------------------------------------------------------------------
+  if [ "${PREFER_EXTERNAL_NONCONTRAST_T1:-false}" = "true" ] \
+     && [ -n "${t1_file:-}" ] \
+     && [ "${_external_t1_adopted}" = "false" ]; then
+
+    if is_contrast_enhanced_t1 "${t1_file}"; then
+      log_formatted "WARNING" \
+        "Unit C: in-study T1 appears contrast-enhanced: $(basename "${t1_file}")"
+
+      if [ -z "${ANATOMICAL_REFERENCE_T1:-}" ]; then
+        log_formatted "WARNING" \
+          "Unit C: PREFER_EXTERNAL_NONCONTRAST_T1=true but ANATOMICAL_REFERENCE_T1 is unset — keeping contrast-enhanced in-study T1 as anchor"
+      elif [ ! -f "${ANATOMICAL_REFERENCE_T1}" ]; then
+        log_formatted "WARNING" \
+          "Unit C: ANATOMICAL_REFERENCE_T1 set but file not found: ${ANATOMICAL_REFERENCE_T1} — keeping contrast-enhanced in-study T1 as anchor"
+      elif [[ "${ANATOMICAL_REFERENCE_T1}" != *.nii.gz ]]; then
+        log_formatted "WARNING" \
+          "Unit C: ANATOMICAL_REFERENCE_T1 must be .nii.gz; got: ${ANATOMICAL_REFERENCE_T1} — keeping contrast-enhanced in-study T1 as anchor"
+      else
+        # All preconditions met: swap the anchor to the external non-contrast T1.
+        local ce_t1_path="${t1_file}"
+        log_formatted "WARNING" \
+          "Unit C: replacing contrast-enhanced in-study T1 anchor with external non-contrast T1"
+        log_message "Unit C: contrast-enhanced T1 retained on disk for enhancement analysis: ${ce_t1_path}"
+        # Export the contrast T1 path so downstream can use it as enhancement signal.
+        export CONTRAST_ENHANCED_T1="${ce_t1_path}"
+        log_message "Unit C: CONTRAST_ENHANCED_T1 exported for enhancement analysis: ${CONTRAST_ENHANCED_T1}"
+        adopt_external_anatomical_t1 "${ANATOMICAL_REFERENCE_T1}" \
+          "external_noncontrast_preference" \
+          "contrast_enhanced_original=${ce_t1_path}
+reason=in-study T1 is contrast-enhanced; using external non-contrast anchor" || return $?
       fi
     else
-      log_message "External anatomical T1 already present in extract dir (size matches; skipping copy)"
+      log_message "Unit C: in-study T1 is not contrast-enhanced; no anchor substitution needed"
     fi
-    # Sanity-check the adopted file: must exist and be non-empty.
-    local _adopted_size
-    _adopted_size=$(wc -c < "${adopted_t1}" 2>/dev/null || echo 0)
-    if [ ! -f "${adopted_t1}" ] || [ "${_adopted_size}" -eq 0 ]; then
-      log_error "Adopted external anatomical T1 is missing or empty: ${adopted_t1}" $ERR_DATA_MISSING
-      return $ERR_DATA_MISSING
-    fi
-    t1_file="${adopted_t1}"
-    _external_t1_adopted="true"
-    # Record provenance (overwrite = idempotent across resumes).
-    printf 'source=%s\nlabel=%s\ntype=external\nadopted_as=%s\n' \
-      "${ANATOMICAL_REFERENCE_T1}" "${ref_label}" "${adopted_t1}" \
-      > "${RESULTS_DIR}/anatomical_reference_provenance.txt"
-    log_message "External anatomical T1 adopted as: ${adopted_t1}"
-    log_message "Provenance recorded in: ${RESULTS_DIR}/anatomical_reference_provenance.txt"
   fi
   # ---------------------------------------------------------------------------
 

@@ -13,6 +13,10 @@
 # 5. Modality-specific suitability (+100)
 #
 
+# Include guard
+if [ -n "${_REFERENCE_SPACE_SELECTION_LOADED:-}" ]; then return 0 2>/dev/null || true; fi
+_REFERENCE_SPACE_SELECTION_LOADED=1
+
 # Source environment and existing scan selection functions
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 source "${SCRIPT_DIR}/require_env.sh"
@@ -536,6 +540,140 @@ log_decision_rationale() {
     log_message "Rationale: $rationale"
 }
 
+# ---------------------------------------------------------------------------
+# is_contrast_enhanced_t1 <nifti_path>
+# ---------------------------------------------------------------------------
+# Returns 0 (true) when the supplied T1 image appears to be a post-gadolinium
+# (contrast-enhanced) acquisition; returns 1 (false) otherwise.
+#
+# Detection priority:
+#   1. dcm2niix JSON sidecar (same basename, .json):
+#        a. jq path  — ContrastBolusAgent present and non-empty/non-"NONE"
+#                    — ImageType array contains "CONTRAST" (case-insensitive)
+#        b. grep fallback when jq is absent
+#   2. Conservative filename heuristics ONLY when no sidecar is found.
+#      False-positive risk is explicit-logged; tokens are kept generic.
+#
+# IMPORTANT: this function is purely advisory.  A true-positive means the
+# pipeline should prefer a configured non-contrast external anchor; it never
+# deletes or hides the contrast-enhanced image (it remains as enhancement
+# signal).  False positives with PREFER_EXTERNAL_NONCONTRAST_T1=false are
+# harmless because the guard is never entered.
+# ---------------------------------------------------------------------------
+is_contrast_enhanced_t1() {
+    local nifti_path="$1"
+    log_message "is_contrast_enhanced_t1: checking $(basename "${nifti_path}")"
+
+    # Resolve the JSON sidecar path (support both .nii.gz and .nii).
+    local json_file=""
+    if [[ "${nifti_path}" == *.nii.gz ]]; then
+        json_file="${nifti_path%.nii.gz}.json"
+    elif [[ "${nifti_path}" == *.nii ]]; then
+        json_file="${nifti_path%.nii}.json"
+    fi
+
+    # -----------------------------------------------------------------------
+    # Primary path: DICOM/JSON metadata via dcm2niix sidecar
+    # -----------------------------------------------------------------------
+    if [ -n "${json_file}" ] && [ -f "${json_file}" ]; then
+        log_message "is_contrast_enhanced_t1: sidecar found: $(basename "${json_file}")"
+
+        if command -v jq &>/dev/null; then
+            # --- ContrastBolusAgent: present, non-empty, and not "NONE" ----
+            local contrast_agent
+            contrast_agent=$(jq -r '.ContrastBolusAgent // empty' "${json_file}" 2>/dev/null || true)
+            if [ -n "${contrast_agent}" ]; then
+                local _ca_upper
+                _ca_upper=$(printf '%s' "${contrast_agent}" | tr '[:lower:]' '[:upper:]')
+                if [ "${_ca_upper}" != "NONE" ] && [ "${_ca_upper}" != "NULL" ]; then
+                    log_message "is_contrast_enhanced_t1: CONTRAST detected via ContrastBolusAgent='${contrast_agent}' (jq, JSON sidecar)"
+                    return 0
+                fi
+            fi
+
+            # --- ImageType array: any element matches /CONTRAST/i -----------
+            local has_contrast_type
+            has_contrast_type=$(jq -r '
+                if (.ImageType | type) == "array" then
+                    .ImageType[] | ascii_downcase
+                elif (.ImageType | type) == "string" then
+                    .ImageType | ascii_downcase
+                else empty end' "${json_file}" 2>/dev/null \
+                | grep -qi "contrast" && echo "yes" || true)
+            if [ "${has_contrast_type}" = "yes" ]; then
+                log_message "is_contrast_enhanced_t1: CONTRAST detected via ImageType (jq, JSON sidecar)"
+                return 0
+            fi
+
+            log_message "is_contrast_enhanced_t1: sidecar present; no contrast markers found (jq)"
+            return 1
+        else
+            # --- grep-based fallback (no jq) --------------------------------
+            # ContrastBolusAgent: field present and value is not empty/"NONE"
+            local agent_line
+            agent_line=$(grep -i '"ContrastBolusAgent"' "${json_file}" 2>/dev/null | head -1 || true)
+            if [ -n "${agent_line}" ]; then
+                # Extract the value after the colon, strip quotes and whitespace
+                local agent_val
+                agent_val=$(echo "${agent_line}" | sed 's/.*"ContrastBolusAgent"[[:space:]]*:[[:space:]]*//' \
+                    | sed 's/[",[:space:]]//g')
+                local agent_upper
+                agent_upper=$(printf '%s' "${agent_val}" | tr '[:lower:]' '[:upper:]')
+                if [ -n "${agent_upper}" ] && \
+                   [ "${agent_upper}" != "NONE" ] && \
+                   [ "${agent_upper}" != "NULL" ]; then
+                    log_message "is_contrast_enhanced_t1: CONTRAST detected via ContrastBolusAgent (grep fallback, JSON sidecar)"
+                    return 0
+                fi
+            fi
+
+            # ImageType contains "CONTRAST" (case-insensitive)
+            if grep -i '"ImageType"' "${json_file}" 2>/dev/null | grep -qi "contrast"; then
+                log_message "is_contrast_enhanced_t1: CONTRAST detected via ImageType (grep fallback, JSON sidecar)"
+                return 0
+            fi
+
+            log_message "is_contrast_enhanced_t1: sidecar present; no contrast markers found (grep fallback)"
+            return 1
+        fi
+    fi
+
+    # -----------------------------------------------------------------------
+    # Weak fallback: conservative filename heuristics (no sidecar available)
+    # These tokens are deliberately generic to avoid false positives.
+    # Log explicitly that the decision is heuristic-based.
+    # -----------------------------------------------------------------------
+    local fname
+    fname=$(basename "${nifti_path}" | tr '[:upper:]' '[:lower:]')
+    # Remove extension for cleaner token matching
+    fname="${fname%.nii.gz}"
+    fname="${fname%.nii}"
+
+    local matched_token=""
+    # Require unambiguous post-contrast markers; avoid generic words like "c".
+    # "+c" and "_c_" are excluded: they false-positive on names containing
+    # "acq+contrast" or similar.  Metadata (ContrastBolusAgent / ImageType) is
+    # the primary signal; these tokens are only reached when no sidecar exists.
+    for token in "post_gad" "postgad" "postcontrast" "post_contrast" \
+                 "postgd" "post_gd" "_gd_" "_gd." \
+                 "_ce_" "_ce." "ce_t1" "t1ce" "t1_ce" \
+                 "gad_" "_gad" "gadolinium"; do
+        if [[ "${fname}" == *"${token}"* ]]; then
+            matched_token="${token}"
+            break
+        fi
+    done
+
+    if [ -n "${matched_token}" ]; then
+        log_formatted "WARNING" \
+            "is_contrast_enhanced_t1: CONTRAST suspected via filename heuristic '${matched_token}' in '$(basename "${nifti_path}")' (no JSON sidecar). Verify manually."
+        return 0
+    fi
+
+    log_message "is_contrast_enhanced_t1: no contrast markers found (no sidecar, heuristics negative)"
+    return 1
+}
+
 # Export functions for external use
 export -f select_optimal_reference_space
 export -f discover_original_sequences
@@ -543,5 +681,6 @@ export -f is_original_acquisition
 export -f analyze_sequence_quality
 export -f make_reference_space_decision
 export -f present_interactive_decision_matrix
+export -f is_contrast_enhanced_t1
 
 log_message "Reference space selection module loaded"
