@@ -99,6 +99,7 @@ source "${PIPELINE_DIR}/modules/multi_atlas.sh"
 source "${PIPELINE_DIR}/modules/segmentation_transformation_extraction.sh"
 source "${PIPELINE_DIR}/modules/analysis.sh"
 source "${PIPELINE_DIR}/modules/visualization.sh"
+source "${PIPELINE_DIR}/modules/reporting.sh"
 source "${PIPELINE_DIR}/modules/qa.sh"
 source "${PIPELINE_DIR}/modules/scan_selection.sh"
 source "${PIPELINE_DIR}/modules/reference_space_selection.sh"
@@ -1553,10 +1554,17 @@ run_pipeline() {
       log_message "  Pons mask: ${pons_mask:-'NOT FOUND'}"
       log_message "Skipping advanced visualization generation"
     fi
+    # Report visualizations (per-method segmentation overlays, hyperintensity
+    # clusters on FLAIR, multi-modal montage) written to visualizations/. Each
+    # sub-step is independently gated/graceful; the wrapper never aborts.
+    if declare -f generate_report_visualizations >/dev/null 2>&1; then
+      generate_report_visualizations "$subject_id" "$RESULTS_DIR" "${hyperintensity_mask:-}" || \
+        log_formatted "WARNING" "generate_report_visualizations reported a non-fatal failure"
+    fi
   else
     log_message 'Skipping Step 7.5 (Advanced Visualization) as requested'
   fi  # End of Advanced Visualization (Step 7.5)
-  
+
   # Step 8: Track pipeline progress
   if [ $START_STAGE -le 8 ]; then
     log_message "Step 8: Tracking pipeline progress"
@@ -1564,7 +1572,23 @@ run_pipeline() {
   else
     log_message 'Skipping Step 8 (Pipeline progress tracking) as requested'
   fi
-  
+
+  # Step 8.5: Reporting (aggregation + summary tables + top-level report).
+  # FINAL stage: discovers every artefact this run produced and aggregates it
+  # into CSV/TSV + HTML summary tables (reports/tables/) and a single top-level
+  # report (reports/brainstemx_report.html + .md). Fully gated/graceful and
+  # idempotent: a minimal T1+FLAIR run still produces a valid (smaller) report,
+  # absent sections are skipped, and re-running overwrites the same outputs.
+  if [ $START_STAGE -le 8 ]; then
+    if declare -f generate_summary_report >/dev/null 2>&1; then
+      log_message "Step 8.5: Reporting (summary tables + top-level report)"
+      generate_summary_report "$subject_id" "$RESULTS_DIR" || \
+        log_formatted "WARNING" "generate_summary_report reported a non-fatal failure"
+    fi
+  else
+    log_message 'Skipping Step 8.5 (Reporting) as requested'
+  fi
+
   log_message "Pipeline completed successfully for subject $subject_id"
   return 0
 }
