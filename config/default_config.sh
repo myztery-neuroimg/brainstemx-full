@@ -121,6 +121,44 @@ export BRAINSTEM_SEGMENTATION_METHOD="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
 export SEG_RUN_HARVARD_OXFORD="${SEG_RUN_HARVARD_OXFORD:-true}"
 export SEG_RUN_MULTI_ATLAS="${SEG_RUN_MULTI_ATLAS:-true}"
 export SEG_RUN_FREESURFER="${SEG_RUN_FREESURFER:-true}"
+#   SEG_RUN_SYNTHSEG       : SynthSeg+ fast ML path (mri_synthseg --robust). ~1 min,
+#                            NO recon, contrast/resolution-agnostic (works on 2D/
+#                            thick-slice clinical T1). Yields aseg-equivalent
+#                            subcortical labels + CSF/ventricle masks + volumes
+#                            immediately. Its CSF/ventricle output is an ALTERNATE
+#                            fast source for the FP-exclusion CSF mask (so the
+#                            posterior-fossa pseudolesion filter works even without
+#                            a recon). Default ON (cheap).
+export SEG_RUN_SYNTHSEG="${SEG_RUN_SYNTHSEG:-true}"
+export SEG_SYNTHSEG_ROBUST="${SEG_SYNTHSEG_ROBUST:-true}"   # --robust => SynthSeg+ (slower, contrast-robust)
+export SEG_SYNTHSEG_PARC="${SEG_SYNTHSEG_PARC:-false}"      # --parc => add cortical parcellation (slower)
+
+# ---------------------------------------------------------------------------
+# FreeSurfer FULL-RECON HARVEST + extra ML methods (freesurfer_harvest.sh)
+# ---------------------------------------------------------------------------
+# recon-all is paid for ONCE; these harvest the rest of its output (NO second
+# recon). CHEAP harvests default ON; the multi-hour / extra-time pieces default
+# OFF (opt-in). Each piece is independently gated and degrades gracefully when
+# the relevant FreeSurfer tool is unavailable.
+export FS_HARVEST_ASEG_CSF="${FS_HARVEST_ASEG_CSF:-true}"   # CHEAP: aseg CSF/ventricle binary masks (FP-exclusion win)
+export FS_HARVEST_STATS="${FS_HARVEST_STATS:-true}"         # CHEAP: aseg/wmparc/aparc/aparc.a2009s + eTIV stats tables
+export FS_HARVEST_THALAMUS="${FS_HARVEST_THALAMUS:-false}"  # ADDS TIME (~minutes): segment_subregions thalamus
+export FS_HARVEST_HIPPO_AMYGDALA="${FS_HARVEST_HIPPO_AMYGDALA:-false}" # ADDS TIME (~up to 1h): segment_subregions hippo-amygdala
+export FS_HARVEST_HYPOTHALAMUS="${FS_HARVEST_HYPOTHALAMUS:-false}"     # ADDS TIME (~minutes): mri_segment_hypothalamic_subunits
+export FS_HARVEST_SCLIMBIC="${FS_HARVEST_SCLIMBIC:-false}"  # DL limbic subcortical seg (mri_sclimbic_seg); also a parallel path in 'all' mode
+
+# SynthSR pre-step (mri_synthsr): synthesize a 1mm isotropic T1 from a low-res /
+# 2D clinical T1, used as the recon-all input AND the T1->MNI registration master
+# (improves both on thick-slice T1). DEFAULT OFF — it adds a step + changes the
+# working T1; opt in for clinical thick-slice data. Graceful no-op if absent.
+export USE_SYNTHSR="${USE_SYNTHSR:-false}"
+
+# CSF source preference for the FP-exclusion (#114) + fp_filter CSF-distance
+# stages. When true (default) the FreeSurfer/SynthSeg aseg 4th-ventricle/CSF mask
+# (fs_harvest_find_csf_mask) is preferred over the FSL FAST CSF PVE for the
+# posterior-fossa pseudolesion problem; falls back to FAST PVE when absent. Set
+# to false to force the legacy FAST-PVE-only behaviour.
+export CSF_USE_FREESURFER_MASK="${CSF_USE_FREESURFER_MASK:-true}"
 
 # FreeSurfer brainstem-segmentation knobs (used by brainstem_freesurfer.sh).
 # FREESURFER_HOME / FS_LICENSE are honoured from the environment; the module

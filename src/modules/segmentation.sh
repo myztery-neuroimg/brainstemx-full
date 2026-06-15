@@ -324,6 +324,23 @@ extract_brainstem_final() {
     log_formatted "INFO" "===== COMPREHENSIVE BRAINSTEM SEGMENTATION ====="
     log_message "Brainstem segmentation method: $seg_method"
 
+    # Optional SynthSR pre-step (USE_SYNTHSR=false default): synthesize a 1mm
+    # isotropic T1 from a thick-slice / 2D clinical T1, then use it as the
+    # segmentation/recon-all input AND the registration master (it improves both
+    # on thick-slice T1). Graceful no-op if disabled/absent (keeps the original).
+    if declare -f run_synthsr >/dev/null 2>&1; then
+        local sr_t1
+        if sr_t1=$(run_synthsr "$input_file"); then
+            if [ -n "$sr_t1" ] && [ -f "$sr_t1" ]; then
+                log_formatted "SUCCESS" "Using SynthSR 1mm T1 for segmentation + recon-all input: $sr_t1"
+                input_file="$sr_t1"
+                input_basename=$(basename "$input_file" .nii.gz)
+                # Adopt it as the recon-all input so FreeSurfer also benefits.
+                export FREESURFER_T1_INPUT="$sr_t1"
+            fi
+        fi
+    fi
+
     # Define output directory
     local brainstem_dir="${RESULTS_DIR}/segmentation/brainstem"
     mkdir -p "$brainstem_dir"
@@ -430,9 +447,14 @@ _extract_brainstem_all_parallel() {
     local run_ho="${SEG_RUN_HARVARD_OXFORD:-true}"
     local run_ma="${SEG_RUN_MULTI_ATLAS:-true}"
     local run_fs="${SEG_RUN_FREESURFER:-true}"
+    # SynthSeg+ is a FAST ML path (~1 min, NO recon): contrast/resolution-agnostic
+    # whole-brain seg yielding aseg-equivalent subcortical + CSF/ventricle masks +
+    # volumes immediately. Default on. sclimbic is a gated DL limbic seg (off by default).
+    local run_ss="${SEG_RUN_SYNTHSEG:-true}"
+    local run_sc="${FS_HARVEST_SCLIMBIC:-false}"
 
     log_formatted "INFO" "=== PARALLEL BRAINSTEM SEGMENTATION (method=all) ==="
-    log_message "Enabled paths: harvard_oxford=$run_ho  multi_atlas=$run_ma  freesurfer=$run_fs"
+    log_message "Enabled paths: harvard_oxford=$run_ho  multi_atlas=$run_ma  freesurfer=$run_fs  synthseg=$run_ss  sclimbic=$run_sc"
 
     # Compute the shared MNI->subject warp ONCE (before fan-out) so the HO and
     # multi-atlas paths reuse the same transform instead of racing on it.
@@ -525,6 +547,44 @@ _extract_brainstem_all_parallel() {
         log_message "  FreeSurfer path disabled (SEG_RUN_FREESURFER=false) — skipping multi-hour recon-all"
     fi
 
+    # SynthSeg+ : fast ML whole-brain seg (no recon). Yields aseg-equivalent
+    # subcortical labels + CSF/ventricle masks (an alternate fast CSF source for
+    # the FP-exclusion path) + per-structure volumes in ~1 min. Runs the SAME
+    # geometry reference as the other paths so its CSF masks align downstream.
+    local ss_pid="" sc_pid=""
+    if [ "$run_ss" = "true" ]; then
+        (
+            export ANTS_THREADS="$per_path_threads"
+            log_formatted "INFO" "[parallel] SynthSeg+ path starting (fast, no recon)"
+            if run_synthseg "$input_file" "$input_file"; then
+                log_formatted "SUCCESS" "[parallel] SynthSeg+ path complete"
+            else
+                log_formatted "WARNING" "[parallel] SynthSeg+ path unavailable (non-fatal)"
+                exit 1
+            fi
+        ) >"${log_dir}/synthseg.log" 2>&1 &
+        ss_pid=$!
+        log_message "  SynthSeg+ path PID=$ss_pid (log: ${log_dir}/synthseg.log)"
+    else
+        log_message "  SynthSeg+ path disabled (SEG_RUN_SYNTHSEG=false)"
+    fi
+
+    # sclimbic : gated DL limbic subcortical seg (no recon). Default off.
+    if [ "$run_sc" = "true" ]; then
+        (
+            export ANTS_THREADS="$per_path_threads"
+            log_formatted "INFO" "[parallel] sclimbic path starting"
+            if run_sclimbic "$input_file"; then
+                log_formatted "SUCCESS" "[parallel] sclimbic path complete"
+            else
+                log_formatted "WARNING" "[parallel] sclimbic path unavailable (non-fatal)"
+                exit 1
+            fi
+        ) >"${log_dir}/sclimbic.log" 2>&1 &
+        sc_pid=$!
+        log_message "  sclimbic path PID=$sc_pid (log: ${log_dir}/sclimbic.log)"
+    fi
+
     # ── Collect each path independently (failure is non-fatal) ──────────────
     # `wait <pid>` returns the job's exit status; we capture it without letting a
     # non-zero status abort the parent under set -e.
@@ -564,6 +624,30 @@ _extract_brainstem_all_parallel() {
             log_formatted "SUCCESS" "FreeSurfer path: OK"
         else
             log_formatted "WARNING" "FreeSurfer path: unavailable/low-confidence (rc=$fs_rc) — non-fatal"
+        fi
+    fi
+
+    if [ -n "$ss_pid" ]; then
+        local ss_rc=0; wait "$ss_pid" || ss_rc=$?
+        cat "${log_dir}/synthseg.log" 2>/dev/null || true
+        SEG_ALL_PATHS_RAN+=("synthseg")
+        if [ "$ss_rc" -eq 0 ]; then
+            SEG_ALL_PATHS_OK+=("synthseg")
+            log_formatted "SUCCESS" "SynthSeg+ path: OK"
+        else
+            log_formatted "WARNING" "SynthSeg+ path: unavailable (rc=$ss_rc) — non-fatal"
+        fi
+    fi
+
+    if [ -n "$sc_pid" ]; then
+        local sc_rc=0; wait "$sc_pid" || sc_rc=$?
+        cat "${log_dir}/sclimbic.log" 2>/dev/null || true
+        SEG_ALL_PATHS_RAN+=("sclimbic")
+        if [ "$sc_rc" -eq 0 ]; then
+            SEG_ALL_PATHS_OK+=("sclimbic")
+            log_formatted "SUCCESS" "sclimbic path: OK"
+        else
+            log_formatted "WARNING" "sclimbic path: unavailable (rc=$sc_rc) — non-fatal"
         fi
     fi
 
@@ -828,7 +912,78 @@ To visualize the segmentations overlaid on your images:
 ================================================================================
 EOF
 
+    # Surface the harvested FreeSurfer volumes/stats (aseg/aparc/subregions/eTIV/
+    # SynthSeg volumes + CSF masks) in the report when present.
+    _seg_append_freesurfer_harvest_report "$report_file"
+
     log_formatted "SUCCESS" "Comprehensive segmentation report generated: $report_file"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _seg_append_freesurfer_harvest_report - append a FreeSurfer-harvest summary
+# (aseg/aparc/subregion/eTIV stats + SynthSeg volumes + harvested CSF masks) to
+# the segmentation report. No-op when nothing was harvested. Never aborts.
+# Args: <report_file>
+# ---------------------------------------------------------------------------
+_seg_append_freesurfer_harvest_report() {
+    local report_file="$1"
+    local harvest_dir="${RESULTS_DIR}/freesurfer/harvest"
+
+    [ -d "$harvest_dir" ] || return 0
+
+    {
+        echo ""
+        echo "FREESURFER HARVEST (full recon + ML methods)"
+        echo "--------------------------------------------"
+    } >> "$report_file"
+
+    # Stats tables (aseg/wmparc/aparc/eTIV).
+    local stats_dir="${harvest_dir}/stats"
+    if [ -d "$stats_dir" ]; then
+        echo "Stats tables: $stats_dir" >> "$report_file"
+        local f
+        for f in "$stats_dir"/*.tsv "$stats_dir"/*.stats; do
+            [ -f "$f" ] && echo "  - $(basename "$f")" >> "$report_file"
+        done
+        # eTIV + brain volume from aseg.stats (the 'Measure ... eTIV/BrainSeg' lines).
+        if [ -f "${stats_dir}/aseg.stats" ]; then
+            grep -E '^# Measure (EstimatedTotalIntraCranialVol|BrainSeg|TotalGray|SupraTentorial),' \
+                "${stats_dir}/aseg.stats" 2>/dev/null \
+                | sed -E 's/^# Measure /  /' >> "$report_file" || true
+        fi
+    fi
+
+    # SynthSeg per-structure volumes (CSV header + values).
+    local ss_vols="${harvest_dir}/synthseg/synthseg_vols.csv"
+    if [ -f "$ss_vols" ]; then
+        echo "SynthSeg+ volumes: $ss_vols" >> "$report_file"
+    fi
+
+    # Harvested CSF/ventricle masks (with voxel counts) — the FP-exclusion source.
+    local csf_dir="${harvest_dir}/csf_masks"
+    if [ -d "$csf_dir" ]; then
+        echo "CSF/ventricle masks (FP-exclusion source): $csf_dir" >> "$report_file"
+        local m
+        for m in "$csf_dir"/*.nii.gz; do
+            [ -f "$m" ] || continue
+            local vox
+            vox=$(fslstats "$m" -V 2>/dev/null | awk '{print $1}')
+            echo "  - $(basename "$m"): ${vox:-0} voxels" >> "$report_file"
+        done
+    fi
+
+    # Subregion segmentations (thalamus / hippo-amygdala / hypothalamus).
+    local sub_dir="${harvest_dir}/subregions"
+    if [ -d "$sub_dir" ]; then
+        local any=0 s
+        for s in "$sub_dir"/*_labels.nii.gz; do
+            [ -f "$s" ] || continue
+            [ "$any" -eq 0 ] && { echo "Subregion segmentations: $sub_dir" >> "$report_file"; any=1; }
+            echo "  - $(basename "$s")" >> "$report_file"
+        done
+    fi
+
     return 0
 }
 
@@ -938,6 +1093,7 @@ export -f map_segmentation_files
 export -f validate_segmentation_outputs
 export -f create_combined_segmentation_map
 export -f generate_comprehensive_report
+export -f _seg_append_freesurfer_harvest_report
 export -f segment_tissues
 
 # Legacy exports for compatibility
