@@ -91,6 +91,7 @@ source "${PIPELINE_DIR}/modules/dicom_analysis.sh"
 source "${PIPELINE_DIR}/modules/dicom_cluster_mapping.sh"
 source "${PIPELINE_DIR}/modules/import.sh"
 source "${PIPELINE_DIR}/modules/preprocess.sh"
+source "${PIPELINE_DIR}/modules/dwi_preprocess.sh"
 source "${PIPELINE_DIR}/modules/brain_extraction.sh"
 source "${PIPELINE_DIR}/modules/registration.sh"
 source "${PIPELINE_DIR}/modules/segmentation.sh"
@@ -509,7 +510,15 @@ run_pipeline() {
   
   # Validate bias correction step
   validate_step "N4 bias correction with Rician denoising" "$(basename "$t1_file"),$(basename "$flair_file")" "bias_corrected"
-  
+
+  # Optional, additive DWI preprocessing path (MP-PCA via dwidenoise FIRST).
+  # Gated behind PROCESS_DWI and auto-detects diffusion inputs, so the default
+  # T1/FLAIR behaviour above is never affected when no DWI is present/enabled.
+  if [ "${PROCESS_DWI:-false}" = "true" ] && declare -F run_dwi_preprocessing_auto &> /dev/null; then
+    log_formatted "INFO" "PROCESS_DWI enabled - running DWI preprocessing path"
+    run_dwi_preprocessing_auto "$EXTRACT_DIR" || log_formatted "WARNING" "DWI preprocessing reported issues (non-fatal)"
+  fi
+
   else
     log_message "Skipping Step 2 (Preprocessing) as requested"
     log_message "Checking if import data exists..."
