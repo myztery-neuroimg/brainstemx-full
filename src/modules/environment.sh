@@ -816,6 +816,101 @@ check_all_dependencies() {
 }
 
 # ------------------------------------------------------------------------------
+# Atlas availability check (report-only / NON-fatal)
+# ------------------------------------------------------------------------------
+# Reports which optional brain atlases are installed under
+# "${FSLDIR}/data/atlases" so the absence/presence is visible in the startup
+# log alongside the dependency check. Never aborts: missing atlases simply mean
+# the corresponding segmentation method degrades or is unavailable. If a
+# brainstem/multi-atlas method is selected but its atlas is missing, a clear
+# WARNING is logged (still non-fatal).
+check_atlas_availability() {
+  log_formatted "INFO" "==== Atlas Availability Check ===="
+
+  local atlas_root="${FSLDIR:-}/data/atlases"
+  if [ -z "${FSLDIR:-}" ] || [ ! -d "$atlas_root" ]; then
+    log_formatted "WARNING" "⚠ FSL atlas directory not found (${atlas_root}); skipping atlas availability check"
+    log_message "Atlas availability: UNKNOWN (no ${atlas_root})"
+    return 0
+  fi
+
+  # Resolve atlas-relative paths (config-overridable, with sane fallbacks).
+  local bianciardi_rel="${ATLAS_BIANCIARDI_REL:-Bianciardi/BrainstemNavigatorv1.0/1.0/2a.BrainstemNucleiAtlas_MNI}"
+  local cit168_rel="${ATLAS_CIT168_REL:-CIT168/MNI152}"
+  local aal3_rel="${ATLAS_AAL3_REL:-AAL3/AAL3}"
+  local ho_rel="${ATLAS_HARVARDOXFORD_REL:-HarvardOxford}"
+
+  # Detection helpers. A glob is "present" if it expands to >=1 existing file.
+  local bianciardi_ok=false cit168_ok=false aal3_ok=false ho_ok=false
+
+  # Bianciardi: a directory (the brainstem-nuclei atlas tree).
+  if [ -d "${atlas_root}/${bianciardi_rel}" ] || \
+     compgen -G "${atlas_root}/${bianciardi_rel}"* > /dev/null 2>&1; then
+    bianciardi_ok=true
+  fi
+  # CIT168: a *dseg*.nii.gz under the MNI152 subdir.
+  if compgen -G "${atlas_root}/${cit168_rel}/"*dseg*.nii.gz > /dev/null 2>&1; then
+    cit168_ok=true
+  fi
+  # AAL3: AAL3v1*.nii(.gz) label volume.
+  if compgen -G "${atlas_root}/${aal3_rel}/AAL3v1"*.nii* > /dev/null 2>&1; then
+    aal3_ok=true
+  fi
+  # Harvard-Oxford (core sub atlas): the directory plus a maxprob label volume.
+  if [ -d "${atlas_root}/${ho_rel}" ] && \
+     compgen -G "${atlas_root}/${ho_rel}/HarvardOxford-sub-maxprob"*.nii* > /dev/null 2>&1; then
+    ho_ok=true
+  fi
+
+  _report_atlas() {
+    local label="$1" ok="$2"
+    if [ "$ok" = true ]; then
+      log_formatted "SUCCESS" "✓ Atlas present: ${label}"
+    else
+      log_formatted "WARNING" "⚠ Atlas absent: ${label}"
+    fi
+  }
+
+  _report_atlas "Bianciardi (BrainstemNavigator)" "$bianciardi_ok"
+  _report_atlas "CIT168 (MNI152 dseg)"            "$cit168_ok"
+  _report_atlas "AAL3"                            "$aal3_ok"
+  _report_atlas "HarvardOxford (subcortical)"     "$ho_ok"
+
+  # Warn if the selected segmentation method needs an atlas that is missing.
+  local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-freesurfer}"
+  case "$seg_method" in
+    atlas|harvard_oxford)
+      [ "$ho_ok" = true ] || \
+        log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='$seg_method' requires the Harvard-Oxford subcortical atlas, which is ABSENT"
+      ;;
+    bianciardi)
+      [ "$bianciardi_ok" = true ] || \
+        log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='$seg_method' requires the Bianciardi atlas, which is ABSENT"
+      ;;
+    cit168)
+      [ "$cit168_ok" = true ] || \
+        log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='$seg_method' requires the CIT168 atlas, which is ABSENT"
+      ;;
+    multi_atlas|multi-atlas)
+      { [ "$ho_ok" = true ] && [ "$bianciardi_ok" = true ] && [ "$cit168_ok" = true ] && [ "$aal3_ok" = true ]; } || \
+        log_formatted "WARNING" "BRAINSTEM_SEGMENTATION_METHOD='$seg_method' benefits from all atlases; one or more are ABSENT"
+      ;;
+    *)
+      : ;;  # freesurfer and others: Harvard-Oxford is the gross-extent fallback (reported above)
+  esac
+
+  # One-line summary for at-a-glance visibility in the startup log.
+  local _b _c _a _h
+  [ "$bianciardi_ok" = true ] && _b="Bianciardi=yes" || _b="Bianciardi=no"
+  [ "$cit168_ok" = true ]     && _c="CIT168=yes"     || _c="CIT168=no"
+  [ "$aal3_ok" = true ]       && _a="AAL3=yes"       || _a="AAL3=no"
+  [ "$ho_ok" = true ]         && _h="HarvardOxford=yes" || _h="HarvardOxford=no"
+  log_message "Atlas availability: ${_b}, ${_c}, ${_a}, ${_h}"
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # Utility Functions
 # ------------------------------------------------------------------------------
 
@@ -1229,6 +1324,7 @@ initialize_environment() {
   export -f check_command
   export -f check_dependencies
   export -f check_all_dependencies
+  export -f check_atlas_availability
   export -f standardize_datatype
   export -f get_output_path
   export -f get_module_dir
