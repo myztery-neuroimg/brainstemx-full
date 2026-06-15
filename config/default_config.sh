@@ -129,6 +129,16 @@ export BIANCIARDI_MNI_SUBDIRS="${BIANCIARDI_MNI_SUBDIRS:-2a.BrainstemNucleiAtlas
 # maxprob label index is independent of this threshold.
 export HO_SUB_MAXPROB_THR="${HO_SUB_MAXPROB_THR:-thr25}"
 
+# --- Atlas availability (report-only; consumed by check_atlas_availability) ---
+# Paths are RELATIVE to "${FSLDIR}/data/atlases". The startup atlas check reports
+# presence/absence of each; absence is non-fatal (the pipeline degrades to the
+# atlases it can find). Override here only if your FSL install lays atlases out
+# differently.
+export ATLAS_BIANCIARDI_REL="${ATLAS_BIANCIARDI_REL:-Bianciardi/BrainstemNavigatorv1.0/1.0/2a.BrainstemNucleiAtlas_MNI}"
+export ATLAS_CIT168_REL="${ATLAS_CIT168_REL:-CIT168/MNI152}"
+export ATLAS_AAL3_REL="${ATLAS_AAL3_REL:-AAL3/AAL3}"
+export ATLAS_HARVARDOXFORD_REL="${ATLAS_HARVARDOXFORD_REL:-HarvardOxford}"
+
 # ANTs registration parameters (existing)
 # REG_TRANSFORM_TYPE is set in the "Registration & motion correction" section below
 # N4 Bias Field Correction presets: "iterations,convergence_threshold,spline_distance_mm,shrink_factor"
