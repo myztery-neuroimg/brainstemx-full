@@ -408,6 +408,32 @@ export SAMSEG_LESION_MASK_PATTERN="0 1" # one number per input (T1 FLAIR): 0=no 
 export SAMSEG_LESION_LABEL=99          # lesion label value in SAMSEG seg.mgz
 export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recommended when FLAIR shows pallidum)
 
+# ===========================================================================
+# Contrast-agnostic WMH detection — FreeSurfer WMH-SynthSeg (mri_WMHsynthseg)
+# ---------------------------------------------------------------------------
+# Optional, pretrained, contrast/resolution-agnostic WMH + whole-brain
+# segmentation implemented in src/modules/wmh_synthseg.sh (entry fn:
+# run_wmh_synthseg). OFF by default; requires FreeSurfer (>=7.4.x) with the
+# WMH-SynthSeg model installed at
+# $FREESURFER_HOME/models/WMH-SynthSeg_v10_231110.pth — NOT part of the core
+# pipeline dependency set.
+#
+# WMH-SynthSeg (Laso et al., ISBI 2024; arXiv:2312.05119) is a domain-
+# randomized SynthSeg variant that jointly segments WMH (FreeSurfer LUT label
+# 77) plus ~36 brain regions on ANY contrast/resolution (incl. low-field), with
+# no retraining, at 1mm isotropic.
+#
+# CAVEAT: independent evals find it the LEAST accurate for boundary delineation
+# and it tends to OVER-FLAG hyperintense pathology as WMH — dangerous near
+# brainstem CSF-flow artifacts. Position it as a ROBUSTNESS/PORTABILITY +
+# ANATOMY/NORMALIZATION option, NOT the primary lesion mask; ALWAYS pair its
+# output with the FP-filter.
+# ===========================================================================
+export WMH_SYNTHSEG_ENABLED=false       # master switch; true => run WMH-SynthSeg when available
+export WMH_SYNTHSEG_LABEL=77            # WMH label value in the mri_WMHsynthseg output (FreeSurfer LUT 77)
+export WMH_SYNTHSEG_DEVICE="cpu"        # "cpu" or a GPU id (e.g. "0") passed to --device
+# ===========================================================================
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
