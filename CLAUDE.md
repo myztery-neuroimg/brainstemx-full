@@ -41,13 +41,23 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   environment.sh         # logging, error codes, path utils, dependency checks
   require_env.sh         # lightweight include guard — source instead of environment.sh in modules
   import.sh              # DICOM → NIfTI via dcm2niix
-  preprocess.sh          # Rician denoising, N4 bias correction
-  brain_extraction.sh    # BET / ANTs brain extraction
+  preprocess.sh          # modality-aware denoising (T1/T2/FLAIR Rician NLM, DWI MP-PCA, SWI/TOF skip) + N4 bias correction (field-strength via -b spline distance; gentler, lesion-aware FLAIR N4)
+  dwi_preprocess.sh      # full DWI path: MP-PCA dwidenoise → optional Gibbs unring → bias correct (gated by PROCESS_DWI)
+  brain_extraction.sh    # SynthStrip primary (→ANTs→BET fallback) + robustfov FOV-normalization + posterior-fossa QC
   registration.sh        # multi-stage ANTs registration (~600 line register_to_reference())
-  segmentation.sh        # Harvard-Oxford gross extent + FreeSurfer substructures (dispatch)
-  multi_atlas.sh         # Bianciardi + CIT168 + AAL3 → subject-space per-region masks
+  segmentation.sh        # Harvard-Oxford gross extent (thr25) + FreeSurfer brainstem substructures; optional multi-atlas warp (Bianciardi/CIT168/AAL3)
+  brainstem_freesurfer.sh # FreeSurfer segmentBS substructures (Iglesias 2015): midbrain/pons/medulla/SCP in native space
+  multi_atlas.sh         # Bianciardi + CIT168 + AAL3 → subject-space per-region masks (SyN→MNI + GenericLabel)
+  brainstem_aanseg.sh    # EXPLORATORY: FreeSurfer AANSegment arousal-network nuclei (≤1mm only; off by default)
   analysis.sh            # hyperintensity detection, cluster analysis
   gmm_threshold.py       # standalone GMM thresholder (called by analysis.sh)
+  fp_filter.sh           # post-detection false-positive suppression (config-gated; complements CSF/PV exclusion)
+  wmh_bianca.sh          # optional supervised WMH: FSL BIANCA (needs training data); off by default
+  wmh_lst_samseg.sh      # optional WMH: LST-AI + FreeSurfer SAMSEG (pretrained, no training data); off by default
+  wmh_synthseg.sh        # optional WMH: contrast-agnostic WMH-SynthSeg (mri_WMHsynthseg); off by default
+  wmh_segcsvd.sh         # optional WMH: segcsvdWMH CNN (FLAIR-only); off by default
+  wmh_shiva.sh           # optional WMH: SHIVA-WMH small-lesion detector (high sensitivity); off by default
+  wmh_mars.sh            # optional WMH: MARS-WMH deep-learning tool (MIAC); off by default
   visualization.sh       # 3D rendering, HTML reports
   qa.sh                  # 20+ validation checks
 config/default_config.sh # all pipeline defaults (has include guard)
@@ -95,6 +105,18 @@ _MODULE_LOADED=1
 | `BRAINSTEM_SEGMENTATION_METHOD` | `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |
 | `USE_BIANCIARDI` / `USE_CIT168` / `USE_AAL3` | per-atlas enables for `multi_atlas` (AAL3 off by default) |
 | `ATLAS_DIR` | atlas root, default `${FSLDIR}/data/atlases` |
+
+## Brainstem segmentation method & optional modules
+
+**`BRAINSTEM_SEGMENTATION_METHOD`** (default `freesurfer`) selects the brainstem labeling backend:
+
+- `freesurfer` (default) — FreeSurfer `segmentBS`/`brainstemSsLabels` substructures (midbrain/pons/medulla/SCP) on the subject's own T1; gated by an FS↔HO agreement (Dice + leakage) check; falls back to the HO gross mask on disagreement or missing FreeSurfer/license.
+- `atlas` / `harvard_oxford` — Harvard-Oxford gross brainstem extent only (index 7, `maxprob-thr25`).
+- `multi_atlas` / `bianciardi` — additionally warps Bianciardi BrainstemNavigator / CIT168 / AAL3 into subject space (shared SyN→MNI + `GenericLabel`) for nucleus-level masks (`docs/multi_atlas_integration_spec.md`).
+
+**Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`. The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
+
+**Optional WMH / seg modules (all default-OFF)** — supervised/DL add-ons, each intersected with the brainstem mask: `wmh_bianca.sh` (FSL BIANCA), `wmh_lst_samseg.sh` (LST-AI + SAMSEG), `wmh_synthseg.sh` (WMH-SynthSeg), `wmh_segcsvd.sh` (segcsvdWMH), `wmh_shiva.sh` (SHIVA-WMH), `wmh_mars.sh` (MARS-WMH); plus `brainstem_aanseg.sh` (EXPLORATORY AANSegment, ≤1 mm only) and the post-detection `fp_filter.sh`. None is validated in the brainstem — keep conservative pons QA / human-in-the-loop.
 
 ## Runtime notes
 

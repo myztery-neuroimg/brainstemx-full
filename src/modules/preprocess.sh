@@ -3,9 +3,15 @@
 # preprocess.sh - True preprocessing functions for the brain MRI processing pipeline
 #
 # This module contains:
-# - Rician NLM denoising
-# - N4 bias field correction
-# - Parameter optimization
+# - Orientation standardization (RAS/LPS) with header-heuristic fallback
+# - Modality-aware denoising: T1/T2/FLAIR -> adaptive Rician NLM (ANTs
+#   DenoiseImage; Manjon 2010), DWI -> MP-PCA (dwidenoise; Veraart 2016, via
+#   dwi_preprocess.sh), SWI/TOF -> skipped
+# - N4 bias-field correction (Tustison 2010) where field strength tunes the
+#   b-spline mesh / spline distance (-b); FLAIR uses a gentler, lesion-aware
+#   preset so diffuse lesion contrast is not absorbed into the bias field
+#   (Valdes Hernandez 2016)
+# - Metadata-driven parameter optimization
 #
 # This is now focused only on true preprocessing steps, with brain extraction
 # and standardization moved to the brain_extraction.sh module for better modularity.

@@ -3,8 +3,14 @@
 # analysis.sh - Analysis functions for the brain MRI processing pipeline
 #
 # This module contains:
-# - Hyperintensity detection
-# - Cluster analysis
+# - Region-based hyperintensity detection over the FreeSurfer brainstem
+#   substructures (falls back to the HO gross mask when absent)
+# - CSF / partial-volume exclusion (subtracts an FSL FAST CSF-PVE-derived mask;
+#   posterior-fossa CSF is the dominant false-positive source) before thresholding
+# - Per-region GMM thresholding (delegated to gmm_threshold.py; adaptive 2-3
+#   components) with a single authoritative fallback SD multiplier
+#   (THRESHOLD_WM_SD_MULTIPLIER) when GMM is skipped
+# - Cluster analysis (3D connectivity + minimum-size filtering)
 # - Volume quantification
 # - Analysis QA integration
 #

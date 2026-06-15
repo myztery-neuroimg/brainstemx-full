@@ -27,6 +27,88 @@ Brainstem regions can present clinically with very subtle variations below the c
 - Updated Juelich pons segmentation: applied same interpolation fix, yielding anatomically reasonable voxel counts
 - Integrated FLAIR enhancement: generated separate FLAIR intensity masks for segmentation quality analysis
 
+## Multi-Atlas Labeling, Optional Modules & Atlas Availability
+
+The default segmentation path is FreeSurfer substructures with a Harvard-Oxford gross-extent fallback. Several **opt-in** back-ends extend it:
+
+- **Multi-atlas brainstem labeling** (`multi_atlas.sh`, enabled via `BRAINSTEM_SEGMENTATION_METHOD=multi_atlas`/`bianciardi`) — warps the **Bianciardi BrainstemNavigator v1.0**, **CIT168**, and (off-by-default) **AAL3** atlases into subject T1 space through one shared SyN→MNI registration with label-aware `GenericLabel` interpolation. Bianciardi's *overlapping* probabilistic maps are combined by a streaming winner-take-all argmax into an int16 dseg **plus** an overlay set for the 12 reticular-formation nuclei that argmax would zero out. Per-region masks land where `analysis.sh:find_all_atlas_regions` discovers them, so per-region GMM detection consumes them unchanged. Full detail: [multi_atlas_integration_spec.md](multi_atlas_integration_spec.md).
+- **Atlas-availability check** (`check_atlas_availability` in `environment.sh`, invoked at startup) — reports presence/absence of each atlas under `$FSLDIR/data/atlases` (`ATLAS_DIR`) and warns if the selected method needs a missing one. Absence is **non-fatal**: the pipeline degrades to the Harvard-Oxford gross mask. Layout is overridable via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
+- **Optional supervised / deep-learning WMH modules (all default-OFF)**, each intersected with the brainstem mask: FSL **BIANCA** (`wmh_bianca.sh`), **LST-AI + FreeSurfer SAMSEG** (`wmh_lst_samseg.sh`), **WMH-SynthSeg** (`wmh_synthseg.sh`), **segcsvdWMH** (`wmh_segcsvd.sh`), **SHIVA-WMH** (`wmh_shiva.sh`), **MARS-WMH** (`wmh_mars.sh`).
+- **AANSegment** (`brainstem_aanseg.sh`) — **exploratory** FreeSurfer arousal-network nuclei segmentation; ≤1 mm input only, large-lesion-sensitive, off by default.
+- **Post-detection false-positive filter** (`fp_filter.sh`) — config-gated FP suppression operating *after* detection, complementing the CSF/partial-volume exclusion that runs *before* thresholding.
+
+> ⚠️ **None of these is validated in the brainstem/pons.** Published WMH/lesion SOTA is supratentorial; the posterior fossa is repeatedly "under-evaluated", and Ryu et al. 2025 report DL is "relatively poor" there. Treat optional modules as exploratory, keep conservative pons QA with a human in the loop, and locally validate before relying on any tool.
+
+## Recent Advances & Roadmap (2024–2026)
+
+This section situates BrainStem X against the 2024–2026 literature. Items marked **[preprint]** / **[provisional]** are not peer-reviewed or have no released code and are cited with that caveat.
+
+### Brain extraction
+- **SynthStrip** — Hoopes et al., NeuroImage 2022;260:119474 (contrast-agnostic primary)
+- **BET** — Smith, Hum Brain Mapp 2002;17(3):143-155 (fallback)
+- **HD-BET** — Isensee et al., Hum Brain Mapp 2019;40(17):4952-4964 (candidate alternative)
+
+### Denoising / bias correction
+- **N4ITK** — Tustison et al., IEEE TMI 2010;29(6):1310-1320
+- **Adaptive Rician NLM** — Manjón et al., JMRI 2010;31(1):192-203
+- **MP-PCA `dwidenoise`** — Veraart et al., NeuroImage 2016;142:394-406
+- **Gibbs unringing** — Kellner et al., MRM 2016;76(5):1574-1581
+- **Patch2Self2** (dMRI) — Fadnavis et al., CVPR 2024 (candidate)
+- **DeepN4** (T1-only N4 approximation, context) — Kanakaraj et al., Neuroinformatics 2024;22:193-205
+- **FLAIR bias-correction harm under lesion load** — Valdés Hernández et al., 2016 (PMC4846712) — motivates the gentle FLAIR N4 preset
+
+### Registration
+- **SyN** — Avants et al., Med Image Anal 2008;12(1):26-41
+- **Nonlinear-registration evaluation** — Klein et al., NeuroImage 2009;46(3):786-802
+- **SynthMorph** (joint) — Hoffmann et al., Imaging Neuroscience 2024;2:1-33
+- **uniGradICON** — Tian et al., MICCAI 2024
+- **LUMIR/Learn2Reg 2024** — **[preprint, arXiv:2505.24160]**
+
+### Segmentation / atlases
+- **FreeSurfer brainstem substructures** — Iglesias et al., NeuroImage 2015;113:184-195
+- **FreeSurfer** — Fischl, NeuroImage 2012;62(2):774-781
+- **Harvard-Oxford** — Desikan et al., NeuroImage 2006;31(3):968-980 (Makris et al. 2006)
+- **Bianciardi BrainstemNavigator** — Bianciardi et al., Brain Connect 2015;5(10):597-607; Toolkit v1.0 **[conference abstract]** Hannanu et al., ISMRM 2025 #0950
+- **CIT168** — Pauli, Nili & Tyszka, Sci Data 2018;5:180063
+- **AAL3** — Rolls et al., NeuroImage 2020;206:116189
+- **AANSegment** — Olchanyi et al., Hum Brain Mapp 2025;46(14):e70357 (≤1 mm only; CC BY-NC-ND; large-lesion-sensitive)
+- **MARS / dl-brainstem** — Gesierich et al., Hum Brain Mapp 2025;46(3):e70141
+- **Talairach (legacy; removed)** — Lancaster et al. 2007 (PMC2856713); MNI↔Talairach disparity is worst inferiorly/posteriorly, i.e. in the brainstem
+- **FSL FAST** — Zhang et al., IEEE TMI 2001;20(1):45-57; **Atropos** — Avants et al., Neuroinformatics 2011;9(4):381-400
+- **SynthSeg** — Billot et al., Med Image Anal 2023;86:102789; **SynthSR** — Iglesias et al., Sci Adv 2023;9(5):eadd3607
+
+### WMH / lesion detection
+- **BIANCA** — Griffanti et al., NeuroImage 2016;141:191-205
+- **LST-AI** — Wiltgen et al., NeuroImage: Clinical 2024;42:103611
+- **SAMSEG lesion** — Cerri et al., NeuroImage 2021;225:117471
+- **segcsvdWMH** — Gibson et al., Hum Brain Mapp 2024;45(18):e70104
+- **SHIVA-WMH** — Tran et al., Hum Brain Mapp 2024;45(1):e26548
+- **MARS-WMH** — Gesierich et al., Cereb Circ Cogn Behav 2025;9:100393
+- **WMH-SynthSeg** — Laso et al., IEEE ISBI 2024 (arXiv:2312.05119)
+- **DeepWMH** — Liu et al., Science Bulletin 2024;69(7):872-875
+- **Normative/generative anomaly detection** — Bercea et al., Nat Commun 2025;16:1624
+- **WMH methods review** — Rahmani et al., Brain Imaging Behav 2024;18:1310-1322
+- **FLAMeS** — Dereskewicz et al., J Neuroimaging 2025 (**[preprint, medRxiv 2025.05.19.25327707]**)
+- Benchmarks — Wu et al., J Imaging Inform Med 2026; DELCODE (Front Psychiatry 2023;13:1010273); Martersteck et al., Alzheimer's & Dementia 2025; WMH Segmentation Challenge (Kuijf et al., IEEE TMI 2019;38(11):2556-2568)
+
+### Infratentorial false positives (CSF pulsation) — the dominant brainstem FP source
+- **CSF flow artifacts review** — Pai et al., Insights into Imaging 2025;16:288
+- **Peri-CSF pseudolesion class** — Bawil et al., BioMed Eng OnLine 2026;25:69
+- **C-FLAIR (acquisition fix)** — Graf et al., Radiology 2025;317(2)
+- **SegAE / joint ventricle-WMH** — Atlason et al., PLOS ONE 2022;17(8):e0274212
+- **Small-lesion-removal caveat** — Molchanova et al., 2024 (**[preprint, arXiv:2507.12092]**)
+- **DL poor in brainstem (reality check)** — Ryu et al., Sci Rep 2025;15:13214
+
+### Standards
+- **McDonald 2024** — Montalban et al., Lancet Neurol 2025;24(10):850-865
+- **MAGNIMS-CMSC-NAIMS 2024** — Barkhof et al., Lancet Neurol 2025;24(10):866-879
+- **STRIVE-2** — Duering et al., Lancet Neurol 2023;22(7):602-618
+
+### Roadmap caveats (read these)
+1. **No method is validated in the brainstem/pons.** Every cited WMH/segmentation tool was evaluated supratentorially; the posterior fossa is repeatedly "under-evaluated" and Ryu 2025 finds DL "relatively poor" there. Any adopted tool needs local brainstem validation; the pipeline keeps conservative pons QA / human-in-the-loop.
+2. **3D-FLAIR acquisition is the single biggest lever** for infratentorial specificity — bigger than any post-processing step.
+3. **Per-region GMM thresholding in the brainstem is a genuine published gap** (no 2024–2026 precedent identified). This is both the project's novelty *and* a lack-of-external-validation caveat: the approach is unproven against an established brainstem reference.
+
 ## Complete Feature Set
 
 ### Acquisition-Specific Processing and Registration
@@ -148,7 +230,7 @@ Brainstem regions can present clinically with very subtle variations below the c
 - **Connectivity weighting** for refined detection using 3D morphological operations
 - **Multi-threshold hyperintensity detection** with configurable standard deviation multipliers and minimum cluster size filtering
 - **Cross-modality validation** analyzes both FLAIR hyperintensities and T1 hypointensities with statistical correlation
-- **Optional supervised WMH modules** (default-off): FSL BIANCA (`wmh_bianca.sh`) and LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), each intersecting results with the brainstem mask
+- **Optional supervised / DL WMH modules** (all default-off), each intersecting results with the brainstem mask: FSL BIANCA (`wmh_bianca.sh`), LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), WMH-SynthSeg (`wmh_synthseg.sh`), segcsvdWMH (`wmh_segcsvd.sh`), SHIVA-WMH (`wmh_shiva.sh`), MARS-WMH (`wmh_mars.sh`); plus a post-detection false-positive filter (`fp_filter.sh`)
 
 ### Advanced Visualization & QA (visualization.sh, qa.sh)
 
@@ -241,7 +323,7 @@ Brainstem regions can present clinically with very subtle variations below the c
 - **CSF / partial-volume exclusion** using the FSL FAST CSF PVE map before thresholding
 - **Multi-threshold detection** configurable SD multipliers (1.5-3.0) with minimum cluster size filtering
 - **Cross-modality validation** analyzes hyperintensity patterns across T1/T2/FLAIR with statistical correlation
-- **Optional supervised WMH** FSL BIANCA and LST-AI + FreeSurfer SAMSEG modules (default-off), intersected with the brainstem mask
+- **Optional supervised / DL WMH** BIANCA, LST-AI + SAMSEG, WMH-SynthSeg, segcsvdWMH, SHIVA-WMH, MARS-WMH modules (all default-off), intersected with the brainstem mask; optional `fp_filter.sh` post-detection FP suppression
 - **Native-to-standard space mapping** enables analysis in both subject native and standardized coordinates
 - **DICOM cluster backtrace** creates coordinate lookup tables for medical imaging viewer navigation
 
@@ -372,8 +454,10 @@ The analysis module implements **region-based hyperintensity detection**:
    - Minimum cluster size filtering (configurable, default 27 voxels)
    - Morphological closing operations to eliminate noise
 
-5. **Optional Supervised WMH Modules** (default-off)
-   - FSL BIANCA (`wmh_bianca.sh`) and LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), each intersecting results with the brainstem mask
+5. **Optional Supervised / DL WMH Modules** (all default-off)
+   - Each intersects results with the brainstem mask: FSL BIANCA (`wmh_bianca.sh`), LST-AI + FreeSurfer SAMSEG (`wmh_lst_samseg.sh`), WMH-SynthSeg (`wmh_synthseg.sh`), segcsvdWMH (`wmh_segcsvd.sh`), SHIVA-WMH (`wmh_shiva.sh`), MARS-WMH (`wmh_mars.sh`)
+   - A post-detection false-positive filter (`fp_filter.sh`) can be applied afterward (config-gated)
+   - **None is validated in the brainstem** — keep conservative pons QA / human-in-the-loop
 
 ## Quality Assurance Details
 
