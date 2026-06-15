@@ -190,13 +190,16 @@ test_function_availability() {
     
     # Source modules
     source "$MODULES_DIR/segmentation.sh" 2>/dev/null
+    source "$MODULES_DIR/brainstem_freesurfer.sh" 2>/dev/null
     source "$MODULES_DIR/juelich_segmentation.sh" 2>/dev/null
-    
-    # Test core segmentation functions
+
+    # Test core segmentation functions (live FreeSurfer/Harvard-Oxford path;
+    # Talairach brainstem subdivision has been removed)
     assert_function_exists "extract_brainstem_standardspace" "extract_brainstem_standardspace function exists"
-    assert_function_exists "extract_brainstem_talairach" "extract_brainstem_talairach function exists"
-    assert_function_exists "extract_brainstem_ants" "extract_brainstem_ants function exists"
+    assert_function_exists "extract_brainstem" "extract_brainstem function exists"
     assert_function_exists "extract_brainstem_final" "extract_brainstem_final function exists"
+    assert_function_exists "extract_brainstem_freesurfer" "extract_brainstem_freesurfer function exists"
+    assert_function_exists "extract_brainstem_ants" "extract_brainstem_ants function exists"
     assert_function_exists "validate_segmentation" "validate_segmentation function exists"
     
     # Test Juelich functions

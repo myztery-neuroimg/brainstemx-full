@@ -37,13 +37,11 @@ test_orientation_correction_removed() {
         echo "ERROR: Buggy TRUEtrue condition still present in segmentation.sh"
         problematic_patterns=$((problematic_patterns + 1))
     fi
-    
-    # Check segment_talairach.sh as well
-    if grep -q "fslswapdim.*-x.*orientation" "$PROJECT_ROOT/src/modules/segment_talairach.sh"; then
-        echo "ERROR: Manual orientation correction still found in segment_talairach.sh"
-        problematic_patterns=$((problematic_patterns + 1))
-    fi
-    
+
+    # Note: the legacy segment_talairach.sh module has been removed entirely
+    # (Talairach brainstem subdivision is no longer part of the pipeline), so
+    # there is nothing to check there anymore.
+
     if [ $problematic_patterns -eq 0 ]; then
         echo "✓ PASS: Manual orientation correction patterns successfully removed"
         return 0
