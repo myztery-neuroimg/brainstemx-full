@@ -516,16 +516,20 @@ find_all_atlas_regions() {
     local -n regions_array=$1
     regions_array=()
     
-    log_message "Searching for ALL atlas-based segmentation regions..."
-    
-    # Primary locations for Talairach atlas regions
+    log_message "Searching for ALL brainstem substructure regions..."
+
+    # Primary locations for brainstem substructure masks. FreeSurfer parcels
+    # (brainstem_freesurfer.sh) are written to segmentation/detailed_brainstem.
     local search_dirs=(
         "${RESULTS_DIR}/segmentation/detailed_brainstem"
         "${RESULTS_DIR}/segmentation/pons"
         "${RESULTS_DIR}/comprehensive_analysis/original_space"
     )
-    
-    # Talairach region patterns to find
+
+    # Region patterns to find. These match the FreeSurfer parcel filenames
+    # (midbrain/pons/medulla/scp, with optional left/right hemisphere splits)
+    # written by brainstem_freesurfer.sh, e.g. <basename>_pons.nii.gz,
+    # <basename>_left_pons.nii.gz, <basename>_midbrain.nii.gz.
     local region_patterns=(
         "*left_medulla*.nii.gz"
         "*right_medulla*.nii.gz"
@@ -533,7 +537,12 @@ find_all_atlas_regions() {
         "*right_pons*.nii.gz"
         "*left_midbrain*.nii.gz"
         "*right_midbrain*.nii.gz"
+        "*left_scp*.nii.gz"
+        "*right_scp*.nii.gz"
         "*_pons.nii.gz"
+        "*_midbrain.nii.gz"
+        "*_medulla.nii.gz"
+        "*_scp.nii.gz"
     )
     
     # Search for all region masks
@@ -563,15 +572,43 @@ find_all_atlas_regions() {
         fi
     done
     
+    # Fallback: when no substructure parcels exist (e.g. FreeSurfer
+    # unavailable/low-confidence, or BRAINSTEM_SEGMENTATION_METHOD=atlas), fall
+    # back to the gross Harvard-Oxford Brain-Stem mask so per-region GMM still
+    # runs on the whole brainstem instead of aborting the analysis stage. This
+    # is a single, coarser region (no pons/midbrain/medulla split).
+    if [ ${#regions_array[@]} -eq 0 ]; then
+        log_formatted "WARNING" "No brainstem substructure parcels found; falling back to the gross brainstem mask (whole-brainstem region, no subdivision)"
+        local gross_candidates=(
+            "${RESULTS_DIR}/segmentation/brainstem/"*"_brainstem.nii.gz"
+            "${RESULTS_DIR}/segmentation/in_reference_space/"*"_brainstem.nii.gz"
+        )
+        local gross_file
+        for gross_file in "${gross_candidates[@]}"; do
+            [ -f "$gross_file" ] || continue
+            local gross_base=$(basename "$gross_file" .nii.gz)
+            # Skip intensity/derivative files
+            if [[ "$gross_base" == *"_intensity"* ]] || [[ "$gross_base" == *"_flair_"* ]] || [[ "$gross_base" == *"_mask"* ]]; then
+                continue
+            fi
+            local gross_vol=$(fslstats "$gross_file" -V | awk '{print $1}')
+            if [ "$gross_vol" -gt 10 ]; then
+                regions_array+=("$gross_file")
+                log_message "✓ Found gross brainstem region: $gross_base (${gross_vol} voxels)"
+                break
+            fi
+        done
+    fi
+
     # Remove duplicates and sort
     if [ ${#regions_array[@]} -gt 0 ]; then
         readarray -t regions_array < <(printf '%s\n' "${regions_array[@]}" | sort -u)
-        log_message "Found ${#regions_array[@]} unique atlas-based regions for analysis"
+        log_message "Found ${#regions_array[@]} unique brainstem regions for analysis"
     else
-        log_formatted "ERROR" "No atlas-based segmentation regions found"
+        log_formatted "ERROR" "No brainstem segmentation regions found"
         return 1
     fi
-    
+
     return 0
 }
 
