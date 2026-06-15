@@ -226,6 +226,64 @@ export GMM_FALLBACK_PERCENTILE=97.5     # --fallback-percentile: used when GMM f
 # It defaults to THRESHOLD_WM_SD_MULTIPLIER (above) so there is ONE
 # authoritative fallback value.  Override only if you need them to diverge.
 
+# ---------------------------------------------------------------------------
+# Supervised WMH detection - FSL BIANCA  (src/modules/wmh_bianca.sh)
+# ---------------------------------------------------------------------------
+# BIANCA is a k-NN supervised classifier (Griffanti et al., NeuroImage 2016).
+# Unlike the unsupervised GMM/intensity-threshold path above, it requires
+# manually-labelled TRAINING data (a masterfile of subjects each having a FLAIR
+# (+optionally T1) and a MANUAL lesion mask), OR a previously-saved classifier.
+#
+# DEFAULT OFF: with no training data / classifier configured, the module logs a
+# clear warning and skips gracefully (non-fatal).  Enable only once you have
+# either BIANCA_TRAINING_MASTERFILE or BIANCA_LOAD_CLASSIFIER set.
+#
+# Entry point: run_bianca_wmh <flair_std> <out_prefix> [<t1_std>] [<flair_to_mni.mat>]
+export WMH_BIANCA_ENABLED=false          # master switch; true = run BIANCA in analysis stage
+
+# --- Training data (choose ONE; both empty = graceful skip) -----------------
+# Path to a BIANCA training masterfile. Each row lists, in consistent column
+# order, a training subject's feature images, brain mask, manual lesion mask and
+# (optionally) a FLAIR->MNI .mat. Manual lesion masks are mandatory for training.
+export BIANCA_TRAINING_MASTERFILE=""     # e.g. /data/bianca_training/masterfile.txt
+export BIANCA_TRAINING_DIR=""            # optional base dir holding the training images
+# Path to a previously-saved classifier (from a prior --saveclassifierdata run).
+# When set, BIANCA loads it instead of re-training (much faster, no manual masks).
+export BIANCA_LOAD_CLASSIFIER=""         # e.g. /data/bianca_training/classifier_data
+# When training, persist the classifier here so subsequent runs can --loadclassifierdata.
+export BIANCA_SAVE_CLASSIFIER=""         # e.g. /data/bianca_training/classifier_data
+
+# --- Training masterfile column layout (match YOUR training masterfile) ------
+# These MUST match the column order of BIANCA_TRAINING_MASTERFILE, because BIANCA
+# applies ONE global column layout to every row (training rows + the query row
+# the module appends). The module builds the query row as
+#   FLAIR, [T1,] brainmask, [FLAIR->MNI .mat]
+# and inserts a PLACEHOLDER at BIANCA_LABEL_FEATURENUM so the query row aligns
+# with the label column your training rows carry (the query's label is ignored).
+# If your training layout differs, set BIANCA_FEATURESUBSET /
+# BIANCA_BRAINMASK_FEATURENUM / BIANCA_MATFEATURENUM to the training columns.
+export BIANCA_LABEL_FEATURENUM=4         # --labelfeaturenum: column with manual lesion masks
+export BIANCA_BRAINMASK_FEATURENUM=""    # --brainmaskfeaturenum (empty = auto from query layout)
+export BIANCA_FEATURESUBSET=""           # --featuresubset: intensity feature cols (empty = auto)
+export BIANCA_MATFEATURENUM=""           # --matfeaturenum: FLAIR->MNI .mat col (empty = auto)
+# --trainingnums: rows to train on. "all" (or empty) trains on every training
+# row (1..N) and NEVER includes the appended query row. Or give an explicit list
+# like "1,2,3".
+export BIANCA_TRAININGNUMS="all"
+
+# --- Classifier / feature options -------------------------------------------
+export BIANCA_THRESHOLD=0.9              # probability-map threshold -> binary WMH mask (0-1)
+export BIANCA_SPATIALWEIGHT=1            # --spatialweight: weight of MNI spatial features
+export BIANCA_PATCHSIZES="3"             # --patchsizes: patch sizes (voxels) for local averaging
+export BIANCA_PATCH3D=false             # --patch3D: true = 3D patches, false = 2D (default)
+export BIANCA_TRAININGPTS=2000           # --trainingpts: max lesion points per training subject
+export BIANCA_NONLESPTS=10000            # --nonlespts: max non-lesion points per training subject
+export BIANCA_SELECTPTS="noborder"       # --selectpts: any | noborder | surround
+export BIANCA_VERBOSE=true               # pass -v to bianca
+
+# --- Post-processing --------------------------------------------------------
+export BIANCA_MIN_CLUSTER_SIZE=0         # drop WMH clusters below this many voxels (0 = off)
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
