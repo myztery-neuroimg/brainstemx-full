@@ -5,13 +5,26 @@ description = "Anomaly detection within the human brainstem - a research project
 readme = "README.md"
 requires-python = "==3.12.8"
 dependencies = [
+    "antspynet>=0.2.3",
+    "colorama==0.4.6 ; sys_platform == 'win32'",
     # Core dependencies used by Python modules and inline Python in bash scripts
-    "nibabel>=5.3.2",       # gmm_threshold.py, analyze_multimodal_brainstem.sh
-    "numpy>=2.0.0",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
-    "pandas>=2.0.0",        # analyze_multimodal_brainstem.sh (inline Python)
-    "pydicom>=3.0.1",       # extract_dicom_metadata.py
-    "pytest>=9.0.2",
-    "scikit-learn>=1.5.0",  # gmm_threshold.py (per-region GMM analysis)
+    "iniconfig==2.3.0",
+    "joblib==1.5.3",
+    "nibabel==5.4.2",       # gmm_threshold.py, analyze_multimodal_brainstem.sh
+    "numpy==2.4.6",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
+    "packaging==26.2",
+    "pandas==3.0.3",        # analyze_multimodal_brainstem.sh (inline Python)
+    "pluggy==1.6.0",
+    "pydicom==3.0.2",       # extract_dicom_metadata.py
+    "pygments==2.20.0",
+    "pytest==9.0.3",
+    "python-dateutil==2.9.0.post0",
+    "scikit-learn==1.9.0",  # gmm_threshold.py (per-region GMM analysis)
+    "scipy==1.17.1",
+    "six==1.17.0",
+    "threadpoolctl==3.6.0",
+    "typing-extensions==4.15.0",
+    "tzdata==2026.2 ; sys_platform == 'emscripten' or sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
