@@ -51,6 +51,8 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   brainstem_aanseg.sh    # EXPLORATORY: FreeSurfer AANSegment arousal-network nuclei (≤1mm only; off by default)
   analysis.sh            # hyperintensity detection, cluster analysis
   gmm_threshold.py       # standalone GMM thresholder (called by analysis.sh)
+  cross_modal_analysis.sh # MULTI-MODAL: per-cluster corroboration of FLAIR clusters with co-registered SWI/DWI-trace/ADC/T2 (default on, graceful)
+  cross_modal_sample.py  # samples co-registered modalities per cluster, emits the cross-modal table + flags (called by cross_modal_analysis.sh)
   fp_filter.sh           # post-detection false-positive suppression (config-gated; complements CSF/PV exclusion)
   wmh_bianca.sh          # optional supervised WMH: FSL BIANCA (needs training data); off by default
   wmh_lst_samseg.sh      # optional WMH: LST-AI + FreeSurfer SAMSEG (pretrained, no training data); off by default
@@ -121,6 +123,14 @@ The single-method values (`freesurfer`/`multi_atlas`/`bianciardi`/`atlas`/`harva
 **Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`. The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
 
 **Optional WMH / seg modules (all default-OFF)** — supervised/DL add-ons, each intersected with the brainstem mask: `wmh_bianca.sh` (FSL BIANCA), `wmh_lst_samseg.sh` (LST-AI + SAMSEG), `wmh_synthseg.sh` (WMH-SynthSeg), `wmh_segcsvd.sh` (segcsvdWMH), `wmh_shiva.sh` (SHIVA-WMH), `wmh_mars.sh` (MARS-WMH); plus `brainstem_aanseg.sh` (EXPLORATORY AANSegment, ≤1 mm only) and the post-detection `fp_filter.sh`. None is validated in the brainstem — keep conservative pons QA / human-in-the-loop.
+
+## Multi-modal (SWI / DWI / T2) end-to-end
+
+Beyond the T1/FLAIR backbone, the pipeline brings the **secondary** T2-weighted modalities — SWI magnitude, the DERIVED DWI **trace** + **ADC** (not raw 4D diffusion), and a true T2 — all the way through, **only when they are present** (a T1+FLAIR-only study is byte-identically unchanged):
+
+- **Import** keeps every dcm2niix series in `EXTRACT_DIR` (no modality filtering). `scan_selection.sh::discover_secondary_modality_specs` selects the best SWI/DWI-trace/ADC/T2 scan (filters out the T2-SPACE-FLAIR and the DWI-vs-ADC cross-contamination).
+- **Registration** routes secondaries through the **contrast-matched cascade** (`registration.sh::register_contrast_matched_cascade`, T1←FLAIR←{T2,DWI,ADC,SWI}, composed forward+inverse transforms persisted) into the common analysis space. Enabled by `CONTRAST_MATCHED_REGISTRATION=true` + `AUTO_REGISTER_ALL_MODALITIES=true` (both default on; the cascade is a no-op when no secondary is present). `CONTRAST_ANCHOR_MAP` anchors the whole T2-family {T2,DWI,ADC,SWI} on FLAIR.
+- **Cross-modal corroboration** (`cross_modal_analysis.sh`, default on, self-gated) samples the co-registered secondaries inside every PRIMARY FLAIR cluster and flags **DWI restriction** (trace↑ + ADC↓ → acute/ischemic), **SWI hypointensity** (→ hemorrhage/microbleed), **T2 hyperintensity** (→ corroborates FLAIR). It is corroboration ON TOP of the primary detection — it never re-detects or alters the lesion mask. Outputs the per-cluster table + summary under `analysis/cross_modal/`. Config: the `CROSS_MODAL_*` block (`MULTIMODAL_SECONDARY_MODALITIES`, per-modality z thresholds) in `config/default_config.sh`.
 
 ## Runtime notes
 

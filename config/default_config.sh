@@ -397,15 +397,19 @@ export REG_LABEL_INTERPOLATION="GenericLabel"
 # list and its INVERSE are persisted (the inverse is needed by the downstream
 # DICOM cluster->source mapping).
 #
-# DEFAULT OFF preserves byte-identical current behaviour.  RECOMMENDED ON when a
-# good 3D FLAIR plus one or more T2-weighted series (T2/DWI/SWI) are present.
-export CONTRAST_MATCHED_REGISTRATION=false
+# DEFAULT ON, but GRACEFUL: the cascade only registers SECONDARY T2-weighted
+# series that are actually present (T2/DWI/SWI). When a study is T1+FLAIR only,
+# register_contrast_matched_cascade finds no specs and is a no-op — the T1/FLAIR
+# result is byte-identical to the legacy path. Set false to force the legacy
+# direct-to-T1 path for any present secondaries.
+export CONTRAST_MATCHED_REGISTRATION=true
 
 # Per-family contrast anchor map.  Each entry is "MODALITY:ANCHOR" where ANCHOR is
 # the modality whose registered space the MODALITY is matched to.  T2-weighted
-# family {T2,FLAIR,DWI,SWI} anchors on FLAIR; FLAIR anchors on T1; T1 anchors on
-# the MNI master.  Resolved by resolve_contrast_anchor() in registration.sh.
-export CONTRAST_ANCHOR_MAP=("T2:FLAIR" "DWI:FLAIR" "SWI:FLAIR" "FLAIR:T1" "T1:MNI")
+# family {T2,FLAIR,DWI,ADC,SWI} anchors on FLAIR (ADC shares the diffusion trace
+# geometry and registers well to the 3D FLAIR); FLAIR anchors on T1; T1 anchors
+# on the MNI master.  Resolved by resolve_contrast_anchor() in registration.sh.
+export CONTRAST_ANCHOR_MAP=("T2:FLAIR" "DWI:FLAIR" "ADC:FLAIR" "SWI:FLAIR" "FLAIR:T1" "T1:MNI")
 
 # Metric for the same-contrast modality->FLAIR step.  MI is always safe; CC only
 # if the pair is genuinely same-contrast (e.g. a true T2 vs 3D-FLAIR).  Left at MI
@@ -421,6 +425,72 @@ export CONTRAST_MATCHED_INTENSITY_INTERP="Linear"
 # outputs: per-modality registration to FLAIR, the composed-to-T1 resample, the
 # persisted composed forward/inverse transform lists, and a transform manifest.
 export CONTRAST_MATCHED_SUBDIR="contrast_matched"
+
+# ===========================================================================
+# MULTI-MODALITY PROCESSING  (SWI / DWI / T2 end-to-end + cross-modal analysis)
+# ===========================================================================
+# BrainStemX is genuinely MULTI-modal: beyond the T1/FLAIR backbone it can bring
+# the SECONDARY T2-weighted modalities (SWI magnitude, the DERIVED DWI trace and
+# ADC, and a true T2) all the way through the pipeline — preprocess -> contrast-
+# matched cascade into the common T1/analysis space -> per-cluster cross-modal
+# corroboration of every primary FLAIR hyperintensity.
+#
+# GRACEFUL BY CONSTRUCTION: each secondary modality is processed *only when it is
+# present on disk*. A study that contains only T1+FLAIR behaves EXACTLY as before
+# — nothing below changes the T1/FLAIR result, it only ADDS corroboration when
+# extra contrasts exist. The toggles default ON precisely because they are no-ops
+# in the absence of the relevant series.
+#
+# DWI NOTE: the diffusion input is treated as the DERIVED trace/ADC volumes (the
+# clinically exported b>0 trace and the ADC map), NOT raw 4D diffusion. SWI is a
+# magnitude (t2_hemo-style) volume. 2D / derived series are handled gracefully.
+
+# Secondary modalities the pipeline will try to bring end-to-end when present.
+# Each entry is matched against EXTRACT_DIR filenames (see detect_modality() in
+# preprocess.sh for the keyword families). T1 and FLAIR are the backbone and are
+# always processed; this list is the ADDITIVE set processed only when found.
+export MULTIMODAL_SECONDARY_MODALITIES=("T2" "SWI" "DWI" "ADC")
+
+# ---------------------------------------------------------------------------
+# Cross-modal corroboration analysis  (src/modules/cross_modal_analysis.sh)
+# ---------------------------------------------------------------------------
+# AFTER the primary FLAIR hyperintensity clusters are detected, sample each
+# co-registered secondary modality inside every cluster ROI and annotate
+# corroboration:
+#   DWI restriction (trace UP AND ADC DOWN)  -> acute / ischemic flag
+#   SWI hypointensity                        -> hemorrhage / microbleed flag
+#   T2 hyperintensity                        -> corroborates the FLAIR finding
+# Emits a per-cluster cross-modal TABLE (cluster id, region, FLAIR intensity/z,
+# plus each available modality's intensity + flag) and a corroboration summary.
+# This is CORROBORATION ON TOP OF the existing primary detection — it never
+# re-detects lesions and never alters the primary mask.
+#
+# DEFAULT ON but fully gated/graceful: with no co-registered secondary modality
+# the step logs "nothing to corroborate" and returns success (no-op).
+export CROSS_MODAL_ANALYSIS_ENABLED=true
+
+# Minimum cluster size (voxels) to include in the cross-modal table. Tiny
+# clusters are dominated by partial-volume and rarely worth corroborating.
+export CROSS_MODAL_MIN_CLUSTER_VOXELS=5
+
+# --- Per-modality corroboration thresholds (intensity z within the brainstem) -
+# Each modality is z-scored within the brainstem ROI (robust mean/SD over the
+# segmentation mask) so the thresholds are scanner/scale independent. A cluster's
+# per-modality z is its MEAN z over the cluster voxels.
+#
+# DWI restriction: acute ischemia shows trace HYPER-intensity AND ADC HYPO-
+# intensity. Flag "RESTRICTION" when trace z >= +DWI and ADC z <= -ADC.
+export CROSS_MODAL_DWI_TRACE_Z=1.0     # DWI trace z at/above this = elevated
+export CROSS_MODAL_ADC_Z=-1.0          # ADC z at/below this = reduced diffusion
+# SWI hemorrhage/microbleed: susceptibility blooming -> strong HYPO-intensity.
+export CROSS_MODAL_SWI_Z=-1.5          # SWI z at/below this = hypointense (blood)
+# T2 corroboration of FLAIR: lesion is HYPER-intense on T2 as well.
+export CROSS_MODAL_T2_Z=1.0            # T2 z at/above this = hyperintense
+
+# Subdirectory (under ${RESULTS_DIR}/analysis) for the cross-modal outputs:
+# the per-cluster table (CSV), the corroboration summary, and the per-modality
+# brainstem-resampled volumes used for sampling.
+export CROSS_MODAL_SUBDIR="cross_modal"
 
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
@@ -987,8 +1057,14 @@ export FLAIR_SELECTION_MODE="original"    # Prefer ORIGINAL acquisitions over DE
 
 # Advanced registration options
 
-# Auto-register all modalities to T1 (if false, only FLAIR is registered)
-export AUTO_REGISTER_ALL_MODALITIES=false
+# Bring ALL present modalities (not just FLAIR) into the common analysis space.
+# DEFAULT ON and GRACEFUL: with only T1+FLAIR present this is a no-op beyond the
+# standard FLAIR<->T1 registration. When CONTRAST_MATCHED_REGISTRATION=true (the
+# default) the SECONDARY T2-weighted modalities (T2/DWI/SWI) are routed through
+# the contrast-matched cascade (T1<-FLAIR<-{T2,DWI,SWI}) rather than the legacy
+# direct-to-T1 MI path, which registers them far better. Set false to register
+# only FLAIR and skip secondaries entirely.
+export AUTO_REGISTER_ALL_MODALITIES=true
 
 # Auto-detect resolution and use appropriate template
 # When true, the pipeline will select between 1mm and 2mm templates based on input image resolution

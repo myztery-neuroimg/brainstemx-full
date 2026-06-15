@@ -109,7 +109,7 @@ source "${PIPELINE_DIR}/modules/enhanced_registration_validation.sh"
 # "… module loaded" line when sourced. The [ -f ] guard keeps a missing
 # file from tripping `set -e`. Do NOT add multi_atlas.sh here — that
 # module owns its own source line (added by a concurrent PR).
-for _opt in wmh_bianca wmh_lst_samseg wmh_synthseg wmh_segcsvd wmh_shiva wmh_mars brainstem_aanseg fp_filter; do
+for _opt in wmh_bianca wmh_lst_samseg wmh_synthseg wmh_segcsvd wmh_shiva wmh_mars brainstem_aanseg fp_filter cross_modal_analysis; do
   _optf="${PIPELINE_DIR}/modules/${_opt}.sh"
   [ -f "$_optf" ] && source "$_optf"
 done
@@ -722,11 +722,20 @@ run_pipeline() {
     # Create output directory for registration
     local reg_dir=$(create_module_dir "registered")
     
-    # Determine whether to use automatic multi-modality registration
-    if [ "${AUTO_REGISTER_ALL_MODALITIES:-false}" = "true" ]; then
-      log_message "Performing automatic registration of all modalities to T1"
+    # Determine whether to use automatic multi-modality registration.
+    #
+    # When the contrast-matched cascade is enabled (the default multi-modal
+    # path), the SECONDARY modalities (T2/DWI/SWI) are handled by the cascade
+    # block below — which needs the standard FLAIR->T1 transforms produced by the
+    # main registration path. So even with AUTO_REGISTER_ALL_MODALITIES=true we
+    # take the standard FLAIR<->T1 path here and let the cascade route the
+    # secondaries (T1<-FLAIR<-{T2,DWI,SWI}). The legacy direct-to-T1 MI path
+    # (register_all_modalities) is only used when the cascade is explicitly off.
+    if [ "${AUTO_REGISTER_ALL_MODALITIES:-false}" = "true" ] && \
+       [ "${CONTRAST_MATCHED_REGISTRATION:-false}" != "true" ]; then
+      log_message "Performing automatic registration of all modalities to T1 (legacy direct-to-T1 path)"
       register_all_modalities "$t1_std" "$(get_module_dir "standardized")" "$reg_dir"
-      
+
       # Find the registered FLAIR file for downstream processing
       local flair_registered=$(find "$reg_dir" -iname "*FLAIR*Warped.nii.gz" | head -1)
       if [ -z "$flair_registered" ]; then
@@ -738,6 +747,11 @@ run_pipeline() {
       else
         log_message "Using automatically registered FLAIR: $flair_registered"
       fi
+      # The downstream post-registration validation references moving_registered_file
+      # (assigned in the main-registration branch). In this legacy path the registered
+      # FLAIR IS the moving-registered output; bind it so the validation under set -u
+      # has a defined value instead of an unbound-variable abort.
+      local moving_registered_file="$flair_registered"
     else
       # MAIN REGISTRATION EXECUTION - This was missing!
       log_formatted "INFO" "===== EXECUTING MAIN REGISTRATION ====="
@@ -865,29 +879,23 @@ run_pipeline() {
           local cm_dir="${reg_dir}/${CONTRAST_MATCHED_SUBDIR:-contrast_matched}"
           mkdir -p "$cm_dir"
 
-          # Locate present T2-weighted secondary modalities (T2/DWI/SWI).  These
-          # are not standardized like T1/FLAIR, so search the standard output dirs
-          # (brain_extraction -> bias_corrected -> extracted), excluding masks.
+          # Locate present SECONDARY T2-weighted modalities (T2/SWI/DWI-trace/ADC)
+          # via the modality-aware scan selector. These are not standardized like
+          # T1/FLAIR, so selection runs over EXTRACT_DIR (raw imported series).
+          # Absent modalities are skipped (graceful); a T1+FLAIR-only study yields
+          # no specs and the cascade is a no-op. ADC is registered alongside the
+          # DWI trace so the cross-modal step can read restriction (trace+ADC).
           local cm_specs=()
-          local cm_mod cm_found cm_search_dir
-          for cm_mod in T2 DWI SWI; do
-            # Exclude the T2-SPACE-FLAIR (already the anchor) via the FLAIR filter below.
-            cm_found=""
-            for cm_search_dir in "${RESULTS_DIR}/brain_extraction" "${RESULTS_DIR}/bias_corrected" "${EXTRACT_DIR}"; do
-              [ -d "$cm_search_dir" ] || continue
-              cm_found=$(find "$cm_search_dir" -iname "*${cm_mod}*.nii.gz" ! -iname "*FLAIR*" ! -iname "*Mask*" ! -iname "*_mean.nii.gz" 2>/dev/null | head -1)
-              [ -n "$cm_found" ] && break
-            done
-            if [ -n "$cm_found" ]; then
-              log_message "Contrast-matched: found ${cm_mod} candidate: $cm_found"
-              cm_specs+=("${cm_mod}=${cm_found}")
-            else
-              log_message "Contrast-matched: no ${cm_mod} present (skipping)"
-            fi
-          done
+          if declare -f discover_secondary_modality_specs >/dev/null 2>&1; then
+            while IFS= read -r cm_spec; do
+              [ -n "$cm_spec" ] || continue
+              log_message "Contrast-matched: secondary modality spec: $cm_spec"
+              cm_specs+=("$cm_spec")
+            done < <(discover_secondary_modality_specs "$EXTRACT_DIR" "$flair_std")
+          fi
 
           if [ ${#cm_specs[@]} -eq 0 ]; then
-            log_message "No T2-weighted secondary modalities present; contrast-matched cascade has nothing to do"
+            log_message "No secondary T2-weighted modalities present; contrast-matched cascade has nothing to do (T1+FLAIR-only behaviour unchanged)"
           else
             register_contrast_matched_cascade \
               "$t1_std" "$flair_std" "$flair_to_t1_prefix" "$cm_dir" "${cm_specs[@]}" \
@@ -1318,6 +1326,27 @@ run_pipeline() {
         fi
       else
         log_formatted "WARNING" "run_fp_filter reported a non-fatal failure"
+      fi
+    fi
+
+    # --- Cross-modal corroboration (MULTI-MODAL; self-gated; default ON) -----
+    # Sample the co-registered SECONDARY modalities (SWI/DWI-trace/ADC/T2 brought
+    # into the common space by the contrast-matched cascade) inside every PRIMARY
+    # FLAIR cluster ROI and annotate corroboration (DWI restriction -> acute,
+    # SWI hypointensity -> hemorrhage, T2 hyperintensity -> corroborates). This
+    # is corroboration ON TOP of the primary detection; it never re-detects or
+    # alters the primary mask. GRACEFUL: with only T1+FLAIR present (no cascade
+    # outputs) it is a no-op. Operates on the cluster INDEX volume produced by
+    # analyze_hyperintensity_clusters (same analysis space as $seg_orig/$orig_flair).
+    if declare -f run_cross_modal_analysis >/dev/null 2>&1; then
+      local cross_modal_dir="${RESULTS_DIR}/analysis/${CROSS_MODAL_SUBDIR:-cross_modal}"
+      local clusters_index="${hyperintensities_dir}/clusters/clusters.nii.gz"
+      if [ -f "$clusters_index" ]; then
+        run_cross_modal_analysis \
+          "$clusters_index" "$seg_orig" "$orig_flair" "$reg_dir" "$cross_modal_dir" || \
+          log_formatted "WARNING" "Cross-modal analysis reported a non-fatal failure"
+      else
+        log_message "Cross-modal: cluster index not found ($clusters_index) - skipping corroboration"
       fi
     fi
 
