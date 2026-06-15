@@ -176,6 +176,24 @@ export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
 export REG_PRECISION=1                 # Registration precision
 
+# Per-metric tuning shared by all stages of perform_multistage_registration().
+# CC radius applies when CC is used (same-modality SyN); MI bins apply when MI is
+# used (cross-modality rigid/affine/SyN). The SyN stage now selects MI for
+# cross-modality pairs (e.g. FLAIR↔T1) since CC assumes correlated intensities.
+export REG_MI_BINS=32                   # Histogram bins for Mutual Information metric
+export REG_CC_RADIUS=4                  # Neighbourhood radius for Cross Correlation metric
+
+# Intensity winsorization (antsRegistrationSyN.sh community standard).
+# Clamps the intensity tails before registration to suppress outliers; applied to
+# the global antsRegistration command in perform_multistage_registration().
+export REG_WINSORIZE_LOWER=0.005        # Lower winsorize quantile
+export REG_WINSORIZE_UPPER=0.995        # Upper winsorize quantile
+
+# Interpolation used by apply_transformation() when warping discrete label/atlas/
+# mask volumes (is_label=true). GenericLabel is the modern label-aware default
+# (anti-aliased, preserves discrete values); continuous intensity images keep Linear.
+export REG_LABEL_INTERPOLATION="GenericLabel"
+
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)

@@ -1287,7 +1287,8 @@ transform_segmentation_to_original() {
             
             # Extract transform prefix from transform file path
             local transform_prefix="${transform%0GenericAffine.mat}"
-            if apply_transformation "$segmentation" "$reference" "$output" "$transform_prefix" "NearestNeighbor"; then
+            # Discrete segmentation labels: use label-aware interpolation (7th arg = is_label)
+            if apply_transformation "$segmentation" "$reference" "$output" "$transform_prefix" "NearestNeighbor" "inverse" "true"; then
                 log_message "✓ Successfully applied transform using centralized function"
             else
                 log_formatted "ERROR" "Failed to apply transform using centralized function"
