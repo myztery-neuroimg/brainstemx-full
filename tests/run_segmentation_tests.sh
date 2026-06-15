@@ -135,9 +135,11 @@ if [ -f "${TEMPLATE_DIR}/${EXTRACTION_TEMPLATE}" ]; then
         echo "⚠ Juelich pons extraction failed (expected with template input)"
     fi
     
-    # Test full brainstem extraction
+    # Test full brainstem extraction. Pin the exclusive 'atlas' method: the new
+    # default ('all') fans out to concurrent paths including the multi-hour
+    # FreeSurfer recon-all, which must not run in this diagnostic harness.
     echo "Testing full brainstem extraction..."
-    if extract_brainstem_final "$test_input" 2>/dev/null; then
+    if BRAINSTEM_SEGMENTATION_METHOD=atlas extract_brainstem_final "$test_input" 2>/dev/null; then
         echo "✓ Full brainstem extraction completed"
     else
         echo "⚠ Full brainstem extraction failed (expected with template input)"

@@ -597,10 +597,18 @@ find_all_atlas_regions() {
         "${RESULTS_DIR}/comprehensive_analysis/original_space"
     )
 
-    # Region patterns to find. These match the FreeSurfer parcel filenames
-    # (midbrain/pons/medulla/scp, with optional left/right hemisphere splits)
-    # written by brainstem_freesurfer.sh, e.g. <basename>_pons.nii.gz,
-    # <basename>_left_pons.nii.gz, <basename>_midbrain.nii.gz.
+    # Region patterns to find. The per-region GMM analyses the UNION of every
+    # mask the parallel segmentation paths produced:
+    #   - FreeSurfer parcels (brainstem_freesurfer.sh): <basename>_pons.nii.gz,
+    #     <basename>_left_pons.nii.gz, <basename>_midbrain.nii.gz, ... (gross
+    #     subdivisions, optional left/right splits).
+    #   - Multi-atlas gross subdivisions (multi_atlas.sh aggregation):
+    #     bianciardi_pons.nii.gz, bianciardi_left_midbrain.nii.gz, ... (matched by
+    #     the *_pons / *left_pons globs below).
+    #   - Multi-atlas NUCLEUS-level masks: bianciardi_*_label*, cit168_*_label*,
+    #     aal3_*_label* — added explicitly so the CIT168 / AAL3 / Bianciardi nuclei
+    #     are part of the union, not just the aggregated subdivisions.
+    # The voxel-size filter + sort -u dedup below keep the union clean.
     local region_patterns=(
         "*left_medulla*.nii.gz"
         "*right_medulla*.nii.gz"
@@ -614,6 +622,9 @@ find_all_atlas_regions() {
         "*_midbrain.nii.gz"
         "*_medulla.nii.gz"
         "*_scp.nii.gz"
+        "bianciardi_*_label*.nii.gz"
+        "cit168_*_label*.nii.gz"
+        "aal3_*_label*.nii.gz"
     )
     
     # Search for all region masks
@@ -681,6 +692,42 @@ find_all_atlas_regions() {
     fi
 
     return 0
+}
+
+# Determine the PROVENANCE (source segmentation path) of a region mask from its
+# path/filename. The parallel 'all' mode emits masks from several sources into
+# segmentation/detailed_brainstem; tagging each region by source keeps per-source
+# outputs non-clobbering (e.g. freesurfer_pons vs bianciardi_pons) and records
+# which path each detected region came from.
+#   freesurfer    : FreeSurfer parcels         <base>_{pons,midbrain,medulla,scp}*
+#   bianciardi    : Bianciardi nuclei/aggregate bianciardi_*
+#   cit168        : CIT168 nuclei              cit168_*
+#   aal3          : AAL3 regions               aal3_*
+#   harvard_oxford: gross HO fallback mask     *_brainstem.nii.gz (segmentation/brainstem)
+#   atlas         : anything else (unattributed)
+_region_source_from_path() {
+    local p="$1"
+    local b
+    b=$(basename "$p")
+    case "$b" in
+        bianciardi_*) echo "bianciardi" ;;
+        cit168_*)     echo "cit168" ;;
+        aal3_*)       echo "aal3" ;;
+        *)
+            case "$p" in
+                */segmentation/brainstem/*) echo "harvard_oxford" ;;
+                *)
+                    # FreeSurfer parcels are written as <base>_{region}.nii.gz under
+                    # detailed_brainstem (no atlas prefix); treat the remaining
+                    # subdivision masks there as FreeSurfer-sourced.
+                    case "$p" in
+                        */detailed_brainstem/*) echo "freesurfer" ;;
+                        *) echo "atlas" ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
 }
 
 # Function to apply Gaussian Mixture Model (n=3) thresholding
@@ -996,6 +1043,14 @@ apply_per_region_gmm_analysis() {
     # Initialize combined result as zeros
     fslmaths "$flair_image" -mul 0 "$combined_result"
 
+    # Provenance manifest: records which SOURCE path (freesurfer / bianciardi /
+    # cit168 / aal3 / harvard_oxford) each analysed region came from. The parallel
+    # 'all' segmentation mode produces masks from several sources; downstream the
+    # per-region GMM runs across the UNION, so tagging provenance keeps per-source
+    # outputs distinct and traceable in the report.
+    local provenance_manifest="${per_region_dir}/region_provenance.tsv"
+    printf 'region_tag\tregion_base\tsource\tmask_path\n' > "$provenance_manifest"
+
     # Build the CSF exclusion mask ONCE (FLAIR space) since it is region-independent.
     # Region masks are resampled to FLAIR space below, so this mask aligns with all
     # of them.  Empty string => CSF subtraction is skipped (PV erosion still applies).
@@ -1063,6 +1118,10 @@ apply_per_region_gmm_analysis() {
             elif [[ "$region_name" =~ right_ ]]; then
                 region_base="right_${region_base}"
             fi
+        elif [[ "$region_name" =~ ^(bianciardi|cit168|aal3)_(.+)_label[0-9]+$ ]]; then
+            # Multi-atlas nucleus mask <atlas>_<nucleus>_label<N>: use the nucleus
+            # name (atlas prefix is recorded separately as provenance below).
+            region_base="${BASH_REMATCH[2]}"
         else
             region_base=$(echo "$region_name" | sed -E 's/.*_([^_]+)$/\1/')
         fi
@@ -1071,11 +1130,21 @@ apply_per_region_gmm_analysis() {
         if [ -z "$region_base" ] || [[ "$region_base" == *"/"* ]]; then
             region_base="unknown_region_$(date +%s)"
         fi
-        
-        log_message "Processing region: $region_base (FLAIR hyperintensity analysis)"
-        
+
+        # Tag the region with its PROVENANCE so masks of the same anatomical name
+        # from DIFFERENT sources (e.g. FreeSurfer pons vs Bianciardi pons) do not
+        # clobber each other's work dir / per-region output, and so the report can
+        # attribute each detection to the path that produced it.
+        local region_source
+        region_source=$(_region_source_from_path "$region_mask")
+        local region_tag="${region_source}_${region_base}"
+        printf '%s\t%s\t%s\t%s\n' "$region_tag" "$region_base" "$region_source" "$region_mask" >> "$provenance_manifest"
+
+        log_message "Processing region: $region_base [source=$region_source] (FLAIR hyperintensity analysis)"
+
         # Create organized region-specific working directory with modality info
-        local region_work_dir="${per_region_dir}/${region_base}_FLAIR_analysis"
+        # (provenance-namespaced so parallel sources never share a work dir).
+        local region_work_dir="${per_region_dir}/${region_tag}_FLAIR_analysis"
         mkdir -p "$region_work_dir"
         
         # Create GMM analysis subdirectory for temp files
@@ -1159,10 +1228,12 @@ apply_per_region_gmm_analysis() {
                     fslmaths "$combined_result" -add "$region_connectivity" "$combined_result"
                     region_results+=("$region_connectivity")
                     
-                    log_message "✓ Successfully processed $region_base with GMM analysis"
-                    
-                    # Create region-specific output files
-                    local region_output="${out_prefix}_${region_base}_GMM.nii.gz"
+                    log_message "✓ Successfully processed $region_base [source=$region_source] with GMM analysis"
+
+                    # Create region-specific output files. Namespace by PROVENANCE
+                    # so same-named regions from different sources (e.g. FreeSurfer
+                    # vs Bianciardi pons) produce DISTINCT, non-clobbering outputs.
+                    local region_output="${out_prefix}_${region_tag}_GMM.nii.gz"
                     cp "$region_connectivity" "$region_output"
                     
                 else
@@ -1180,10 +1251,19 @@ apply_per_region_gmm_analysis() {
     if [ ${#region_results[@]} -gt 0 ]; then
         fslmaths "$combined_result" -bin "$combined_result"
         log_message "✓ Combined results from ${#region_results[@]} regions into atlas-based GMM detection"
-        
+
+        # Summarise per-source provenance of the analysed regions.
+        if [ -f "$provenance_manifest" ]; then
+            log_message "Region provenance (source: count):"
+            tail -n +2 "$provenance_manifest" | awk -F'\t' '{c[$3]++} END{for(s in c) printf "  %s: %d\n", s, c[s]}' | while IFS= read -r line; do
+                log_message "$line"
+            done
+            log_message "Provenance manifest: $provenance_manifest"
+        fi
+
         # Store combined result globally
         export ATLAS_GMM_RESULT="$combined_result"
-        
+
         return 0
     else
         log_formatted "ERROR" "No regions successfully processed with GMM analysis"
@@ -2412,6 +2492,7 @@ export -f _analysis_world_matrix
 export -f detect_hyperintensities
 export -f create_supratentorial_mask
 export -f find_all_atlas_regions
+export -f _region_source_from_path
 export -f build_csf_exclusion_mask
 export -f apply_csf_pv_exclusion
 export -f apply_per_region_gmm_analysis
