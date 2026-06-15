@@ -505,6 +505,32 @@ export SEGCSVD_CLEANUP=true              # 'cleanup' positional flag (remove con
 # Extra args appended to the native-module invocation (word-split; module back-end only).
 export SEGCSVD_MODULE_EXTRA_OPTS=""
 
+# ===========================================================================
+# EXPLORATORY brainstem arousal-network nuclei (FreeSurfer AANSegment)
+#   module: src/modules/brainstem_aanseg.sh   entry fn: run_aanseg
+# ===========================================================================
+# Olchanyi et al., "Automated MRI Segmentation of Brainstem Nuclei Critical to
+# Consciousness," Human Brain Mapping 2025;46(14):e70357 (DOI 10.1002/hbm.70357).
+# FreeSurfer-shipped 'SegmentAAN.sh' Bayesian segmenter of ~10 brainstem AAN
+# nuclei (DR, MnR, LC, LDTg, PTg, parabrachial, PnO, midbrain RF, VTA, PAG).
+#
+# *** EXPLORATORY / RESEARCH-ONLY. DEFAULT OFF. ***  Honor these caveats:
+#   1. Reliable ONLY at <= 1 mm input resolution. Clinical FLAIR slice thickness
+#      (3-5 mm) gives UNRELIABLE volumetrics - the module warns and skips.
+#   2. License CC BY-NC-ND 4.0 (NON-COMMERCIAL, NO DERIVATIVES): we only INVOKE
+#      the FreeSurfer tool; we never modify or redistribute it.
+#   3. Degrades on large brainstem lesions - interpret with extreme caution.
+# Requires FreeSurfer + a FreeSurfer license + a prior 'recon-all' for the
+# subject (the module never runs the hours-long recon-all itself). Absence of any
+# dependency is a graceful, non-fatal skip.
+export BRAINSTEM_AANSEG_ENABLED=false    # master switch; true = run AANSegment (EXPLORATORY)
+export AANSEG_MAX_VOXEL_MM=1.0           # max per-axis voxel size (mm); coarser => unreliable
+export AANSEG_SKIP_IF_COARSE=true        # true => skip when input is coarser than the limit
+export AANSEG_WRITE_REGION_MASKS=false   # true => also stage nuclei labels under segmentation/ (NOT wired into analysis)
+# Path overrides (empty = auto-detect). SegmentAAN.sh / FS license / subjects dir.
+export AANSEG_SUBJECTS_DIR=""            # optional explicit FreeSurfer SUBJECTS_DIR with the recon
+export AANSEG_OUTPUT_DIR=""              # optional explicit output dir (default: RESULTS_DIR/brainstem_aanseg)
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
