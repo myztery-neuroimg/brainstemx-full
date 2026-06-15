@@ -112,9 +112,125 @@ fs_record_provenance() {
 }
 
 # ---------------------------------------------------------------------------
+# fs_resolve_recon_input - choose a FULL-HEAD, native T1 for recon-all
+#
+# recon-all -all/-autorecon1 expects a full-head, native-resolution T1: it runs
+# its own skull-strip, intensity normalisation and conform. Feeding it the
+# pipeline's brain-extracted + dimension-standardized image (e.g.
+# t1_BrainExtractionBrain_std.nii.gz) builds a topologically broken WM surface
+# (Euler eno<0) and segfaults at Fix-Topology / QSphere. This helper resolves
+# the correct full-head input, in priority order:
+#   1. $FREESURFER_T1_INPUT (explicit override) — must exist.
+#   2. The full-head bias-corrected T1 under ${RESULTS_DIR}/bias_corrected
+#      (the *_n4 / *N4Corrected file, produced BEFORE brain extraction).
+#   3. Fallback: the supplied reference image (likely the stripped/standardized
+#      brain) — accepted only with a loud WARNING, since recon-all may fail.
+#
+# Args: <reference_input_file>   (the pipeline's segmentation reference image)
+# Echoes the resolved recon-all input path on stdout. Always returns 0; the
+# caller decides what to do (recon-all itself will surface any failure).
+# Diagnostic logging goes to stderr so it never pollutes the echoed path.
+# ---------------------------------------------------------------------------
+fs_resolve_recon_input() {
+    local reference_input="$1"
+
+    # 1. Explicit override.
+    if [ -n "${FREESURFER_T1_INPUT:-}" ]; then
+        if [ -f "$FREESURFER_T1_INPUT" ]; then
+            log_message "  recon-all input: explicit FREESURFER_T1_INPUT=$FREESURFER_T1_INPUT" >&2
+            echo "$FREESURFER_T1_INPUT"
+            return 0
+        fi
+        log_formatted "WARNING" "FREESURFER_T1_INPUT set but file missing: $FREESURFER_T1_INPUT — auto-detecting full-head T1 instead" >&2
+    fi
+
+    # 2. Full-head bias-corrected T1 (pre brain extraction). Prefer the canonical
+    #    *_n4 output (preprocess.sh process_n4_correction), then the legacy
+    #    *N4Corrected output (utils.sh). Exclude masks and any brain-extracted /
+    #    standardized files. `find -print -quit` returns the first match without a
+    #    `| head` pipe, so it cannot take SIGPIPE under `set -o pipefail` (matches
+    #    the pattern fs_find_labels deliberately uses).
+    local bias_dir="${RESULTS_DIR:-}/bias_corrected"
+    if [ -n "${RESULTS_DIR:-}" ] && [ -d "$bias_dir" ]; then
+        local candidate pattern
+        for pattern in "*T1*_n4.nii.gz" "*T1*N4Corrected.nii.gz"; do
+            candidate=$(find "$bias_dir" -maxdepth 1 -iname "$pattern" \
+                ! -iname "*Mask*" ! -iname "*BrainExtraction*" ! -iname "*_std.nii.gz" \
+                -print -quit 2>/dev/null)
+            if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+                log_message "  recon-all input: full-head bias-corrected T1 (${pattern}) -> $candidate" >&2
+                echo "$candidate"
+                return 0
+            fi
+        done
+    fi
+
+    # 3. Last resort: the reference image itself. This is very likely the
+    #    brain-extracted / standardized brain — recon-all is prone to fail on it
+    #    (the exact topology segfault this fix addresses). Warn loudly.
+    log_formatted "WARNING" "Could not locate a full-head native T1 under ${bias_dir}; falling back to the segmentation reference image for recon-all: $reference_input" >&2
+    log_formatted "WARNING" "  recon-all needs a FULL-HEAD T1 (it does its own skull-strip/conform). A brain-extracted/standardized brain often segfaults at Fix-Topology. Set FREESURFER_T1_INPUT to a full-head T1 to avoid this." >&2
+    echo "$reference_input"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# fs_surface_recon_log - surface recon-all.log detail to the console on failure
+#
+# recon-all writes its full trace to $subject_dir/scripts/recon-all.log. When a
+# run fails the caller only ever saw a generic message; this dumps the log path,
+# the last N lines, and the salient error lines (exited with ERRORS / Segmentation
+# fault / final distance error / topology / Euler eno) at ERROR level so the real
+# cause (e.g. the topology segfault) is visible without re-running by hand.
+#
+# Args: <subject_dir> <recon_exit_code>
+# ---------------------------------------------------------------------------
+fs_surface_recon_log() {
+    local subject_dir="$1"
+    local exit_code="$2"
+    local recon_log="${subject_dir}/scripts/recon-all.log"
+    local tail_lines="${FS_RECON_LOG_TAIL_LINES:-30}"
+
+    log_formatted "ERROR" "recon-all exit code: ${exit_code}"
+
+    if [ ! -f "$recon_log" ]; then
+        log_formatted "ERROR" "recon-all log not found at expected path: $recon_log (recon-all may have failed before creating it)"
+        return 0
+    fi
+
+    log_formatted "ERROR" "recon-all log: $recon_log"
+
+    # Salient error lines first — these pinpoint the failing stage.
+    # log_error returns its error code (1) which, as the last command in a
+    # while-read loop, would set the loop's status non-zero; the trailing
+    # `|| true` keeps the loop (and `set -e` callers) from aborting mid-dump.
+    local error_lines
+    error_lines=$(grep -nE 'exited with ERRORS|Segmentation fault|final distance error|[Tt]opology|Euler|eno=|ERROR:' "$recon_log" 2>/dev/null | tail -20 || true)
+    if [ -n "$error_lines" ]; then
+        log_formatted "ERROR" "recon-all error/failure lines:"
+        while IFS= read -r line; do
+            [ -n "$line" ] && log_error "    $line" || true
+        done <<< "$error_lines"
+    fi
+
+    # Last N lines of the log (the tail usually contains the fatal stage).
+    log_formatted "ERROR" "Last ${tail_lines} lines of recon-all.log:"
+    local logtail
+    logtail=$(tail -n "$tail_lines" "$recon_log" 2>/dev/null || true)
+    while IFS= read -r line; do
+        log_error "    $line" || true
+    done <<< "$logtail"
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # run_recon_all - run FreeSurfer structural reconstruction (cached/resumable)
 #
 # Args: <t1_file> <subjects_dir> <subject_id>
+#   t1_file MUST be a full-head, native T1 (resolve via fs_resolve_recon_input
+#   before calling). Passing a brain-extracted/standardized brain causes the
+#   Fix-Topology segfault this module exists to avoid.
 # Skips if the recon outputs (aseg.mgz) already exist for the subject.
 # ---------------------------------------------------------------------------
 run_recon_all() {
@@ -134,30 +250,81 @@ run_recon_all() {
         return 0
     fi
 
+    if [ ! -f "$t1_file" ]; then
+        log_formatted "ERROR" "recon-all input T1 does not exist: $t1_file"
+        return 1
+    fi
+
     mkdir -p "$subjects_dir"
+
+    # A subject dir without the aseg.mgz completion marker is a stale/failed
+    # recon (e.g. the prior topology segfault). `recon-all -i ... -s <subj>`
+    # refuses to overwrite an existing subject dir, so a re-run would fail
+    # immediately and the fixed full-head input would never take effect.
+    # Archive the stale dir (preserving its recon-all.log for debugging) so the
+    # re-run starts clean. The cache check above already returned for a COMPLETE
+    # recon, so we only reach here when the recon is genuinely incomplete.
+    if [ -d "$subject_dir" ]; then
+        local stale_archive="${subject_dir}.failed.$(date +%Y%m%d%H%M%S)"
+        log_formatted "WARNING" "Existing incomplete recon-all subject dir (no aseg.mgz): $subject_dir"
+        log_formatted "WARNING" "  Archiving stale recon to: $stale_archive (recon-all cannot resume into an existing dir with -i)"
+        mv "$subject_dir" "$stale_archive" || {
+            log_formatted "ERROR" "Failed to archive stale recon dir; cannot start a clean recon-all"
+            return 1
+        }
+    fi
 
     # recon-all level is configurable; default is a full recon (-all) because
     # the brainstem segmentation needs aseg/norm. Apple-Silicon native builds
     # reduce the runtime but it remains hours-long, hence the caching above.
+    # FS_RECON_ALL_FLAG may carry MULTIPLE flags (e.g. "-autorecon1 -autorecon2")
+    # for a lighter level that skips the crashing cortical-surface stages while
+    # still producing the volumetric outputs (norm.mgz/aseg) segmentBS needs, so
+    # word-split it into the argv array rather than passing one quoted token.
     local recon_flag="${FS_RECON_ALL_FLAG:--all}"
     local recon_threads="${ANTS_THREADS:-4}"
+    # shellcheck disable=SC2206  # intentional word-splitting of a multi-flag value
+    local -a recon_flag_arr=( $recon_flag )
 
+    # Build the recon-all argument list once so we can log the exact command.
+    local -a recon_cmd=(
+        recon-all
+        -i "$t1_file"
+        -s "$subject_id"
+        "${recon_flag_arr[@]}"
+        -parallel -openmp "$recon_threads"
+        -sd "$subjects_dir"
+    )
+
+    # Surface the resolved input + exact command BEFORE running so a crash (even
+    # an immediate segfault) is always attributable from the console log.
     log_message "  recon-all flag: $recon_flag (threads: $recon_threads)"
+    log_message "  recon-all input (full-head T1 expected): $t1_file"
+    log_message "  recon-all command: SUBJECTS_DIR=$subjects_dir ${recon_cmd[*]}"
+    log_message "  recon-all log will be at: ${subject_dir}/scripts/recon-all.log"
     log_message "  This may take several hours; outputs are cached for resumption."
 
     # SUBJECTS_DIR must point at our results-local subjects directory.
-    if ! SUBJECTS_DIR="$subjects_dir" recon-all \
-            -i "$t1_file" \
-            -s "$subject_id" \
-            "$recon_flag" \
-            -parallel -openmp "$recon_threads" \
-            -sd "$subjects_dir" >/dev/null 2>&1; then
+    # recon-all maintains its own scripts/recon-all.log; we surface that on
+    # failure. When FS_RECON_VERBOSE=true also stream output live to the console;
+    # otherwise discard the (very chatty) stdout/stderr — the log file is the
+    # authoritative record either way.
+    local recon_status=0
+    if [ "${FS_RECON_VERBOSE:-false}" = "true" ]; then
+        SUBJECTS_DIR="$subjects_dir" "${recon_cmd[@]}" || recon_status=$?
+    else
+        SUBJECTS_DIR="$subjects_dir" "${recon_cmd[@]}" >/dev/null 2>&1 || recon_status=$?
+    fi
+
+    if [ "$recon_status" -ne 0 ]; then
         log_formatted "ERROR" "recon-all failed for subject '$subject_id'"
+        fs_surface_recon_log "$subject_dir" "$recon_status"
         return 1
     fi
 
     if [ ! -f "$recon_marker" ]; then
         log_formatted "ERROR" "recon-all completed but expected output missing: $recon_marker"
+        fs_surface_recon_log "$subject_dir" "$recon_status"
         return 1
     fi
 
@@ -488,7 +655,14 @@ extract_brainstem_freesurfer() {
     local detailed_dir="${RESULTS_DIR}/segmentation/detailed_brainstem"
     mkdir -p "$subjects_dir" "$detailed_dir"
 
-    if ! run_recon_all "$input_file" "$subjects_dir" "$subject_id"; then
+    # recon-all needs a FULL-HEAD native T1, NOT the brain-extracted/standardized
+    # segmentation reference ($input_file). Resolve the correct input separately;
+    # $input_file is still used below as the GEOMETRY reference when resampling
+    # the labels back onto the pipeline's segmentation grid.
+    local recon_input
+    recon_input=$(fs_resolve_recon_input "$input_file")
+
+    if ! run_recon_all "$recon_input" "$subjects_dir" "$subject_id"; then
         log_formatted "WARNING" "recon-all failed — falling back to atlas/HO gross mask"
         return 1
     fi
@@ -531,6 +705,8 @@ extract_brainstem_freesurfer() {
 
 export -f fs_brainstem_available
 export -f fs_record_provenance
+export -f fs_resolve_recon_input
+export -f fs_surface_recon_log
 export -f run_recon_all
 export -f fs_find_labels
 export -f run_brainstem_substructures
