@@ -252,9 +252,9 @@ bash tests/test_import_unit.sh
 6. **Integration** - Full segmentation workflow testing
 
 **Expected Results**:
-- All segmentation functions available (`extract_brainstem_standardspace`, `extract_brainstem_talairach`, etc.)
-- Proper handling of missing FSL tools
-- Graceful fallback when atlases unavailable
+- Core segmentation functions available — `extract_brainstem` (Harvard-Oxford gross extent), `extract_brainstem_final` (method dispatch), `extract_brainstem_freesurfer` (Iglesias 2015 `segmentBS` substructures), `validate_segmentation`, etc. (the legacy `extract_brainstem_talairach` is retained only as a removed/legacy code path and is no longer the brainstem-subdivision method)
+- Proper handling of missing FSL/FreeSurfer tools
+- Graceful fallback to the HO gross brainstem mask when FreeSurfer/recon-all/license is unavailable
 - Correct output directory structure creation
 
 **Special Implementation Notes**:
