@@ -93,6 +93,12 @@ jobs:
 
       - name: Verify pipeline.sh --help works
         run: |
+          # Provide a dummy FSL config so the early `source $FSLDIR/etc/fslconf/fsl.sh`
+          # in pipeline.sh succeeds under `set -e` (no real FSL install in CI).
+          export FSLDIR=/tmp/fake_fsl
+          mkdir -p "$FSLDIR/etc/fslconf"
+          printf '# dummy FSL config for CI smoke test\n' > "$FSLDIR/etc/fslconf/fsl.sh"
+
           output=$(bash src/pipeline.sh --help 2>&1)
           echo "$output"
           echo ""
@@ -108,6 +114,11 @@ jobs:
           # dependency check stage — that's exactly what we want to verify.
           export FSLDIR=/tmp/fake_fsl
           export ANTS_PATH=/tmp/fake_ants
+
+          # Provide a dummy FSL config so the early `source $FSLDIR/etc/fslconf/fsl.sh`
+          # in pipeline.sh succeeds under `set -e` (no real FSL install in CI).
+          mkdir -p "$FSLDIR/etc/fslconf"
+          printf '# dummy FSL config for CI smoke test\n' > "$FSLDIR/etc/fslconf/fsl.sh"
 
           echo "Running pipeline.sh with no input data..."
           output=$(bash src/pipeline.sh 2>&1 || true)

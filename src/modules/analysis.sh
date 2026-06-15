@@ -612,7 +612,8 @@ apply_gaussian_mixture_thresholding() {
 
     if [ "$mask_volume" -lt "${GMM_MIN_VOXELS:-20}" ]; then
         log_formatted "ERROR" "Region mask too small ($mask_volume voxels) for meaningful GMM analysis"
-        local bash_fallback="${GMM_FALLBACK_THRESHOLD:-${THRESHOLD_WM_SD_MULTIPLIER:-1.5}}"
+        # Literal must equal config THRESHOLD_WM_SD_MULTIPLIER (single authoritative fallback)
+        local bash_fallback="${GMM_FALLBACK_THRESHOLD:-${THRESHOLD_WM_SD_MULTIPLIER:-1.2}}"
         fslmaths "$zscore_image" -mas "$region_mask" -thr "$bash_fallback" -bin "$output_mask"
         return 1
     fi
@@ -647,7 +648,7 @@ apply_gaussian_mixture_thresholding() {
         --moderate-weight-sd "${GMM_MODERATE_WEIGHT_SD:-2.0}" \
         --floor-percentile "${GMM_FLOOR_PERCENTILE:-95}" \
         --fallback-percentile "${GMM_FALLBACK_PERCENTILE:-97.5}" \
-        --fallback-threshold "${GMM_FALLBACK_THRESHOLD:-${THRESHOLD_WM_SD_MULTIPLIER:-1.5}}" \
+        --fallback-threshold "${GMM_FALLBACK_THRESHOLD:-${THRESHOLD_WM_SD_MULTIPLIER:-1.2}}" \
         2>"${gmm_temp_dir}/gmm_stderr.log")
     local gmm_exit=$?
 
@@ -683,7 +684,7 @@ apply_gaussian_mixture_thresholding() {
     # Validate threshold
     if [ -z "$threshold" ] || ! echo "$threshold" | grep -E '^[0-9]+\.?[0-9]*$' >/dev/null; then
         log_formatted "WARNING" "Invalid threshold value '$threshold', using fallback"
-        threshold="${GMM_FALLBACK_THRESHOLD:-${THRESHOLD_WM_SD_MULTIPLIER:-1.5}}"
+        threshold="${GMM_FALLBACK_THRESHOLD:-${THRESHOLD_WM_SD_MULTIPLIER:-1.2}}"
     fi
 
     if [ "$gmm_failed" = "true" ]; then
@@ -738,25 +739,162 @@ apply_gaussian_mixture_thresholding() {
 
 
 
+# Build a binary CSF exclusion mask (in the target/FLAIR space) from the FSL FAST
+# CSF PVE map.  The CSF map is region-independent, so this is computed ONCE per
+# subject and reused for every region (avoids re-resampling the whole-brain PVE
+# map per region).  Posterior-fossa CSF (4th ventricle, basal cisterns) is the
+# dominant FALSE-POSITIVE source for brainstem FLAIR.
+#
+# Usage: build_csf_exclusion_mask <csf_prob_map> <reference_image> <output_mask>
+# Returns 0 on success (output written), 1 if no usable exclusion mask could be
+# built (output not guaranteed to exist; caller must handle).
+build_csf_exclusion_mask() {
+    local csf_prob="$1"
+    local reference_image="$2"
+    local output_mask="$3"
+
+    log_message "Building CSF exclusion mask from FAST CSF PVE map..."
+
+    if [ -z "$csf_prob" ] || [ ! -f "$csf_prob" ]; then
+        log_formatted "WARNING" "CSF PVE map not available ($csf_prob); CSF subtraction will be skipped"
+        return 1
+    fi
+
+    local csf_pve_threshold="${CSF_PVE_THRESHOLD:-0.5}"
+
+    local work_dir
+    work_dir=$(mktemp -d)
+
+    # CSF PVE map may be in a different space than the reference; resample if so.
+    local csf_resampled="$csf_prob"
+    local ref_dims csf_dims
+    ref_dims=$(fslinfo "$reference_image" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    csf_dims=$(fslinfo "$csf_prob" | grep -E "^dim[123]" | awk '{print $2}' | tr '\n' 'x' | sed 's/x$//')
+    if [ "$ref_dims" != "$csf_dims" ]; then
+        csf_resampled="${work_dir}/csf_resampled.nii.gz"
+        log_message "Resampling CSF PVE map to reference space..."
+        if ! flirt -in "$csf_prob" -ref "$reference_image" -out "$csf_resampled" -interp trilinear -dof 6; then
+            log_formatted "WARNING" "CSF PVE resampling failed; CSF subtraction will be skipped"
+            rm -rf "$work_dir"
+            return 1
+        fi
+    fi
+
+    # CSF voxels: PVE > threshold.
+    if ! safe_fslmaths "Build CSF exclusion mask" \
+            "$csf_resampled" -thr "$csf_pve_threshold" -bin "$output_mask"; then
+        log_formatted "WARNING" "Failed to threshold CSF PVE map; CSF subtraction will be skipped"
+        rm -rf "$work_dir"
+        return 1
+    fi
+
+    rm -rf "$work_dir"
+    log_message "✓ CSF exclusion mask built (PVE > ${csf_pve_threshold})"
+    return 0
+}
+
+# Function to remove CSF and CSF-parenchyma partial-volume voxels from a region
+# mask before z-scoring/GMM.  Excluding posterior-fossa CSF materially reduces
+# spurious brainstem-FLAIR detections.  Gated by CSF_EXCLUSION_ENABLED.
+#
+# Usage: apply_csf_pv_exclusion <region_mask_in> <csf_exclusion_mask> <region_mask_out> [<region_name>]
+#   <csf_exclusion_mask> is the pre-built binary CSF mask (build_csf_exclusion_mask)
+#   in the SAME space as <region_mask_in>; pass "" to skip CSF subtraction and
+#   only apply partial-volume erosion.
+# Returns 0 and writes the cleaned mask to <region_mask_out>.  On any failure (or
+# when disabled) it copies the input through unchanged so the caller always has a
+# usable mask.
+apply_csf_pv_exclusion() {
+    local region_mask_in="$1"
+    local csf_exclusion_mask="$2"
+    local region_mask_out="$3"
+    local region_name="${4:-region}"
+
+    log_message "Applying CSF / partial-volume exclusion for $region_name..."
+
+    # Feature gate: when disabled, pass the mask through unchanged.
+    if [ "${CSF_EXCLUSION_ENABLED:-true}" != "true" ]; then
+        log_message "CSF/PV exclusion disabled (CSF_EXCLUSION_ENABLED=${CSF_EXCLUSION_ENABLED:-true}); using region mask unchanged"
+        cp "$region_mask_in" "$region_mask_out"
+        return 0
+    fi
+
+    local pv_erosion_mm="${PV_EROSION_MM:-1}"
+
+    local voxels_before
+    voxels_before=$(fslstats "$region_mask_in" -V | awk '{print $1}')
+    # Coerce to a safe integer so downstream arithmetic/comparisons can't abort
+    [[ "$voxels_before" =~ ^[0-9]+$ ]] || voxels_before=0
+
+    local work_dir
+    work_dir=$(mktemp -d)
+    local working_mask="${work_dir}/region_pv_eroded.nii.gz"
+
+    # 1) Erode the region mask by the partial-volume band (mm) to drop
+    #    CSF-parenchyma boundary voxels.  -kernel sphere uses mm radius.
+    if ! safe_fslmaths "Erode $region_name region mask by PV band" \
+            "$region_mask_in" -kernel sphere "$pv_erosion_mm" -ero "$working_mask"; then
+        log_formatted "WARNING" "PV-band erosion failed for $region_name; using un-eroded mask"
+        cp "$region_mask_in" "$working_mask"
+    fi
+
+    # 2) Subtract the pre-built CSF exclusion mask (same space as region mask).
+    if [ -n "$csf_exclusion_mask" ] && [ -f "$csf_exclusion_mask" ]; then
+        if ! safe_fslmaths "Subtract CSF from $region_name region mask" \
+                "$working_mask" -sub "$csf_exclusion_mask" -thr 0 -bin "$region_mask_out"; then
+            log_formatted "WARNING" "CSF subtraction failed for $region_name; using PV-eroded mask only"
+            cp "$working_mask" "$region_mask_out"
+        fi
+    else
+        log_message "No CSF exclusion mask for $region_name; applying PV erosion only"
+        cp "$working_mask" "$region_mask_out"
+    fi
+
+    rm -rf "$work_dir"
+
+    local voxels_after
+    voxels_after=$(fslstats "$region_mask_out" -V | awk '{print $1}')
+    [[ "$voxels_after" =~ ^[0-9]+$ ]] || voxels_after=0
+    local excluded=$(( voxels_before - voxels_after ))
+    log_message "✓ CSF/PV exclusion for $region_name: ${voxels_before} → ${voxels_after} voxels (${excluded} excluded)"
+
+    return 0
+}
+
 # Function to apply per-region GMM analysis to all atlas regions
 apply_per_region_gmm_analysis() {
     local flair_image="$1"
     local -n regions_ref=$2
     local temp_dir="$3"
     local out_prefix="$4"
-    
+
+    # CSF PVE map produced by FSL FAST in detect_hyperintensities() (fast_pve_0).
+    # Used to exclude CSF / partial-volume voxels from each region before GMM.
+    local csf_prob="${out_prefix}_csf_prob.nii.gz"
+
     log_message "Applying per-region GMM analysis to ${#regions_ref[@]} atlas regions..."
-    
+
     # Create PERMANENT per-region analysis directory for debugging
     local per_region_dir="${RESULTS_DIR}/per_region_analysis"
     mkdir -p "$per_region_dir"
-    
+
     # Store results for each region
     local region_results=()
     local combined_result="${per_region_dir}/atlas_gmm_combined.nii.gz"
-    
+
     # Initialize combined result as zeros
     fslmaths "$flair_image" -mul 0 "$combined_result"
+
+    # Build the CSF exclusion mask ONCE (FLAIR space) since it is region-independent.
+    # Region masks are resampled to FLAIR space below, so this mask aligns with all
+    # of them.  Empty string => CSF subtraction is skipped (PV erosion still applies).
+    local csf_exclusion_mask=""
+    if [ "${CSF_EXCLUSION_ENABLED:-true}" = "true" ]; then
+        local csf_exclusion_candidate="${per_region_dir}/csf_exclusion_mask.nii.gz"
+        if build_csf_exclusion_mask "$csf_prob" "$flair_image" "$csf_exclusion_candidate"; then
+            csf_exclusion_mask="$csf_exclusion_candidate"
+        fi
+    fi
     
     # Create or find brain mask for filtering segmentation masks
     local brain_mask=""
@@ -873,7 +1011,22 @@ apply_per_region_gmm_analysis() {
         
         # Use brain-masked region for all subsequent analysis
         region_resampled="$region_brain_masked"
-        
+
+        # Remove CSF and CSF-parenchyma partial-volume voxels (posterior-fossa
+        # false-positive reduction) BEFORE z-scoring/GMM.  No-op when disabled.
+        local region_csf_excluded="${region_work_dir}/${region_base}_csf_excluded.nii.gz"
+        if apply_csf_pv_exclusion "$region_resampled" "$csf_exclusion_mask" "$region_csf_excluded" "$region_base"; then
+            local csf_excluded_voxels
+            csf_excluded_voxels=$(fslstats "$region_csf_excluded" -V | awk '{print $1}')
+            # Coerce to a safe integer so the -lt comparison can't error out
+            [[ "$csf_excluded_voxels" =~ ^[0-9]+$ ]] || csf_excluded_voxels=0
+            if [ "$csf_excluded_voxels" -lt 50 ]; then
+                log_formatted "WARNING" "$region_base has insufficient voxels ($csf_excluded_voxels) after CSF/PV exclusion - skipping"
+                continue
+            fi
+            region_resampled="$region_csf_excluded"
+        fi
+
         # Perform region-specific z-score normalization
         local region_zscore="${region_work_dir}/${region_base}_zscore.nii.gz"
         log_message "Normalizing FLAIR intensities for $region_base using region-specific statistics..."
@@ -993,9 +1146,11 @@ apply_connectivity_weighting() {
     local region_mean=$(echo "$region_stats" | awk '{print $1}')
     local region_std=$(echo "$region_stats" | awk '{print $2}')
     
-    # Calculate adaptive thresholds
-    local base_threshold=$(echo "$region_mean + 2.0 * $region_std" | bc -l)
-    local connected_threshold=$(echo "$region_mean + 1.5 * $region_std" | bc -l)
+    # Calculate adaptive thresholds (SD multipliers are configurable)
+    local high_sd_mult="${CONNECTIVITY_HIGH_SD_MULT:-2.0}"
+    local connected_sd_mult="${CONNECTIVITY_CONNECTED_SD_MULT:-1.5}"
+    local base_threshold=$(echo "$region_mean + $high_sd_mult * $region_std" | bc -l)
+    local connected_threshold=$(echo "$region_mean + $connected_sd_mult * $region_std" | bc -l)
     
     # Validate thresholds are valid numbers
     if ! echo "$base_threshold" | grep -E '^-?[0-9]+\.?[0-9]*$' >/dev/null; then
@@ -1684,7 +1839,8 @@ transform_segmentation_to_original() {
     
     # Extract transform prefix from transform file path
     local transform_prefix="${transform_file%0GenericAffine.mat}"
-    if apply_transformation "$segmentation_file" "$reference_file" "$output_file" "$transform_prefix" "NearestNeighbor"; then
+    # Discrete segmentation labels: use label-aware interpolation (7th arg = is_label)
+    if apply_transformation "$segmentation_file" "$reference_file" "$output_file" "$transform_prefix" "NearestNeighbor" "inverse" "true"; then
         log_message "✓ Successfully applied transform using centralized function"
     else
         log_formatted "ERROR" "Failed to apply transform using centralized function"
@@ -1740,7 +1896,9 @@ analyze_region_modality() {
     log_message "$region ${modality} statistics - Mean: $region_mean, StdDev: $region_std"
     
     # Apply modality-specific thresholding with different multipliers for T1 vs FLAIR
-    local base_threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
+    # Fallback literal must equal config THRESHOLD_WM_SD_MULTIPLIER (the single
+    # authoritative fallback) so the legacy path agrees with the GMM path.
+    local base_threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.2}"
     local threshold_multiplier
     local threshold_val
     local abnormality_mask="${region_output_dir}/${region}_${modality}_${intensity_type}intensities.nii.gz"
@@ -2046,7 +2204,7 @@ analyze_talairach_hyperintensities() {
         
         echo ""
         echo "Analysis Parameters:"
-        echo "  Threshold multiplier: ${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
+        echo "  Threshold multiplier: ${THRESHOLD_WM_SD_MULTIPLIER:-1.2}"
         echo "  Minimum cluster size: ${MIN_HYPERINTENSITY_SIZE:-4} voxels"
         echo "  FLAIR thresholding: mean + multiplier × std (above threshold)"
         echo "  T1 thresholding: mean - multiplier × std (below threshold)"
@@ -2917,6 +3075,8 @@ EOF
 export -f detect_hyperintensities
 export -f create_supratentorial_mask
 export -f find_all_atlas_regions
+export -f build_csf_exclusion_mask
+export -f apply_csf_pv_exclusion
 export -f apply_per_region_gmm_analysis
 export -f normalize_flair_brainstem_zscore
 export -f apply_gaussian_mixture_thresholding

@@ -45,14 +45,21 @@ perform_multistage_registration() {
     local output_prefix="$3"
     local initial_transform="$4"  # Optional initialization
     local mask="$5"              # Optional mask
-    
+    local fixed_modality="${6:-}"   # Optional fixed-image modality (e.g. T1)
+    local moving_modality="${7:-}"  # Optional moving-image modality (e.g. FLAIR)
+
     log_message "=== Multi-stage Registration: Rigid → Affine → SyN ==="
     log_message "Fixed: $fixed_image"
     log_message "Moving: $moving_image"
     log_message "Output: $output_prefix"
     
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
-    
+
+    # Winsorize intensity tails to suppress outliers (antsRegistrationSyN.sh standard).
+    # Bounds are config-driven; defaults match the ANTs community standard [0.005,0.995].
+    local winsorize_lower="${REG_WINSORIZE_LOWER:-0.005}"
+    local winsorize_upper="${REG_WINSORIZE_UPPER:-0.995}"
+
     # Build base antsRegistration command
     local ants_cmd=(
         "${ants_bin}/antsRegistration"
@@ -60,6 +67,7 @@ perform_multistage_registration() {
         "--float" "0"
         "--output" "[${output_prefix},${output_prefix}Warped.nii.gz]"
         "--interpolation" "Linear"
+        "--winsorize-image-intensities" "[${winsorize_lower},${winsorize_upper}]"
         "--use-histogram-matching" "0"
         "--write-composite-transform" "0"
         "--collapse-output-transforms" "1"
@@ -132,22 +140,37 @@ perform_multistage_registration() {
         "--smoothing-sigmas" "${smoothing_sigmas}vox"
     )
     
-    # Stage 3: SyN registration with brainstem ROI constraint
-    # Use --restrict-deformation 0x0x1 to constrain deformation above pontomedullary sulcus
-    local syn_metric="${REG_METRIC_SAME_MODALITY:-CC}"
+    # Stage 3: SyN registration
+    # Select the SyN metric the same way the rigid/affine stages do: CC assumes
+    # correlated intensities, which only holds for same-modality pairs.  For a
+    # cross-modality pair (e.g. FLAIR↔T1) use Mutual Information, which is robust
+    # to differing intensity relationships.  When the modalities are unknown we
+    # default to the cross-modality (MI) path, since that is how this function is
+    # invoked (FLAIR/SWI/DWI registered to a T1 reference).
+    local cross_metric="${REG_METRIC_CROSS_MODALITY:-MI}"
+    local cc_radius="${REG_CC_RADIUS:-4}"
+    local mi_bins="${REG_MI_BINS:-32}"
+    local syn_metric_arg
+    if [ -n "$fixed_modality" ] && [ -n "$moving_modality" ] && [ "$fixed_modality" = "$moving_modality" ]; then
+        local syn_metric="${REG_METRIC_SAME_MODALITY:-CC}"
+        syn_metric_arg="${syn_metric}[${fixed_image},${moving_image},1,${cc_radius}]"
+        log_message "SyN metric: same-modality (${syn_metric}, radius ${cc_radius})"
+    else
+        syn_metric_arg="${cross_metric}[${fixed_image},${moving_image},1,${mi_bins}]"
+        log_message "SyN metric: cross-modality (${cross_metric}, ${mi_bins} bins)"
+    fi
     ants_cmd+=(
         "--transform" "SyN[0.1,3,0]"
-        "--metric" "${syn_metric}[${fixed_image},${moving_image},1,4]"
+        "--metric" "$syn_metric_arg"
         "--convergence" "$syn_convergence"
         "--shrink-factors" "$shrink_factors"
         "--smoothing-sigmas" "${smoothing_sigmas}vox"
-        "--restrict-deformation" "0x0x1"
     )
     
     log_message "Multi-stage registration command: ${ants_cmd[*]}"
     
     # Execute the multi-stage registration
-    execute_ants_command "multistage_registration" "Multi-stage registration (rigid→affine→SyN with brainstem constraint)" "${ants_cmd[@]}"
+    execute_ants_command "multistage_registration" "Multi-stage registration (rigid→affine→SyN)" "${ants_cmd[@]}"
     local reg_status=$?
     
     # Check registration status first
@@ -191,7 +214,7 @@ register_to_reference() {
     # Enhanced with multi-stage registration for brainstem analysis:
     # 1. Rigid registration for initial alignment
     # 2. Affine registration for linear corrections
-    # 3. SyN registration with brainstem ROI constraint (--restrict-deformation 0x0x1)
+    # 3. SyN registration (metric chosen by modality: MI cross-modality, CC same-modality)
     #
     # This multi-stage approach offers several advantages:
     # - Better control over deformation at each stage
@@ -203,6 +226,28 @@ register_to_reference() {
     local moving_image="$2"
     local moving_modality_name="${3:-OTHER}"  # Default to OTHER if not specified
     local out_prefix="${4:-${RESULTS_DIR}/registered/$(basename "$moving_image" .nii.gz)_to_ref}"
+
+    # Modalities of the fixed/moving images drive the SyN metric selection in
+    # perform_multistage_registration (MI for cross-modality, CC for same-modality).
+    # Infer the fixed-image modality from its filename rather than a global, since
+    # the literal fixed image may differ from PIPELINE_REFERENCE_MODALITY (e.g. a
+    # T1->FLAIR fallback path can still pass a T1 fixed image).  Standardized files
+    # carry their modality token (e.g. *T1*_std.nii.gz, *FLAIR*_std.nii.gz).
+    local fixed_basename
+    fixed_basename="$(basename "$fixed_image")"
+    local fixed_modality=""
+    local candidate_modality
+    for candidate_modality in T1 "${SUPPORTED_MODALITIES[@]}"; do
+        if [[ "$fixed_basename" == *"$candidate_modality"* || "$fixed_basename" == *"${candidate_modality,,}"* ]]; then
+            fixed_modality="$candidate_modality"
+            break
+        fi
+    done
+    # Fall back to the configured pipeline reference if the filename is unlabelled.
+    if [ -z "$fixed_modality" ]; then
+        fixed_modality="${PIPELINE_REFERENCE_MODALITY:-T1}"
+    fi
+    local moving_modality="$moving_modality_name"
 
     if [ ! -f "$fixed_image" ] || [ ! -f "$moving_image" ]; then
         log_formatted "ERROR" "Fixed or moving image not found"
@@ -403,7 +448,7 @@ register_to_reference() {
                 
                 # Use multi-stage registration with WM initialization
                 log_message "Starting WM-guided multi-stage registration..."
-                perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "$ants_wm_init_matrix" "$wm_mask"
+                perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "$ants_wm_init_matrix" "$wm_mask" "$fixed_modality" "$moving_modality"
                 local ants_status=$?
                 
                 # Calculate elapsed time
@@ -433,7 +478,7 @@ register_to_reference() {
                     local fb_start_time=$(date +%s)
                     
                     # Use multi-stage registration without initialization
-                    perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
+                    perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "" "$fixed_modality" "$moving_modality"
                     local fb_status=$?
                     
                     local fb_end_time=$(date +%s)
@@ -465,17 +510,17 @@ register_to_reference() {
             log_message "Running multi-stage registration with cost function masking"
             
             # Use multi-stage registration with mask
-            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "$outer_ribbon_mask"
-            
+            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "$outer_ribbon_mask" "$fixed_modality" "$moving_modality"
+
             if [ $? -ne 0 ]; then
                 log_formatted "WARNING" "Multi-stage registration with cost function masking failed, falling back to standard registration"
                 # Fall back to standard multi-stage registration
-                perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
+                perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "" "$fixed_modality" "$moving_modality"
             fi
         else
             log_formatted "WARNING" "Outer ribbon mask is invalid, falling back to standard registration"
             # Fall back to standard multi-stage registration
-            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
+            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "" "$fixed_modality" "$moving_modality"
         fi
     else
         # Check if orientation preservation is enabled
@@ -488,10 +533,10 @@ register_to_reference() {
             # Fall back to standard multi-stage registration when no initialization or mask is available
             # This is still effective, just without the benefits of white matter guidance
             log_message "Using standard multi-stage registration (no white matter guidance)"
-            log_message "This approach still leverages multi-stage optimization with brainstem constraint"
-            
+            log_message "This approach still leverages multi-stage optimization"
+
             # Use standard multi-stage registration without initialization or mask
-            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" ""
+            perform_multistage_registration "$fixed_image" "$moving_image" "$out_prefix" "" "" "$fixed_modality" "$moving_modality"
         fi
     fi
     
@@ -1082,12 +1127,24 @@ apply_transformation() {
     local transform="$4"
     local interpolation="${5:-Linear}"
     local direction="${6:-inverse}"  # inverse: atlas/template -> subject; forward: moving -> fixed
-    
+    local is_label="${7:-false}"     # true => warping a discrete label/atlas/mask image
+
     log_message "Applying transformation to $input"
     log_message "Transform: $transform"
+
+    # Label-aware interpolation: Linear corrupts discrete label/atlas/mask
+    # boundaries when warped.  When the caller flags the input as a label image,
+    # override the interpolation with a label-aware method (GenericLabel by
+    # default), reserving Linear for continuous intensity images.
+    if [ "$is_label" = "true" ]; then
+        local label_interpolation="${REG_LABEL_INTERPOLATION:-GenericLabel}"
+        log_message "Label image detected: overriding interpolation '${interpolation}' -> '${label_interpolation}'"
+        interpolation="$label_interpolation"
+    fi
+
     log_message "Interpolation: $interpolation"
     log_message "Direction: $direction"
-    
+
     # Determine ANTs bin path
     local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
     

@@ -142,10 +142,147 @@ standardize_orientation() {
     return 0
 }
 
+# Function to detect the modality of an image from its filename.
+# Returns one of: T1, T2, FLAIR, DWI, SWI, TOF, UNKNOWN
+# Detection is case-insensitive and intentionally conservative so that the
+# default structural (T1/FLAIR) flow is never mis-routed.
+detect_modality() {
+  local file="$1"
+  local name
+  name=$(basename "$file")
+  # Lowercase for case-insensitive matching
+  local lname
+  lname=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+
+  # Diffusion: DWI / DTI / diffusion / ADC / trace / b-value tags
+  case "$lname" in
+    *dwi*|*dti*|*diffusion*|*_adc*|*adc_*|*trace*|*bval*|*bvec*)
+      echo "DWI"; return 0 ;;
+  esac
+
+  # Susceptibility-weighted / susceptibility / microbleed imaging
+  case "$lname" in
+    *swi*|*susceptib*|*_swan*|*swan_*|*venobold*|*mip_swi*)
+      echo "SWI"; return 0 ;;
+  esac
+
+  # Time-of-flight / angiography
+  case "$lname" in
+    *tof*|*angio*|*_mra*|*mra_*|*time_of_flight*)
+      echo "TOF"; return 0 ;;
+  esac
+
+  # FLAIR (check before generic T2 since FLAIR is a T2-weighted variant)
+  case "$lname" in
+    *flair*)
+      echo "FLAIR"; return 0 ;;
+  esac
+
+  # T1-weighted (MPRAGE/SPGR/T1)
+  case "$lname" in
+    *t1*|*mprage*|*spgr*|*mp2rage*)
+      echo "T1"; return 0 ;;
+  esac
+
+  # T2-weighted (SPACE/CISS/T2) — checked after FLAIR
+  case "$lname" in
+    *t2*|*space*|*ciss*)
+      echo "T2"; return 0 ;;
+  esac
+
+  echo "UNKNOWN"
+  return 0
+}
+
+# Modality-aware denoising dispatcher.
+#
+# Routes each file to the correct denoising method based on its modality:
+#   - T1 / T2 / FLAIR  -> Rician Non-Local-Means (DenoiseImage), structural default
+#   - DWI / diffusion  -> MP-PCA (dwidenoise) via the DWI module; NEVER NLM
+#   - SWI / TOF / angio -> SKIP denoising by default (smears microbleeds/vessels)
+#   - UNKNOWN          -> conservative default (NLM) unless DENOISE_DEFAULT_SKIP=true
+#
+# Behaviour is config-driven (see DENOISE_* / SWI_TOF_* / DWI_* vars in
+# config/default_config.sh).  The function always echoes the resulting output
+# file path to stdout (so callers can capture it) and logs which method was used.
+dispatch_denoising() {
+  local file="$1"
+  local modality="${2:-}"
+
+  # Validate input file
+  if ! validate_nifti "$file" "Input file for denoising dispatch"; then
+    log_formatted "ERROR" "Invalid input file for denoising dispatch: $file"
+    return $ERR_DATA_CORRUPT
+  fi
+
+  # Auto-detect modality if not explicitly provided
+  if [ -z "$modality" ]; then
+    modality=$(detect_modality "$file")
+  fi
+
+  log_message "Denoising dispatch: file=$(basename "$file") modality=$modality"
+
+  case "$modality" in
+    DWI)
+      log_formatted "INFO" "Routing DWI to MP-PCA (dwidenoise) — NLM is invalid for diffusion data"
+      # Prefer the dedicated DWI denoise step (MP-PCA).  Degrade gracefully if
+      # the DWI module / tool is unavailable.
+      if command -v dwidenoise &> /dev/null && declare -F denoise_dwi_mppca &> /dev/null; then
+        denoise_dwi_mppca "$file"
+        return $?
+      fi
+      log_formatted "WARNING" "dwidenoise (MP-PCA) unavailable — skipping denoising for DWI (NLM is NOT a valid substitute)"
+      _dispatch_denoise_passthrough "$file"
+      return $?
+      ;;
+    SWI|TOF)
+      if [ "${SWI_TOF_DENOISE_ENABLED:-false}" = "true" ]; then
+        log_formatted "INFO" "SWI/TOF denoising explicitly enabled — applying gentle NLM (may smear microbleeds/small vessels)"
+        process_rician_nlm_denoising "$file"
+        return $?
+      fi
+      log_message "Skipping denoising for $modality (default) to preserve microbleeds / small vessels"
+      _dispatch_denoise_passthrough "$file"
+      return $?
+      ;;
+    T1|T2|FLAIR)
+      log_message "Routing $modality to Rician NLM denoising"
+      process_rician_nlm_denoising "$file"
+      return $?
+      ;;
+    *)
+      if [ "${DENOISE_DEFAULT_SKIP:-false}" = "true" ]; then
+        log_formatted "WARNING" "Unknown modality for $(basename "$file") — skipping denoising (DENOISE_DEFAULT_SKIP=true)"
+        _dispatch_denoise_passthrough "$file"
+        return $?
+      fi
+      log_formatted "WARNING" "Unknown modality for $(basename "$file") — defaulting to Rician NLM (structural assumption)"
+      process_rician_nlm_denoising "$file"
+      return $?
+      ;;
+  esac
+}
+
+# Helper: produce a "denoised" output path that is a pass-through (symlink) of
+# the input, used when denoising is intentionally skipped so that downstream
+# stages which expect a *_denoised.nii.gz file continue to work unchanged.
+_dispatch_denoise_passthrough() {
+  local file="$1"
+  local basename
+  basename=$(basename "$file" .nii.gz)
+  create_module_dir "denoised" >/dev/null
+  local output_file
+  output_file=$(get_output_path "denoised" "$basename" "_denoised")
+  ln -sf "$(realpath "$file")" "$output_file"
+  log_message "Denoising skipped — pass-through link created: $output_file"
+  echo "$output_file"
+  return 0
+}
+
 # Function to process Rican NLM denoising
 process_rician_nlm_denoising() {
   local file="$1"
-  
+
   # Validate input file
   if ! validate_nifti "$file" "Input file for Rician NLM denoising"; then
     log_formatted "ERROR" "Invalid input file for Rician NLM denoising: $file"
@@ -231,9 +368,19 @@ process_rician_nlm_denoising() {
 }
 
 # Function to get N4 parameters
+#
+# Emits four whitespace-separated fields in EXACTLY the order the N4 command in
+# process_n4_correction() consumes them: "<iters> <conv> <bspl> <shrk>" where
+#   iters = -c iteration counts (e.g. 100x100x100)
+#   conv  = -c convergence threshold (stopping criterion)
+#   bspl  = -b spline distance in mm (single isotropic scalar; see default_config.sh)
+#   shrk  = -s shrink factor
+# For FLAIR inputs (filename contains "FLAIR") it returns the GENUINELY gentler
+# FLAIR preset (larger spline distance => smoother bias field + fewer iterations)
+# so N4 does not absorb diffuse FLAIR lesion contrast into the bias field.
 get_n4_parameters() {
   local file="$1"
-  
+
   # Validate input file exists but don't stop on error
   if [ ! -f "$file" ]; then
     log_formatted "WARNING" "File not found for parameter determination: $file - using defaults"
@@ -244,6 +391,7 @@ get_n4_parameters() {
   local shrk="$N4_SHRINK"
 
   if [[ "$file" == *"FLAIR"* ]]; then
+    # Gentler, lesion-safe FLAIR N4 (see N4_PRESET_FLAIR in default_config.sh).
     iters="$N4_ITERATIONS_FLAIR"
     conv="$N4_CONVERGENCE_FLAIR"
     bspl="$N4_BSPLINE_FLAIR"
@@ -287,14 +435,30 @@ EOF
     IS_SOLA=0
   fi
 
+  # Field-strength optimization acts on the N4 b-spline MESH SPACING (-b), NOT on
+  # the convergence threshold. The convergence threshold is purely a STOPPING
+  # criterion (the old 0.000001 vs 0.000005 split was cosmetic - both just
+  # iterated to the cap), so we leave it at the single value already derived from
+  # the quality preset (N4_CONVERGENCE) for BOTH field strengths. The real
+  # field-strength lever is the spline distance (N4_BSPLINE, a single isotropic
+  # spline distance in mm; see the N4 -b convention in default_config.sh):
+  #   - 1.5T: weaker, smoother bias field -> COARSER mesh (LARGER spline distance)
+  #   - 3T:   stronger, more spatially varying field -> FINER mesh (smaller dist.)
   if (( $(echo "$FIELD_STRENGTH > 2.5" | bc -l) )); then
     log_message "Optimizing for 3T field strength ($FIELD_STRENGTH T)"
-    N4_CONVERGENCE="0.000001"
+    # 3T: ensure a FINER mesh to capture the stronger, more spatially varying
+    # bias field. Only tighten if the preset distance is coarser than 120mm so we
+    # never accidentally make 3T coarser than intended. The numeric guard keeps
+    # this safe if N4_BSPLINE is ever empty or a non-scalar (e.g. a custom preset
+    # missing the spline field) - we simply leave the preset value untouched.
+    if [[ "$N4_BSPLINE" =~ ^[0-9]+$ ]] && (( $(echo "$N4_BSPLINE > 120" | bc -l) )); then
+      N4_BSPLINE=120
+    fi
     REG_METRIC_CROSS_MODALITY="MI"
   else
     log_message "Optimizing for 1.5T field strength ($FIELD_STRENGTH T)"
-    # 1.5T adjustments
-    N4_CONVERGENCE="0.000005"
+    # 1.5T adjustments: COARSER mesh => smoother bias field. 200 is a blessed
+    # value, applied here CONSISTENTLY as an isotropic spline DISTANCE in mm.
     N4_BSPLINE=200
     REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.3]"
     ATROPOS_MRF="[0.15,1x1x1]"
@@ -304,6 +468,7 @@ EOF
     log_message "Applying specific optimizations for MAGNETOM Sola"
     REG_TRANSFORM_TYPE=3
     REG_METRIC_CROSS_MODALITY="MI[32,Regular,0.25]"
+    # Blessed 200mm spline distance for Sola (same -b convention as everywhere).
     N4_BSPLINE=200
   fi
   log_message "ANTs parameters optimized from metadata"
@@ -341,12 +506,15 @@ process_n4_correction() {
   
   log_message "Using orientation-standardized image: $oriented_file"
   
-  # Step 2: Apply Rician NLM denoising on oriented image
-  local denoised_file=$(process_rician_nlm_denoising "$oriented_file")
+  # Step 2: Apply modality-aware denoising on oriented image.
+  # The dispatcher routes T1/T2/FLAIR -> Rician NLM (unchanged behaviour),
+  # DWI -> MP-PCA, and SWI/TOF -> skip.  For the structural T1/FLAIR inputs
+  # that reach process_n4_correction today, this is identical to before.
+  local denoised_file=$(dispatch_denoising "$oriented_file")
   local denoise_status=$?
   denoised_file="$RESULTS_DIR/denoised/${basename}_oriented_denoised.nii.gz"
   if [ $denoise_status -ne 0 ] || [ ! -f "$denoised_file" ]; then
-    log_formatted "ERROR" "Rician NLM denoising failed for: $file (status: $denoise_status file: $denoised_file)"
+    log_formatted "ERROR" "Denoising failed for: $file (status: $denoise_status file: $denoised_file)"
     return $ERR_PREPROC
   fi
   
@@ -379,10 +547,10 @@ process_n4_correction() {
 
   # Run N4 bias correction on denoised image with our enhanced ANTs command function
   log_message "Running N4 bias correction on denoised image"
-  
+
   # Determine ANTs bin path
   local ants_bin="${ANTS_BIN:-${ANTS_PATH}/bin}"
-  
+
   # Check if N4BiasFieldCorrection is available
   if ! command -v N4BiasFieldCorrection &> /dev/null; then
     log_formatted "WARNING" "N4BiasFieldCorrection not available - skipping bias field correction"
@@ -392,17 +560,40 @@ process_n4_correction() {
     log_message "Saved (no bias correction): $output_file"
     return 0
   fi
-  
+
+  # Assemble N4 arguments. -b is an isotropic spline DISTANCE in mm wrapped as
+  # "[<dist>]" (single source-of-truth convention; see default_config.sh).
+  local n4_args=(
+    -d 3
+    -i "$denoised_file"
+    -x "$brain_mask"
+    -o "$output_file"
+    -b "[$bspl]"
+    -s "$shrk"
+    -c "[$iters,$conv]"
+  )
+
+  # OPTIONAL lesion-weight mask for FLAIR (two-pass workflow). N4's -w weight
+  # image down-weights high-weight voxels during bias-field ESTIMATION, so a
+  # lesion mask here keeps lesion contrast out of the estimated field.
+  # Lesions are unknown at first preprocessing, so the intended workflow is:
+  #   pass 1: N4_FLAIR_LESION_MASK="" -> gentler preset only (this same code)
+  #   detect lesions on the pass-1 output (analysis.sh)
+  #   pass 2: re-run with N4_FLAIR_LESION_MASK=<lesion weight in FLAIR space>
+  # The weight image must already match the denoised/oriented FLAIR geometry.
+  if [[ "$file" == *"FLAIR"* ]] && [ -n "${N4_FLAIR_LESION_MASK:-}" ]; then
+    if [ -f "$N4_FLAIR_LESION_MASK" ]; then
+      log_message "Applying FLAIR lesion weight mask to N4 (-w): $N4_FLAIR_LESION_MASK"
+      n4_args+=(-w "$N4_FLAIR_LESION_MASK")
+    else
+      log_formatted "WARNING" "N4_FLAIR_LESION_MASK set but file not found: $N4_FLAIR_LESION_MASK - running N4 without weight image"
+    fi
+  fi
+
   # Execute N4 using enhanced ANTs command execution (on denoised image)
   execute_ants_command "n4_bias_correction" "Non-uniform intensity (bias field) correction on denoised image" \
     N4BiasFieldCorrection \
-    -d 3 \
-    -i "$denoised_file" \
-    -x "$brain_mask" \
-    -o "$output_file" \
-    -b "[$bspl]" \
-    -s "$shrk" \
-    -c "[$iters,$conv]"
+    "${n4_args[@]}"
 
   local n4_status=$?
   if [ $n4_status -ne 0 ]; then
@@ -423,44 +614,97 @@ process_n4_correction() {
   return 0
 }
 
+# Modality-aware wrapper used by the parallel runner.
+#
+# This GUARDS the broad "*.nii.gz" pattern: even if the caller points the
+# parallel runner at a directory that contains DWI/SWI/TOF images, those are
+# NEVER routed through Rician NLM + structural N4 (which would smear microbleeds
+# on SWI, small vessels on TOF, and inflate the noise floor on DWI).
+#
+#   - DWI       -> dedicated MP-PCA DWI path (run_dwi_preprocessing) if enabled
+#                  + tools present; otherwise a clear non-fatal skip.
+#   - SWI / TOF -> skipped (structural N4/NLM is inappropriate).
+#   - T1/T2/FLAIR/UNKNOWN -> existing process_n4_correction (denoise via
+#                  dispatch_denoising, then N4) — unchanged behaviour.
+process_modality_aware_correction() {
+  local file="$1"
+  local modality
+  modality=$(detect_modality "$file")
+
+  log_message "Modality-aware correction: file=$(basename "$file") modality=$modality"
+
+  case "$modality" in
+    DWI)
+      if [ "${PROCESS_DWI:-false}" = "true" ] && declare -F run_dwi_preprocessing &> /dev/null; then
+        log_formatted "INFO" "Routing $(basename "$file") to dedicated DWI preprocessing (MP-PCA path)"
+        run_dwi_preprocessing "$file"
+        return $?
+      fi
+      log_formatted "WARNING" "Skipping DWI file in N4 runner: $(basename "$file") (structural N4/NLM is invalid for diffusion; enable PROCESS_DWI for the MP-PCA path)"
+      return 0
+      ;;
+    SWI|TOF)
+      log_formatted "WARNING" "Skipping $modality file in N4 runner: $(basename "$file") (structural N4/NLM would smear microbleeds/vessels)"
+      return 0
+      ;;
+    *)
+      process_n4_correction "$file"
+      return $?
+      ;;
+  esac
+}
+
 # Function to run N4 bias field correction in parallel
 run_parallel_n4_correction() {
   local input_dir="${1:-$EXTRACT_DIR}"
   local pattern="${2:-*.nii.gz}"
   local jobs="${3:-$PARALLEL_JOBS}"
   local max_depth="${4:-1}"
-  
-  log_message "Running N4 bias correction with Rician NLM denoising in parallel on files matching '$pattern' in $input_dir"
-  
+
+  log_message "Running modality-aware N4/denoising in parallel on files matching '$pattern' in $input_dir"
+
   # Ensure output directories exist
   create_module_dir "denoised"
   create_module_dir "bias_corrected"
-  
+
   # Export required functions for parallel execution
+  export -f process_modality_aware_correction detect_modality dispatch_denoising _dispatch_denoise_passthrough
   export -f process_n4_correction process_rician_nlm_denoising get_n4_parameters standardize_orientation
   export -f log_message log_formatted validate_nifti validate_file
   export -f get_output_path get_module_dir create_module_dir
   export -f log_diagnostic execute_with_logging execute_ants_command
-  
-  # Run in parallel using the common function
-  run_parallel "process_n4_correction" "$pattern" "$input_dir" "$jobs" "$max_depth"
+  # Export the full DWI path if it has been loaded so parallel workers can route
+  # DWI through every step (run_dwi_preprocessing calls the whole chain).
+  if declare -F run_dwi_preprocessing &> /dev/null; then
+    export -f run_dwi_preprocessing run_dwi_preprocessing_auto \
+      denoise_dwi_mppca degibbs_dwi eddy_correct_dwi biascorrect_dwi \
+      compute_dwi_mean find_dwi_gradients 2>/dev/null || true
+  fi
+
+  # Run in parallel using the common function, going through the modality-aware
+  # wrapper so DWI/SWI/TOF are never routed to Rician NLM + structural N4.
+  run_parallel "process_modality_aware_correction" "$pattern" "$input_dir" "$jobs" "$max_depth"
   local status=$?
-  
+
   if [ $status -ne 0 ]; then
-    log_formatted "ERROR" "Parallel N4 bias correction with denoising failed with status $status"
+    log_formatted "ERROR" "Parallel modality-aware N4/denoising failed with status $status"
     return $status
   fi
-  
-  log_formatted "SUCCESS" "Completed parallel N4 bias correction with Rician NLM denoising"
+
+  log_formatted "SUCCESS" "Completed parallel modality-aware N4 bias correction / denoising"
   return 0
 }
 
 # Export functions
 export -f standardize_orientation
+export -f detect_modality
+export -f dispatch_denoising
+export -f _dispatch_denoise_passthrough
 export -f process_rician_nlm_denoising
 export -f get_n4_parameters
 export -f optimize_ants_parameters
 export -f process_n4_correction
+export -f process_modality_aware_correction
 export -f run_parallel_n4_correction
 
-log_message "Preprocessing module (orientation + denoising + N4) loaded"
+log_message "Preprocessing module (orientation + modality-aware denoising + N4) loaded"

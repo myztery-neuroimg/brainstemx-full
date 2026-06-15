@@ -82,13 +82,28 @@ export JOINT_FUSION_SEARCH_RADIUS="${JOINT_FUSION_SEARCH_RADIUS:-3}"
 # ANTs registration parameters (existing)
 # REG_TRANSFORM_TYPE is set in the "Registration & motion correction" section below
 # N4 Bias Field Correction presets: "iterations,convergence_threshold,spline_distance_mm,shrink_factor"
-# Spline distance: larger values = coarser fit = faster; smaller values = finer fit = slower
-export N4_PRESET_VERY_LOW="20x20x20,0.0001,1x1x3,2"
-export N4_PRESET_LOW="35x35x35,0.00025,2x2x3,2"
-export N4_PRESET_MEDIUM="70x70x70,0.0001,2x2x3,2"
-export N4_PRESET_HIGH="100x100x100,0.00005,2x2x3,2"
-export N4_PRESET_ULTRA="250x250x250x3,0.00001,2x2x3,2"
-export N4_PRESET_FLAIR="$N4_PRESET_HIGH"  # Use more conservative settings for FLAIR
+#
+# N4 -b CONVENTION (single source of truth for this pipeline):
+#   The 3rd field is the b-spline mesh element spacing expressed as a single
+#   ISOTROPIC SPLINE DISTANCE IN MM, fed to N4 as -b "[<spline_distance_mm>]".
+#   This is the ANTs-recommended convention (a single scalar mm value rather
+#   than a per-dimension mesh resolution like 2x2x3). For human brain the value
+#   should sit between ~100 and ~200 mm (ANTs N4 wiki / Tustison 2010).
+#   Larger distance = coarser/smoother bias field = faster; smaller distance =
+#   finer fit = slower and more detailed. The spline distance is HALVED at each
+#   subsequent convergence level (one level per "x"-separated iteration count).
+export N4_PRESET_VERY_LOW="20x20x20,0.0001,180,2"
+export N4_PRESET_LOW="35x35x35,0.00025,180,2"
+export N4_PRESET_MEDIUM="70x70x70,0.0001,150,2"
+export N4_PRESET_HIGH="100x100x100,0.00005,120,2"
+export N4_PRESET_ULTRA="250x250x250x3,0.00001,100,2"
+# FLAIR-specific N4 preset is derived per QUALITY_PRESET in the block below.
+# It is deliberately GENTLER than the matching general preset (coarser mesh =>
+# larger spline distance => smoother bias field, plus fewer iterations) because
+# N4 can absorb diffuse FLAIR lesion contrast into the estimated bias field under
+# lesion load (Valdes Hernandez 2016, PMC4846712). A smoother field is far less
+# likely to soak up real lesion signal. Placeholder default; overwritten below.
+export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
 
 # DICOM-specific parallel processing (only affects DICOM import)
 export DICOM_IMPORT_PARALLEL=12
@@ -132,22 +147,28 @@ fi
 
 echo "QUALITY_PRESET: ${QUALITY_PRESET} ANTS_THREADS:${ANTS_THREADS}" >&2
 
-# Set default N4_PARAMS by QUALITY_PRESET
+# Set default N4_PARAMS by QUALITY_PRESET.
+#
+# FLAIR gets a GENUINELY gentler preset (NOT a copy of the general one): a larger
+# spline distance (coarser/smoother bias field) and fewer iterations than the
+# matching general preset, so the estimated field cannot absorb diffuse FLAIR
+# lesion contrast. Convergence threshold and shrink factor are kept aligned with
+# the general preset; only the field smoothness and effort are relaxed.
 if [ "$QUALITY_PRESET" == "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
-    export N4_PRESET_FLAIR="$N4_PRESET_ULTRA"
+    export N4_PRESET_FLAIR="150x150x150,0.00001,160,2"
 elif [ "$QUALITY_PRESET" == "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
-    export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
+    export N4_PRESET_FLAIR="75x75x75,0.00005,180,2"
 elif [ "$QUALITY_PRESET" == "MEDIUM" ]; then
     export N4_PARAMS="$N4_PRESET_MEDIUM"
-    export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"
+    export N4_PRESET_FLAIR="50x50x50,0.0001,200,2"
 elif [ "$QUALITY_PRESET" == "LOW" ]; then
     export N4_PARAMS="$N4_PRESET_MEDIUM"
-    export N4_PRESET_FLAIR="$N4_PRESET_MEDIUM"
+    export N4_PRESET_FLAIR="50x50x50,0.0001,200,2"
 else
     export N4_PARAMS="$N4_PRESET_VERY_LOW"
-    export N4_PRESET_FLAIR="$N4_PRESET_VERY_LOW"
+    export N4_PRESET_FLAIR="15x15x15,0.0001,200,2"
 fi
 # Parse out the fields for general sequences
 export N4_ITERATIONS=$(echo "$N4_PARAMS"      | cut -d',' -f1)
@@ -160,6 +181,20 @@ export N4_ITERATIONS_FLAIR=$(echo "$N4_PRESET_FLAIR"  | cut -d',' -f1)
 export N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
 export N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
 export N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
+
+# Optional lesion-weight mask for FLAIR N4 (two-pass workflow).
+#   Default empty => FLAIR N4 just uses the gentler preset above.
+#   When set to a path to an existing NIfTI weight image, it is passed to N4 as
+#   -w <mask> so high-weight (lesion) voxels are DOWN-weighted during bias-field
+#   estimation, preventing N4 from fitting the field to lesion contrast.
+# Intended two-pass workflow (lesions are unknown at first preprocessing):
+#   1. Run the pipeline once with N4_FLAIR_LESION_MASK="" (gentler preset only).
+#   2. Detect lesions on the first-pass output (analysis.sh).
+#   3. Re-run preprocessing with N4_FLAIR_LESION_MASK=<lesion-derived weight>
+#      so the second-pass bias field ignores lesion voxels.
+# The weight image must already be in the same space/geometry as the FLAIR being
+# corrected (i.e. the denoised, oriented FLAIR fed to N4).
+export N4_FLAIR_LESION_MASK="${N4_FLAIR_LESION_MASK:-}"
 
 # Multi-axial integration parameters (antsMultivariateTemplateConstruction2.sh)
 export TEMPLATE_ITERATIONS=3
@@ -176,6 +211,24 @@ export REG_METRIC_CROSS_MODALITY="MI"  # Mutual Information - for cross-modality
 export REG_METRIC_SAME_MODALITY="CC"   # Cross Correlation - for same modality
 export REG_PRECISION=1                 # Registration precision
 
+# Per-metric tuning shared by all stages of perform_multistage_registration().
+# CC radius applies when CC is used (same-modality SyN); MI bins apply when MI is
+# used (cross-modality rigid/affine/SyN). The SyN stage now selects MI for
+# cross-modality pairs (e.g. FLAIR↔T1) since CC assumes correlated intensities.
+export REG_MI_BINS=32                   # Histogram bins for Mutual Information metric
+export REG_CC_RADIUS=4                  # Neighbourhood radius for Cross Correlation metric
+
+# Intensity winsorization (antsRegistrationSyN.sh community standard).
+# Clamps the intensity tails before registration to suppress outliers; applied to
+# the global antsRegistration command in perform_multistage_registration().
+export REG_WINSORIZE_LOWER=0.005        # Lower winsorize quantile
+export REG_WINSORIZE_UPPER=0.995        # Upper winsorize quantile
+
+# Interpolation used by apply_transformation() when warping discrete label/atlas/
+# mask volumes (is_label=true). GenericLabel is the modern label-aware default
+# (anti-aliased, preserves discrete values); continuous intensity images keep Linear.
+export REG_LABEL_INTERPOLATION="GenericLabel"
+
 # ANTs specific parameters - if not set, ANTs will use defaults
 # export METRIC_SAMPLING_STRATEGY="NONE"  # Options: NONE (use all voxels), REGULAR, RANDOM
 # export METRIC_SAMPLING_PERCENTAGE=1.0   # Percentage of voxels to sample (when not NONE)
@@ -189,6 +242,26 @@ export REG_PRECISION=1                 # Registration precision
 # so changing it here changes all fallback behaviour consistently.
 export THRESHOLD_WM_SD_MULTIPLIER=1.2   # SD multiplier from local norm; used by GMM fallback + legacy path
 export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cluster --minextent)
+
+# ---------------------------------------------------------------------------
+# CSF / partial-volume exclusion (posterior-fossa false-positive reduction)
+# ---------------------------------------------------------------------------
+# Posterior-fossa CSF pulsation/inflow around the 4th ventricle and basal
+# cisterns is the dominant FALSE-POSITIVE source for brainstem FLAIR.  FSL FAST
+# already produces a CSF PVE map (fast_pve_0 -> *_csf_prob.nii.gz) that was
+# previously computed but never used for detection.  When enabled, the per-region
+# GMM/z-score path removes high-CSF-probability voxels and the CSF-parenchyma
+# partial-volume boundary band from each region mask BEFORE z-scoring/GMM.
+export CSF_EXCLUSION_ENABLED=true       # Master switch; false = legacy behaviour
+export CSF_PVE_THRESHOLD=0.5            # Voxels with CSF PVE > this are excluded from detection
+export PV_EROSION_MM=1                  # Erode region mask by this many mm to drop CSF-parenchyma PV boundary
+
+# Connectivity-weighting SD multipliers (apply_connectivity_weighting in analysis.sh).
+# A voxel is kept if it is connected to a hyperintense seed AND above
+# CONNECTIVITY_CONNECTED_SD_MULT, OR is very high intensity (above
+# CONNECTIVITY_HIGH_SD_MULT) regardless of connectivity.
+export CONNECTIVITY_HIGH_SD_MULT=2.0       # mean + this*std: standalone "very high" threshold
+export CONNECTIVITY_CONNECTED_SD_MULT=1.5  # mean + this*std: lower threshold for connected voxels
 
 # ---------------------------------------------------------------------------
 # GMM per-region thresholding  (gmm_threshold.py --help for full docs)
@@ -284,6 +357,34 @@ export BIANCA_VERBOSE=true               # pass -v to bianca
 # --- Post-processing --------------------------------------------------------
 export BIANCA_MIN_CLUSTER_SIZE=0         # drop WMH clusters below this many voxels (0 = off)
 
+# ---------------------------------------------------------------------------
+# Supervised / learned WMH detection (LST-AI + FreeSurfer SAMSEG)
+# ---------------------------------------------------------------------------
+# Optional, pretrained, training-data-free WMH/lesion segmentation back-ends
+# implemented in src/modules/wmh_lst_samseg.sh.  Both are OFF by default and
+# require external tools that are NOT part of the core pipeline dependency set:
+#   - LST-AI : deep-learning successor to SPM-LST. Install via 'pip install
+#              lst-ai' (Python, no MATLAB) or pull the Docker image. Needs
+#              co-registered FLAIR + T1; ships pretrained weights.
+#   - SAMSEG : FreeSurfer >=7.x 'run_samseg --lesion' (needs $FREESURFER_HOME).
+#              Synergizes with the FreeSurfer brainstem segmentation added in a
+#              sibling unit (shared FreeSurfer install + brainstem labels).
+# Each back-end intersects its whole-brain lesion mask with the pipeline's
+# brainstem mask to report a brainstem-restricted WMH burden separately.
+export WMH_LSTAI_ENABLED=false          # true => run LST-AI when available
+export WMH_SAMSEG_ENABLED=false         # true => run FreeSurfer SAMSEG when available
+
+# LST-AI options
+export LSTAI_THRESHOLD=0.5              # lesion probability threshold (0-1; LST-AI default 0.5)
+export LSTAI_DEVICE="cpu"              # "cpu" or a GPU id (e.g. "0")
+export LSTAI_DOCKER_IMAGE="jqmcginnis/lst-ai:latest"  # used only if Docker back-end is selected
+
+# SAMSEG options
+export SAMSEG_LESION_THRESHOLD=0.3     # lesion posterior threshold (run_samseg default 0.3)
+export SAMSEG_LESION_MASK_PATTERN="0 1" # one number per input (T1 FLAIR): 0=no constraint, 1=brighter-than-GM
+export SAMSEG_LESION_LABEL=99          # lesion label value in SAMSEG seg.mgz
+export SAMSEG_EXTRA_OPTS="--pallidum-separate"  # extra run_samseg flags (recommended when FLAIR shows pallidum)
+
 # Reference templates from FSL or other sources
 if [ -z "${FSLDIR:-}" ]; then
   log_formatted "WARNING" "FSLDIR not set. Template references may fail."
@@ -335,6 +436,44 @@ export RESAMPLE_TO_ISOTROPIC=false
 #export ISOTROPIC_SPACING=1.0
 #unset ISOTROPIC_SPACING
 
+# ------------------------------------------------------------------------------
+# Modality-aware denoising routing
+# ------------------------------------------------------------------------------
+# The denoising dispatcher (dispatch_denoising in preprocess.sh) selects the
+# denoising method by detected modality:
+#   T1 / T2 / FLAIR  -> Rician Non-Local-Means (DenoiseImage)         [default]
+#   DWI / diffusion  -> MP-PCA (dwidenoise, MRtrix); NLM is INVALID for DWI
+#   SWI / TOF / angio -> SKIPPED by default (NLM smears microbleeds/vessels)
+#
+# When set to true, applies a gentle Rician NLM to SWI/TOF images instead of
+# skipping.  Leave false to preserve microbleeds (SWI) and small vessels (TOF).
+export SWI_TOF_DENOISE_ENABLED=false
+# When the modality cannot be detected, skip denoising instead of defaulting to
+# NLM.  Default false keeps the historical structural-assumption behaviour.
+export DENOISE_DEFAULT_SKIP=false
+
+# ------------------------------------------------------------------------------
+# DWI (diffusion) preprocessing path  (dwi_preprocess.sh)
+# ------------------------------------------------------------------------------
+# Master switch.  When false (default) the DWI path is never invoked and the
+# existing T1/FLAIR flow is completely unaffected.  When true, DWI inputs are
+# auto-detected in the preprocessing stage and routed through the MP-PCA path.
+export PROCESS_DWI=false
+# Optional Gibbs ringing removal (mrdegibbs) after MP-PCA denoising.
+export DWI_DEGIBBS=true
+# Bias-field correction for DWI: "ants" uses `dwibiascorrect ants`; otherwise an
+# N4 fallback is applied to the mean b0/DWI volume.  Set DWI_BIAS_CORRECT=false
+# to skip bias correction entirely.
+export DWI_BIAS_CORRECT=true
+export DWI_BIAS_METHOD="ants"
+# Eddy/motion/topup (dwifslpreproc) is OPTIONAL and OFF by default: it requires
+# acquisition parameters (phase-encode direction + readout time) and gradient
+# tables.  To enable, set DWI_RUN_EDDY=true and provide DWI_PE_DIR (e.g. "j-")
+# and DWI_READOUT_TIME (seconds) plus accompanying .bvec/.bval files.
+export DWI_RUN_EDDY=false
+export DWI_PE_DIR=""
+export DWI_READOUT_TIME=""
+
 # Scan selection options
 # Available modes:
 #   original - ONLY consider ORIGINAL acquisitions, ignore DERIVED scans
@@ -379,11 +518,10 @@ export CONVERT_MASKS_TO_UINT8=true  # Convert binary masks to UINT8
 
 #export ORIGINAL_ACQUISITION_WEIGHT=1000
 
-# Parse out FLAIR-specific fields
-N4_ITERATIONS_FLAIR=$(echo "$N4_PRESET_FLAIR"  | cut -d',' -f1)
-N4_CONVERGENCE_FLAIR=$(echo "$N4_PRESET_FLAIR" | cut -d',' -f2)
-N4_BSPLINE_FLAIR=$(echo "$N4_PRESET_FLAIR"     | cut -d',' -f3)
-N4_SHRINK_FLAIR=$(echo "$N4_PRESET_FLAIR"      | cut -d',' -f4)
+# NOTE: FLAIR-specific N4 fields (N4_ITERATIONS_FLAIR/.../N4_SHRINK_FLAIR) are
+# parsed and exported once in the N4 preset section above. The duplicate
+# non-exported parse that used to live here has been removed to keep a single
+# source of truth for the N4 -b convention.
 
 # White matter guided registration parameters
 export WM_GUIDED_DEFAULT=true  # Default to use white matter guided registration
