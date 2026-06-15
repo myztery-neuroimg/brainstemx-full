@@ -46,9 +46,10 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   brain_extraction.sh    # SynthStrip primary (→ANTs→BET fallback) + robustfov FOV-normalization + posterior-fossa QC
   registration.sh        # multi-stage ANTs registration (~600 line register_to_reference())
   segmentation.sh        # Harvard-Oxford gross extent (thr25) + FreeSurfer brainstem substructures; optional multi-atlas warp (Bianciardi/CIT168/AAL3)
-  brainstem_freesurfer.sh # FreeSurfer segmentBS substructures (Iglesias 2015): midbrain/pons/medulla/SCP in native space
+  brainstem_freesurfer.sh # FreeSurfer recon-all → segmentBS/segment_subregions substructures (Iglesias 2015): midbrain/pons/medulla/SCP in native space (+ topology-salvage of a recon-all that died in the surface stages)
+  freesurfer_harvest.sh  # harvests EVERYTHING from the SAME recon-all: aseg/wmparc/aparc + ML methods (mri_synthseg/mri_synthsr) + optional subregion/sclimbic/hypothalamus segs + aseg/eTIV stats (feeds aseg-CSF into FP exclusion)
+  brainstem_aanseg.sh    # EXPLORATORY: FreeSurfer SegmentAAN.sh arousal-network nuclei (≤1mm only; off by default)
   multi_atlas.sh         # Bianciardi + CIT168 + AAL3 → subject-space per-region masks (SyN→MNI + GenericLabel)
-  brainstem_aanseg.sh    # EXPLORATORY: FreeSurfer AANSegment arousal-network nuclei (≤1mm only; off by default)
   analysis.sh            # hyperintensity detection, cluster analysis
   gmm_threshold.py       # standalone GMM thresholder (called by analysis.sh)
   cross_modal_analysis.sh # MULTI-MODAL: per-cluster corroboration of FLAIR clusters with co-registered SWI/DWI-trace/ADC/T2 (default on, graceful)
@@ -65,7 +66,7 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   reporting_tables.py    # stdlib-only aggregator behind reporting.sh (parses provenance/summaries, renders tables + top-level report; called via uv)
   qa.sh                  # 20+ validation checks
 config/default_config.sh # all pipeline defaults (has include guard)
-tests/                   # 23 bash test scripts + 2 pytest modules
+tests/                   # 29 bash test scripts (incl. test_dependency_report_unit.sh) + 2 pytest modules
 ```
 
 ## Code style
@@ -125,6 +126,17 @@ The single-method values (`freesurfer`/`multi_atlas`/`bianciardi`/`atlas`/`harva
 **Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`. The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
 
 **Optional WMH / seg modules** — supervised/DL add-ons, each intersected with the brainstem mask, each self-gated (graceful WARNING + skip when its tool/training-data/model is absent) and called non-fatally from `pipeline.sh`: `wmh_bianca.sh` (FSL BIANCA), `wmh_lst_samseg.sh` (LST-AI + SAMSEG), `wmh_synthseg.sh` (WMH-SynthSeg), `wmh_segcsvd.sh` (segcsvdWMH), `wmh_shiva.sh` (SHIVA-WMH), `wmh_mars.sh` (MARS-WMH); plus `brainstem_aanseg.sh` (EXPLORATORY AANSegment, ≤1 mm only) and the post-detection `fp_filter.sh`. **Default-ON** (master switch `true`, no-op until their tool/data is present): `WMH_SYNTHSEG_ENABLED`, `WMH_SHIVA_ENABLED`, `WMH_MARS_ENABLED`, `BRAINSTEM_AANSEG_ENABLED`, and `WMH_BIANCA_ENABLED` (the last is a no-op until `BIANCA_TRAINING_MASTERFILE`/`BIANCA_LOAD_CLASSIFIER` is set). **Default-OFF** (opt-in via env): `WMH_LSTAI_ENABLED`, `WMH_SAMSEG_ENABLED`, `WMH_SEGCSVD_ENABLED`, `FP_FILTER_ENABLED` (lossy — removes true small lesions; keep off for brainstem). All master switches honour env overrides (`${VAR:-default}`). These add-ons only CORROBORATE — none alters the primary FLAIR detection. None is validated in the brainstem — keep conservative pons QA / human-in-the-loop.
+
+## Pre-init dependency check (required + optional inventory)
+
+At startup `pipeline.sh::main` runs `check_all_dependencies` (`environment.sh`) — the single authoritative pre-init dependency report. It enforces the genuine **core** requirements (fatal if missing) and then calls `check_optional_dependencies` to print a **report-only** inventory of EVERY optional tool/package/container/atlas the pipeline can use, so the user sees upfront exactly what is available and which optional features will run vs skip.
+
+- **Output format** — one line per dependency: `name | REQ/OPT | present/absent (+path/version) | gates: <feature>`, grouped into `Core (REQUIRED)`, `FreeSurfer (OPTIONAL)`, `MRtrix (OPTIONAL)`, `WMH / ML tools (OPTIONAL)`, `Container runtimes & images (OPTIONAL)`, `Atlases (OPTIONAL)`.
+- **Core (REQUIRED, fatal):** FSL (`fslmaths`/`flirt`/`fast`/`bet`/`robustfov`/`cluster`/`fslstats`/`fslinfo`), ANTs (`antsRegistration`/`antsApplyTransforms`/`N4BiasFieldCorrection`/`DenoiseImage`/`Atropos`/`ThresholdImage`/`ImageMath`/`ResampleImage`/`antsRegistrationSyN.sh`), `dcm2niix`, `c3d`, and Python via `uv` (`nibabel`/`numpy`/`sklearn`). The fatal enforcement still lives in `check_ants`/`check_fsl`/`check_c3d`/`check_dcm2niix`; the inventory mirrors them as REQ for one combined view.
+- **Optional (report-only, NEVER fatal):** FreeSurfer (`FREESURFER_HOME`+license, `recon-all`, `segmentBS.sh`/`segment_subregions`, `SegmentAAN.sh`, `mri_synthseg`, `mri_synthsr`, `mri_synthstrip`, `mri_WMHsynthseg`, `mri_sclimbic_seg`, `mri_segment_hypothalamic_subunits`, `run_samseg`); MRtrix (`dwidenoise`, `mrdegibbs`, `dwifslpreproc`, `dwibiascorrect`, `dwi2mask`, `mrconvert`); WMH/ML (`bianca`, `make_bianca_mask`, `python:antspynet` → SHIVA, `lst`/`lst_ai` → LST-AI); container runtimes (`docker`, `apptainer`/`singularity`) AND the specific images the WMH modules reference (segcsvd, LST-AI, SHiVAi, MARS-WMH, MARS-brainstem) probed via `docker image inspect` / `.sif`-on-disk with **short timeouts** so a wedged Docker daemon can never hang startup; atlases (HarvardOxford, FSL standard templates — the full Bianciardi/CIT168/AAL3 probe is done by `check_atlas_availability`).
+- **Config cross-reference** — the inventory reads the feature toggles (`BRAINSTEM_SEGMENTATION_METHOD`, `SEG_RUN_FREESURFER`/`SEG_RUN_MULTI_ATLAS`/`SEG_RUN_SYNTHSEG`, `USE_SYNTHSR`, `PROCESS_DWI`, `WMH_*_ENABLED`, `MARS_BRAINSTEM_ENABLED`, `BRAINSTEM_AANSEG_ENABLED`). When a feature is **enabled but its dependency is absent** it logs a clear `WARNING` ("X is ENABLED but <tool> not found — that feature will be SKIPPED") and adds it to the end-of-section **skip list**. The summary block prints present/absent counts and the concise list of optional features that WILL be skipped.
+- **Container image env vars / defaults** (override to point at your pull / `.sif`): `SEGCSVD_DOCKER_IMAGE` (`segcsvd_rc03`) / `SEGCSVD_CONTAINER_IMAGE` (.sif); `LSTAI_DOCKER_IMAGE` (`jqmcginnis/lst-ai:latest`); `SHIVA_WMH_CONTAINER_IMAGE` (docker name OR .sif); `MARS_WMH_DOCKER_IMAGE` (`ghcr.io/miac-research/wmh-nnunet:latest`) / `MARS_WMH_SIF`; `MARS_BRAINSTEM_DOCKER_IMAGE` (`ghcr.io/miac-research/dl-brainstem:latest`) / `MARS_BRAINSTEM_SIF`.
+- **Implementation** — helpers in `environment.sh`: `_dep_probe_cmd` (command→path), `_dep_probe_pymodule` (`uv run --no-sync python -c "import …"`, bounded), `_dep_probe_image` (docker/`.sif`, bounded), `_dep_timeout` (portable `timeout`/`gtimeout`/watchdog bound), `_dep_report` (matrix line + enabled-but-missing WARNING + counters). Unit-tested in `tests/test_dependency_report_unit.sh` (mocked present/absent, skip-list, non-fatal). The CI smoke test still greps the preserved strings `Comprehensive Pipeline Dependency Check` and `Dependency Check Summary`.
 
 ## Multi-modal (SWI / DWI / T2) end-to-end
 
