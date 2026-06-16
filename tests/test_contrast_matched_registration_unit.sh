@@ -205,6 +205,52 @@ register_contrast_matched_cascade "$t1" "$flair" "$f2t1" "$empty_out"
 assert_equals "0" "$?" "cascade with no specs returns 0"
 assert_equals "0" "$(_count_composed "$empty_out")" "cascade with no specs registers nothing"
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Multi-volume DWI -> trace extraction (use the 4D to get the best 3D)
+# ══════════════════════════════════════════════════════════════════════════════
+begin_test_group "6. multi-volume DWI trace extraction"
+
+assert_function_exists "extract_dwi_trace_from_4d" "extract_dwi_trace_from_4d defined"
+
+casc6="$TEMP_TEST_DIR/casc6"
+mkdir -p "$casc6"
+raw_dwi="$casc6/DWI_b0trace.nii.gz"; : > "$raw_dwi"   # raw 4D [b0, trace] stack
+
+# Mock FSL: the raw stack reports dim4=2; everything else (incl. the extracted
+# 3D trace) reports 1.  fslroi records the extracted volume index and creates the
+# output so the rest of the cascade proceeds.
+FSLROI_IDX_FILE="$casc6/fslroi_idx"
+fslval() { if [ "$1" = "$raw_dwi" ]; then echo 2; else echo 1; fi; }
+fslroi() { echo "$3" > "$FSLROI_IDX_FILE"; : > "$2"; return 0; }
+
+# 6a. Direct: with a .bval sidecar the MAX b-value volume (idx 1) is chosen.
+printf '0 1000\n' > "$casc6/DWI_b0trace.bval"
+trace_out="$(extract_dwi_trace_from_4d "$raw_dwi" "$casc6/traceout")"
+assert_equals "1" "$(cat "$FSLROI_IDX_FILE" 2>/dev/null)" "extract picks max-b volume (idx 1) from .bval"
+assert_equals "$casc6/traceout/DWI_b0trace_trace.nii.gz" "$trace_out" "extract echoes a clean trace path (no log leakage)"
+
+# 6b. Cascade: a multi-volume DWI is now EXTRACTED + registered, not skipped.
+casc6_run="$casc6/run_on"
+mkdir -p "$casc6_run"
+run_dwi="$casc6_run/DWI_b0trace.nii.gz"; : > "$run_dwi"
+fslval() { if [ "$1" = "$run_dwi" ]; then echo 2; else echo 1; fi; }
+CONTRAST_MATCHED_DWI_EXTRACT_TRACE=true \
+register_contrast_matched_cascade "$t1" "$flair" "$f2t1" "$casc6_run" "DWI=$run_dwi"
+assert_equals "0" "$?" "cascade with multi-volume DWI returns 0 (trace extracted)"
+assert_equals "1" "$(_count_composed "$casc6_run")" "multi-volume DWI is registered via its extracted trace (not skipped)"
+assert_file_exists "$casc6_run/DWI_b0trace_trace_to_t1_composedWarped.nii.gz" \
+    "registered output carries the _trace basename (cross-modal DWI discovery matches it)"
+
+# 6c. Toggle OFF => revert to skipping the multi-volume DWI.
+casc6_off="$casc6/run_off"
+mkdir -p "$casc6_off"
+off_dwi="$casc6_off/DWI_b0trace.nii.gz"; : > "$off_dwi"
+fslval() { if [ "$1" = "$off_dwi" ]; then echo 2; else echo 1; fi; }
+CONTRAST_MATCHED_DWI_EXTRACT_TRACE=false \
+register_contrast_matched_cascade "$t1" "$flair" "$f2t1" "$casc6_off" "DWI=$off_dwi"
+assert_equals "0" "$?" "cascade returns 0 even when the 4D DWI is skipped"
+assert_equals "0" "$(_count_composed "$casc6_off")" "toggle off => multi-volume DWI is skipped"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 cleanup_test_environment
 print_test_summary

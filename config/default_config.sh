@@ -507,6 +507,14 @@ export CONTRAST_MATCHED_INTENSITY_INTERP="Linear"
 # persisted composed forward/inverse transform lists, and a transform manifest.
 export CONTRAST_MATCHED_SUBDIR="contrast_matched"
 
+# A DWI series often arrives as a small multi-volume stack (e.g. dcm2niix exports
+# it as [b0, trace]) rather than a pre-derived single-contrast trace. When true
+# (default) the cascade EXTRACTS the b>0 trace (max b-value volume via the .bval
+# sidecar, else the last volume) from such a 4D DWI and registers that, instead
+# of discarding the whole modality. Set false to revert to skipping multi-volume
+# DWI. Non-DWI 4D inputs are always skipped (anomalous, not a single contrast).
+export CONTRAST_MATCHED_DWI_EXTRACT_TRACE=true
+
 # ===========================================================================
 # MULTI-MODALITY PROCESSING  (SWI / DWI / T2 end-to-end + cross-modal analysis)
 # ===========================================================================

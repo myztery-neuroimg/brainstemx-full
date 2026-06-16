@@ -1697,6 +1697,71 @@ register_contrast_matched_modality() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# extract_dwi_trace_from_4d <4d_image> <out_dir>
+#
+# A DWI series frequently arrives from dcm2niix as a small multi-volume stack
+# (commonly [b0, trace]) rather than a pre-derived single-contrast trace.
+# Registering the whole stack as "one modality" is meaningless and
+# antsApplyTransforms -d 3 aborts on it — but the diagnostically useful b>0
+# TRACE is a perfectly good single-contrast 3D image.  This extracts that trace
+# so the contrast-matched cascade can bring the DWI all the way through instead
+# of discarding it ("use the 4D to get the best 3D").
+#
+# Volume selection:
+#   * If a .bval sidecar sits next to the image, extract the volume with the
+#     maximum b-value (the trace / strongest diffusion weighting).
+#   * Otherwise extract the LAST volume — dcm2niix writes volumes in ascending
+#     b-value order, so [b0, trace] -> trace is the last index (matches the
+#     existing precedent in analyze_multimodal_brainstem.sh).
+#
+# NOTE: for a true multi-direction acquisition the proper trace is the mean of
+# the high-b directions; a precomputed trace is preferred there.  For the common
+# 2-volume [b0, trace] export this picks the trace exactly.
+#
+# Echoes the path to the extracted 3D trace on stdout on success (log lines go
+# to stderr, so the capture is clean); echoes nothing and returns non-zero on
+# failure.
+# ---------------------------------------------------------------------------
+extract_dwi_trace_from_4d() {
+    local image="$1"
+    local out_dir="$2"
+
+    local nvol
+    nvol="$(fslval "$image" dim4 2>/dev/null | tr -d ' ')"
+    [ -n "$nvol" ] || nvol=1
+
+    # Locate a .bval sidecar (dcm2niix writes it next to the .nii.gz).
+    local base bval="" cand idx=""
+    base="${image%.nii.gz}"; base="${base%.nii}"
+    for cand in "${base}.bval" "${base}.bvals"; do
+        if [ -f "$cand" ]; then bval="$cand"; break; fi
+    done
+
+    if [ -n "$bval" ]; then
+        # 0-based index of the maximum b-value across the whole sidecar.
+        idx="$(awk '{ for (i=1;i<=NF;i++) { v=$i+0; if (n==0 || v>max) { max=v; mi=n } n++ } }
+                     END { if (n>0) print mi }' "$bval" 2>/dev/null)"
+    fi
+
+    # Fallback: highest-index volume (ascending-b ordering => trace is last).
+    if ! [ "${idx:-x}" -ge 0 ] 2>/dev/null; then
+        idx=$(( nvol - 1 ))
+    fi
+    [ "$idx" -ge 0 ] 2>/dev/null || idx=0
+
+    mkdir -p "$out_dir"
+    local out="${out_dir}/$(basename "$base")_trace.nii.gz"
+    if fslroi "$image" "$out" "$idx" 1 2>/dev/null && [ -f "$out" ]; then
+        log_message "Extracted DWI trace (volume ${idx} of ${nvol}) from 4D stack -> $(basename "$out")"
+        echo "$out"
+        return 0
+    fi
+
+    log_formatted "WARNING" "Failed to extract a 3D trace volume from $(basename "$image")"
+    return 1
+}
+
 # Orchestrate contrast-matched registration for all present T2-weighted modalities.
 #
 # Usage:
@@ -1729,7 +1794,7 @@ register_contrast_matched_cascade() {
 
     local overall_status=0
     local processed=0
-    local spec name path anchor nvol
+    local spec name path anchor nvol trace_path
     for spec in "${specs[@]}"; do
         name="${spec%%=*}"
         path="${spec#*=}"
@@ -1745,14 +1810,28 @@ register_contrast_matched_cascade() {
             continue
         fi
 
-        # Refuse 4D / multi-volume inputs (raw DWI stack: b0+trace, trace+ADC,
-        # multi-b).  These are not single-contrast 3D images, so registering them
-        # as one modality is meaningless and antsApplyTransforms -d 3 aborts.  The
-        # derived 3D trace/ADC, if present, come through as their own specs.
+        # Multi-volume inputs are not single-contrast 3D images: registering the
+        # whole stack as one modality is meaningless and antsApplyTransforms -d 3
+        # aborts on it.  For DWI this is the COMMON case (dcm2niix exports the
+        # series as e.g. [b0, trace]); rather than discard it, extract the b>0
+        # TRACE — a perfectly good single-contrast 3D image — and register that
+        # (gated by CONTRAST_MATCHED_DWI_EXTRACT_TRACE, default on).  For any
+        # other modality a 4D image is anomalous, so we still skip it.
         nvol="$(fslval "$path" dim4 2>/dev/null | tr -d ' ')"
         if [ "${nvol:-1}" -gt 1 ] 2>/dev/null; then
-            log_formatted "WARNING" "Skipping ${name}: 4D/multi-volume image (${nvol} vols) is not a single-contrast 3D modality"
-            continue
+            if [ "${name^^}" = "DWI" ] && [ "${CONTRAST_MATCHED_DWI_EXTRACT_TRACE:-true}" = "true" ]; then
+                trace_path="$(extract_dwi_trace_from_4d "$path" "$output_dir")"
+                if [ -n "$trace_path" ] && [ -f "$trace_path" ]; then
+                    log_message "Using extracted DWI trace for the cascade: $(basename "$trace_path")"
+                    path="$trace_path"
+                else
+                    log_formatted "WARNING" "Skipping ${name}: could not extract a 3D trace from the ${nvol}-volume stack"
+                    continue
+                fi
+            else
+                log_formatted "WARNING" "Skipping ${name}: 4D/multi-volume image (${nvol} vols) is not a single-contrast 3D modality"
+                continue
+            fi
         fi
 
         processed=$((processed + 1))
@@ -1780,6 +1859,7 @@ export -f register_multiple_to_reference
 export -f register_all_modalities
 export -f resolve_contrast_anchor
 export -f register_contrast_matched_modality
+export -f extract_dwi_trace_from_4d
 export -f register_contrast_matched_cascade
 
 # Helper function to prepare white matter segmentation

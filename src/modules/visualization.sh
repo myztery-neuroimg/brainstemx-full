@@ -253,8 +253,11 @@ generate_qc_visualizations() {
         # Include the configured threshold alongside defaults
         local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
         local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
-        local colors=("red" "orange" "yellow" "green")
-        
+        # Color palette is cycled by index (modulo) in the loop below, so it
+        # never has to match the threshold count one-to-one — avoids the
+        # `colors[$i]: unbound variable` crash under `set -u`.
+        local colors=("red" "orange" "yellow" "green" "cyan" "blue" "magenta")
+
         # Add configured threshold if not already present
         local configured_included=false
         for thresh in "${thresholds[@]}"; do
@@ -263,11 +266,10 @@ generate_qc_visualizations() {
                 break
             fi
         done
-        
+
         if [ "$configured_included" = false ]; then
             thresholds+=("$threshold_multiplier")
-            colors+=("cyan")  # Add color for the configured threshold
-            # Sort the thresholds (keeping colors aligned)
+            # Sort the thresholds (colors are assigned by position in the loop)
             IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
             unset IFS
         fi
@@ -277,7 +279,7 @@ generate_qc_visualizations() {
         
         for i in "${!thresholds[@]}"; do
             local mult="${thresholds[$i]}"
-            local color="${colors[$i]}"
+            local color="${colors[$(( i % ${#colors[@]} ))]}"
             # Use intensity version for proper heat colormap visualization
             local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}_intensity.nii.gz"
             local hyper="${subject_dir}/hyperintensities/${subject_id}_pons_thresh${mult}.nii.gz"
@@ -353,8 +355,11 @@ create_multi_threshold_overlays() {
     # Define thresholds and colors - include configured threshold
     local threshold_multiplier="${THRESHOLD_WM_SD_MULTIPLIER:-1.25}"
     local thresholds=(1.2 1.25 1.3 1.5 2.0 2.5 3.0)
-    local colors=("red" "orange" "yellow" "green")
-    
+    # Color palette is cycled by index (modulo) in the loop below, so it
+    # never has to match the threshold count one-to-one — avoids the
+    # `colors[$i]: unbound variable` crash under `set -u`.
+    local colors=("red" "orange" "yellow" "green" "cyan" "blue" "magenta")
+
     # Add configured threshold if not already present
     local configured_included=false
     for thresh in "${thresholds[@]}"; do
@@ -363,11 +368,10 @@ create_multi_threshold_overlays() {
             break
         fi
     done
-    
+
     if [ "$configured_included" = false ]; then
         thresholds+=("$threshold_multiplier")
-        colors+=("cyan")  # Add color for the configured threshold
-        # Sort the thresholds (keeping colors aligned)
+        # Sort the thresholds (colors are assigned by position in the loop)
         IFS=$'\n' thresholds=($(sort -n <<<"${thresholds[*]}"))
         unset IFS
     fi
@@ -377,7 +381,7 @@ create_multi_threshold_overlays() {
     
     for i in "${!thresholds[@]}"; do
         local mult="${thresholds[$i]}"
-        local color="${colors[$i]}"
+        local color="${colors[$(( i % ${#colors[@]} ))]}"
         # Use intensity version for proper heat colormap visualization
         local hyper_intensity="${subject_dir}/hyperintensities/${subject_id}_brainstem_thresh${mult}_intensity.nii.gz"
         local hyper="${subject_dir}/hyperintensities/${subject_id}_brainstem_thresh${mult}.nii.gz"
