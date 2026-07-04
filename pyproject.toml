@@ -11,7 +11,7 @@ dependencies = [
     "iniconfig==2.3.0",
     "joblib==1.5.3",
     "nibabel==5.4.2",       # gmm_threshold.py, analyze_multimodal_brainstem.sh
-    "numpy==2.4.6",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
+    "numpy==2.5.0",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
     "packaging==26.2",
     "pandas==3.0.3",        # analyze_multimodal_brainstem.sh (inline Python)
     "pluggy==1.6.0",
