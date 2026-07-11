@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "==3.12.8"
 dependencies = [
     "antspynet>=0.2.3",
+    "antspyx>=0.5.3",
     "colorama==0.4.6 ; sys_platform == 'win32'",
     # Core dependencies used by Python modules and inline Python in bash scripts
     "iniconfig==2.3.0",
@@ -14,6 +15,7 @@ dependencies = [
     "numpy==2.5.0",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
     "packaging==26.2",
     "pandas==3.0.3",        # analyze_multimodal_brainstem.sh (inline Python)
+    "pip>=26.1.2",
     "pluggy==1.6.0",
     "pydicom==3.0.2",       # extract_dicom_metadata.py
     "pygments==2.20.0",

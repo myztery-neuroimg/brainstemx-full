@@ -22,7 +22,7 @@ export PIPELINE_SUCCESS=true       # Track overall pipeline success
 export PIPELINE_ERROR_COUNT=0      # Count of errors in pipeline
 
 # Parallelization configuration (defaults, can be overridden by config file)
-export PARALLEL_JOBS=0             # Number of parallel jobs (0 = auto-detect)
+export PARALLEL_JOBS=1            # Number of parallel jobs (0 = auto-detect)
 export MAX_CPU_INTENSIVE_JOBS=1    # Number of jobs for CPU-intensive operations
 export PARALLEL_TIMEOUT=0          # Timeout for parallel operations (0 = no timeout)
 export PARALLEL_HALT_MODE="soon"   # How to handle failed parallel jobs
@@ -289,7 +289,7 @@ export N4_PRESET_ULTRA="250x250x250x3,0.00001,100,2"
 export N4_PRESET_FLAIR="$N4_PRESET_HIGH"
 
 # DICOM-specific parallel processing (only affects DICOM import)
-export DICOM_IMPORT_PARALLEL=12
+export DICOM_IMPORT_PARALLEL=1
 
 export QUALITY_PRESET="HIGH"
 
@@ -319,11 +319,11 @@ elif [[ "$CORES" -le 18 ]]; then
 else   
   # Mac Studio-level optimizations
   export MACHINE_SPEC="HIGH"
-  export QUALITY_PRESET="MEDIUM"
-  export ANTS_THREADS=28  # Use most but not all cores
-  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=28
+  export QUALITY_PRESET="HIGH"
+  export ANTS_THREADS=32  # Use most but not all cores
+  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=32
   export OMP_NUM_THREADS=28
-  export ANTS_MEMORY_LIMIT="64G"  # Adjust based on actual RAM
+  export ANTS_MEMORY_LIMIT="128G"  # Adjust based on actual RAM
   export VECLIB_MAXIMUM_THREADS=28
   export OPENBLAS_NUM_THREADS=28
 fi
@@ -339,7 +339,7 @@ echo "QUALITY_PRESET: ${QUALITY_PRESET} ANTS_THREADS:${ANTS_THREADS}" >&2
 # the general preset; only the field smoothness and effort are relaxed.
 if [ "$QUALITY_PRESET" == "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
-    export N4_PRESET_FLAIR="150x150x150,0.00001,160,2"
+    export N4_PRESET_FLAIR=="75x75x75,0.00005,180,2"
 elif [ "$QUALITY_PRESET" == "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
     export N4_PRESET_FLAIR="75x75x75,0.00005,180,2"
@@ -560,7 +560,7 @@ export CROSS_MODAL_ANALYSIS_ENABLED=true
 
 # Minimum cluster size (voxels) to include in the cross-modal table. Tiny
 # clusters are dominated by partial-volume and rarely worth corroborating.
-export CROSS_MODAL_MIN_CLUSTER_VOXELS=5
+export CROSS_MODAL_MIN_CLUSTER_VOXELS=6
 
 # --- Per-modality corroboration thresholds (intensity z within the brainstem) -
 # Each modality is z-scored within the brainstem ROI (robust mean/SD over the
@@ -659,7 +659,7 @@ export FP_FILTER_ENABLED="${FP_FILTER_ENABLED:-false}"    # MASTER switch (defau
 
 # --- Stage gates (each sub-stage independently togglable) -------------------
 export FP_MIN_CLUSTER_ENABLED=true       # stage: drop sub-threshold connected components
-export FP_BRAINMASK_EROSION_ENABLED=true # stage: drop lesion voxels outside eroded brain
+export FP_BRAINMASK_EROSION_ENABLED=false # stage: drop lesion voxels outside eroded brain
 export FP_CSF_DISTANCE_ENABLED=true      # stage: drop lesion clusters near CSF
 # FP_SEGAE_ENABLED is defined below (it doubles as the SegAE stage gate).
 
@@ -667,7 +667,7 @@ export FP_CSF_DISTANCE_ENABLED=true      # stage: drop lesion clusters near CSF
 # CONSERVATIVE default: blanket small-instance removal DELETES TRUE small
 # lesions, so the threshold is small and the module logs how many voxels/
 # clusters were removed at WARNING level so the loss is always visible.
-export FP_MIN_CLUSTER_VOXELS=2           # drop connected components with < this many voxels (conservative)
+export FP_MIN_CLUSTER_VOXELS=6           # drop connected components with < this many voxels (conservative)
 export FP_CLUSTER_CONNECTIVITY=26        # FSL `cluster --connectivity` (6 | 18 | 26); matches detection
 
 # --- Brain-mask erosion (near-edge / peri-CSF residual removal) -------------
@@ -970,7 +970,7 @@ export SHIVA_WMH_CONTAINER_CMD=""
 # skips gracefully (non-fatal). Enable only after pulling the container.
 #
 # Entry point: run_mars_wmh <flair.nii.gz> <t1.nii.gz> [<out_dir>]
-export WMH_MARS_ENABLED="${WMH_MARS_ENABLED:-true}"       # master switch; true = run MARS-WMH (needs Docker/Apptainer container, NON-COMMERCIAL license; graceful skip if absent)
+export WMH_MARS_ENABLED="${WMH_MARS_ENABLED:-false}"       # master switch; true = run MARS-WMH (needs Docker/Apptainer container, NON-COMMERCIAL license; graceful skip if absent)
 
 # --- Back-end selection / images --------------------------------------------
 # "auto" tries Docker image, then an Apptainer .sif, then a native CLI.
@@ -1105,6 +1105,8 @@ export DICOM_ADDITIONAL_PATTERNS="*.dcm IM_* Image* *.[0-9][0-9][0-9][0-9] DICOM
 # Prioritize sagittal 3D sequences - these patterns match Siemens file naming conventions
 # after DICOM to NIfTI conversion with dcm2niix
 
+## FIXME FIXME
+
 export T1_PRIORITY_PATTERN="T1_MPRAGE_SAG_12.nii.gz" #hack
 export FLAIR_PRIORITY_PATTERN="T2_SPACE_FLAIR_Sag_CS_17.nii.gz" #hack
 export RESAMPLE_TO_ISOTROPIC=false
@@ -1125,7 +1127,7 @@ export RESAMPLE_TO_ISOTROPIC=false
 export SWI_TOF_DENOISE_ENABLED=false
 # When the modality cannot be detected, skip denoising instead of defaulting to
 # NLM.  Default false keeps the historical structural-assumption behaviour.
-export DENOISE_DEFAULT_SKIP=false
+export DENOISE_DEFAULT_SKIP=true
 
 # ------------------------------------------------------------------------------
 # DWI (diffusion) preprocessing path  (dwi_preprocess.sh)
@@ -1133,7 +1135,7 @@ export DENOISE_DEFAULT_SKIP=false
 # Master switch.  When false (default) the DWI path is never invoked and the
 # existing T1/FLAIR flow is completely unaffected.  When true, DWI inputs are
 # auto-detected in the preprocessing stage and routed through the MP-PCA path.
-export PROCESS_DWI=false
+export PROCESS_DWI=true
 # Optional Gibbs ringing removal (mrdegibbs) after MP-PCA denoising.
 export DWI_DEGIBBS=true
 # Bias-field correction for DWI: "ants" uses `dwibiascorrect ants`; otherwise an

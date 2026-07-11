@@ -662,7 +662,7 @@ process_dicom_series() {
 import_dicom_data() {
   local dicom_dir="$1"
   local output_dir="$2"
-  local parallel_jobs="${DICOM_IMPORT_PARALLEL:-4}"  # Use specific DICOM import parallelism
+  local parallel_jobs="${DICOM_IMPORT_PARALLEL:-1}"  # Use specific DICOM import parallelism
   
   log_message "===== ENTERING import_dicom_data ====="
   log_message "DEBUG: dicom_dir='$dicom_dir'"
