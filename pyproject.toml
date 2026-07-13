@@ -26,7 +26,7 @@ dependencies = [
     "six==1.17.0",
     "threadpoolctl==3.6.0",
     "typing-extensions==4.15.0",
-    "tzdata==2026.2 ; sys_platform == 'emscripten' or sys_platform == 'win32'",
+    "tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
