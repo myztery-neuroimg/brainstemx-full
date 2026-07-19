@@ -320,12 +320,12 @@ else
   # Mac Studio-level optimizations
   export MACHINE_SPEC="HIGH"
   export QUALITY_PRESET="HIGH"
-  export ANTS_THREADS=32  # Use most but not all cores
-  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=32
-  export OMP_NUM_THREADS=28
+  export ANTS_THREADS=22  # Use most but not all cores
+  export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=22
+  export OMP_NUM_THREADS=22
   export ANTS_MEMORY_LIMIT="128G"  # Adjust based on actual RAM
-  export VECLIB_MAXIMUM_THREADS=28
-  export OPENBLAS_NUM_THREADS=28
+  export VECLIB_MAXIMUM_THREADS=22
+  export OPENBLAS_NUM_THREADS=22
 fi
 
 echo "QUALITY_PRESET: ${QUALITY_PRESET} ANTS_THREADS:${ANTS_THREADS}" >&2
@@ -339,7 +339,7 @@ echo "QUALITY_PRESET: ${QUALITY_PRESET} ANTS_THREADS:${ANTS_THREADS}" >&2
 # the general preset; only the field smoothness and effort are relaxed.
 if [ "$QUALITY_PRESET" == "ULTRA" ]; then
     export N4_PARAMS="$N4_PRESET_ULTRA"
-    export N4_PRESET_FLAIR=="75x75x75,0.00005,180,2"
+    export N4_PRESET_FLAIR="75x75x75,0.00005,180,2"
 elif [ "$QUALITY_PRESET" == "HIGH" ]; then
     export N4_PARAMS="$N4_PRESET_HIGH"
     export N4_PRESET_FLAIR="75x75x75,0.00005,180,2"
