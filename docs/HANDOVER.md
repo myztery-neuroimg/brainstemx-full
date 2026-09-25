@@ -80,8 +80,9 @@ approximate until `verified: true` — check them against the papers.
 
 ## 5. Open work, in priority order
 
-1. **Any-region detection** — engine is region-agnostic; wire
-   `DETECTION_REGION_SET` (brainstem | custom | whole_brain), registry keys
+1. **Any-region detection** — `DETECTION_REGION_SET=custom` +
+   `DETECTION_CUSTOM_MASKS` is done (`analysis.sh::detect_custom_regions`);
+   still missing: a `whole_brain` set with registry keys
    for Harvard-Oxford cortical/subcortical labels written to
    `segmentation/detailed_regions/`, a second union output, a WM parent null
    (`LESION_PARENT_NULL`) for small regions, reporting + figures.

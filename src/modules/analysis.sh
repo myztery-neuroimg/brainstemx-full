@@ -268,6 +268,12 @@ detect_hyperintensities() {
 
         # Apply GMM-based analysis to each atlas region separately
         apply_per_region_gmm_analysis "$flair_brain" atlas_regions "$temp_dir" "$out_prefix"
+
+        # Any-region extension: user-supplied masks (DETECTION_REGION_SET=custom)
+        # analysed by the same engine into a SEPARATE union, so the brainstem
+        # outputs above stay the primary result. Non-fatal.
+        detect_custom_regions "$flair_brain" "$temp_dir" "$out_prefix" || \
+            log_formatted "WARNING" "custom region detection reported a non-fatal failure"
         
         log_message "Using advanced per-region GMM-based thresholding with atlas-specific z-scoring"
         
@@ -1169,7 +1175,9 @@ apply_per_region_gmm_analysis() {
     log_message "Applying per-region GMM analysis to ${#regions_ref[@]} atlas regions..."
 
     # Create PERMANENT per-region analysis directory for debugging
-    local per_region_dir="${RESULTS_DIR}/per_region_analysis"
+    # ANALYSIS_PER_REGION_DIR lets a second region set (DETECTION_REGION_SET=custom,
+    # see detect_custom_regions) run the same loop into its own directory.
+    local per_region_dir="${ANALYSIS_PER_REGION_DIR:-${RESULTS_DIR}/per_region_analysis}"
     mkdir -p "$per_region_dir"
 
     # Store results for each region
@@ -1481,6 +1489,45 @@ apply_per_region_gmm_analysis() {
         log_formatted "ERROR" "No regions successfully processed with GMM analysis"
         return 1
     fi
+}
+
+# ---------------------------------------------------------------------------
+# detect_custom_regions <flair> <temp_dir> <out_prefix>
+#   DETECTION_REGION_SET=custom (or brainstem+custom): run the per-region
+#   engine over every mask matched by DETECTION_CUSTOM_MASKS (space-separated
+#   globs; e.g. a whole-brain WM mask, Harvard-Oxford lobes, tract masks)
+#   into <RESULTS_DIR>/per_region_analysis_custom, writing the union to
+#   <out_prefix>_regions_union.nii.gz. The brainstem union (ATLAS_GMM_RESULT)
+#   is left untouched. Default DETECTION_REGION_SET=brainstem => no-op.
+# ---------------------------------------------------------------------------
+detect_custom_regions() {
+    local flair_image="$1" temp_dir="$2" out_prefix="$3"
+    case "${DETECTION_REGION_SET:-brainstem}" in
+        custom|brainstem+custom|all) ;;
+        *) return 0 ;;
+    esac
+    local pat masks=()
+    for pat in ${DETECTION_CUSTOM_MASKS:-}; do
+        local f
+        for f in $pat; do [ -f "$f" ] && masks+=("$f"); done
+    done
+    if [ "${#masks[@]}" -eq 0 ]; then
+        log_formatted "WARNING" "DETECTION_REGION_SET=${DETECTION_REGION_SET} but DETECTION_CUSTOM_MASKS matched no files — skipping"
+        return 0
+    fi
+    log_formatted "INFO" "=== ANY-REGION DETECTION: ${#masks[@]} custom region mask(s) ==="
+    local saved_result="${ATLAS_GMM_RESULT:-}" saved_agree="${ATLAS_GMM_AGREEMENT:-}" saved_cons="${ATLAS_GMM_CONSENSUS:-}"
+    local custom_dir="${RESULTS_DIR}/per_region_analysis_custom"
+    local rc=0
+    ANALYSIS_PER_REGION_DIR="$custom_dir" apply_per_region_gmm_analysis "$flair_image" masks "$temp_dir" "${out_prefix}_regions" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "${ATLAS_GMM_RESULT:-}" ] && [ -f "${ATLAS_GMM_RESULT}" ]; then
+        cp -f "$ATLAS_GMM_RESULT" "${out_prefix}_regions_union.nii.gz"
+        log_formatted "SUCCESS" "Custom-region union: ${out_prefix}_regions_union.nii.gz (per-region outputs: $custom_dir)"
+    else
+        log_formatted "WARNING" "Custom-region detection produced no union (rc=$rc)"
+    fi
+    export ATLAS_GMM_RESULT="$saved_result" ATLAS_GMM_AGREEMENT="$saved_agree" ATLAS_GMM_CONSENSUS="$saved_cons"
+    return 0
 }
 
 # _hier_emit_row <level> <region> <source> <parent> <region_mask> <lesion_mask> <work> <out_tsv>

@@ -829,6 +829,13 @@ export LESION_PI0_FLOOR="${LESION_PI0_FLOOR:-0.6}"          # pi0 below this => 
 export LESION_PARENT_NULL="${LESION_PARENT_NULL:-}"         # optional "mean,sd" reference null for tiny regions
 export LESION_T2_IMAGE="${LESION_T2_IMAGE:-}"               # optional co-registered T2 (analysis space) as a second channel
 export LESION_T2_WEIGHT="${LESION_T2_WEIGHT:-0.5}"
+# Any-region detection. brainstem (default) = the atlas/FS brainstem regions
+# only; custom = ALSO run the engine over user masks (space-separated globs,
+# e.g. a FAST/SynthSeg WM mask, Harvard-Oxford lobes, tract masks) into
+# per_region_analysis_custom/ with a separate <prefix>_regions_union.nii.gz.
+# The brainstem outputs remain the primary result.
+export DETECTION_REGION_SET="${DETECTION_REGION_SET:-brainstem}"
+export DETECTION_CUSTOM_MASKS="${DETECTION_CUSTOM_MASKS:-}"
 export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cluster --minextent)
 
 # Primary analysis engine selector (Step 6).  Controls which detector runs as

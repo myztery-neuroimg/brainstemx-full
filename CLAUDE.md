@@ -128,6 +128,7 @@ _MODULE_LOADED=1
 | `SCAN_SELECTION_MODE` | `registration_optimized` \| `highest_resolution` \| `interactive` |
 | `DETECTION_ENGINE` | `posterior` (default; `lesion_posterior.py`) or `legacy` (GMM chain, A/B only) |
 | `LESION_FDR_Q`, `LESION_MRF_BETA`, `LESION_MIN_CLUSTER_VOXELS`, `LESION_TREND_DEGREE`, `LESION_MIN_GATED_VOXELS`, `LESION_PARENT_NULL`, `LESION_T2_IMAGE` | posterior-engine knobs (FDR level, MRF coupling, cluster filter, spatial trend, small-region guard, reference null, optional T2 channel) |
+| `DETECTION_REGION_SET` / `DETECTION_CUSTOM_MASKS` | `brainstem` (default) or `custom`: also run the engine over user mask globs (WM, lobes, tracts) into `per_region_analysis_custom/` + `<prefix>_regions_union.nii.gz`; brainstem outputs stay primary |
 | `THRESHOLD_WM_SD_MULTIPLIER` | authoritative fallback threshold (legacy GMM inherits this) |
 | `GMM_*` (11 vars) | GMM per-region thresholding — see `config/default_config.sh` |
 | `BRAINSTEM_SEGMENTATION_METHOD` | `all` (default, parallel) \| `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |

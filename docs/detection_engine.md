@@ -86,6 +86,17 @@ consensus, provenance, reporting and cross-modal corroboration are unchanged.
 If `uv`/python is unavailable or the engine fails for a region, the legacy
 chain runs for that region with a WARNING.
 
+## Any region (`DETECTION_REGION_SET=custom`)
+
+The engine has no notion of anatomy. Set `DETECTION_REGION_SET=custom` and
+`DETECTION_CUSTOM_MASKS="<glob> [<glob> …]"` (e.g. a FAST/SynthSeg WM mask,
+Harvard-Oxford lobes, JHU tracts) and `analysis.sh::detect_custom_regions`
+runs the same per-region loop over those masks into
+`per_region_analysis_custom/` with a separate `<prefix>_regions_union.nii.gz`;
+the brainstem union, consensus and reports are unchanged. Whole-brain atlas
+region sets (automatic Harvard-Oxford lobes via the registry) are the next
+step; see `docs/HANDOVER.md`.
+
 ## Caveats
 
 - The phantom is simple (Gaussian-ish tissue, spherical lesions); real FLAIR

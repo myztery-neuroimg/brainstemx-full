@@ -73,5 +73,28 @@ out=$(apply_gaussian_mixture_thresholding "$TEMP_TEST_DIR/z2.nii.gz" "$TEMP_TEST
 assert_not_contains "$out" "posterior engine" "DETECTION_ENGINE=legacy never calls the posterior engine"
 export PATH="$saved"
 
+begin_test_group "4. Any-region dispatch (detect_custom_regions)"
+# Stub the heavy per-region loop: record the dir override + regions, emit a union.
+apply_per_region_gmm_analysis() {
+    local -n _r=$2
+    echo "${ANALYSIS_PER_REGION_DIR:-unset}|${#_r[@]}|$4" > "$TEMP_TEST_DIR/stub_call.txt"
+    mkdir -p "${ANALYSIS_PER_REGION_DIR:-x}"; : > "${ANALYSIS_PER_REGION_DIR:-x}/union.nii.gz"
+    export ATLAS_GMM_RESULT="${ANALYSIS_PER_REGION_DIR:-x}/union.nii.gz"
+}
+export ATLAS_GMM_RESULT="$TEMP_TEST_DIR/brainstem_union.nii.gz"; : > "$ATLAS_GMM_RESULT"
+create_fake_nifti "$TEMP_TEST_DIR/masks/wm.nii.gz"; create_fake_nifti "$TEMP_TEST_DIR/masks/lobe_frontal.nii.gz"
+rm -f "$TEMP_TEST_DIR/stub_call.txt"
+DETECTION_REGION_SET=brainstem detect_custom_regions x y "$TEMP_TEST_DIR/out" >/dev/null 2>&1
+assert_file_not_exists "$TEMP_TEST_DIR/stub_call.txt" "default (brainstem) never runs the custom set"
+DETECTION_REGION_SET=custom DETECTION_CUSTOM_MASKS="$TEMP_TEST_DIR/masks/*.nii.gz" detect_custom_regions x y "$TEMP_TEST_DIR/out" >/dev/null 2>&1
+assert_exit_code 0 $? "custom set returns 0"
+assert_equals "$RESULTS_DIR/per_region_analysis_custom|2|$TEMP_TEST_DIR/out_regions" "$(cat "$TEMP_TEST_DIR/stub_call.txt")" "loop runs in per_region_analysis_custom over 2 masks with the _regions prefix"
+assert_file_exists "$TEMP_TEST_DIR/out_regions_union.nii.gz" "custom union written"
+assert_equals "$TEMP_TEST_DIR/brainstem_union.nii.gz" "$ATLAS_GMM_RESULT" "brainstem ATLAS_GMM_RESULT restored (primary result untouched)"
+rm -f "$TEMP_TEST_DIR/stub_call.txt"
+DETECTION_REGION_SET=custom DETECTION_CUSTOM_MASKS="$TEMP_TEST_DIR/nothing/*.nii.gz" detect_custom_regions x y "$TEMP_TEST_DIR/out" >/dev/null 2>&1
+assert_exit_code 0 $? "no matching masks -> WARNING, returns 0"
+assert_file_not_exists "$TEMP_TEST_DIR/stub_call.txt" "…and the loop is not run"
+
 cleanup_test_environment
 print_test_summary
