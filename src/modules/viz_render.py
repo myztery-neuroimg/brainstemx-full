@@ -499,12 +499,32 @@ def render_hist(image_path: str, mask_path: Optional[str], out: str, components:
 # --------------------------------------------------------------------------- #
 # Gallery
 # --------------------------------------------------------------------------- #
-def build_gallery(root: str, out: Optional[str], title: str) -> str:
+STAGE_ORDER = ["import", "preprocess", "brain_extraction", "registration", "segmentation", "detection",
+               "fp_filter", "wmh", "cross_modal", "qa", "report"]
+
+
+def _thumbnail(png: str, max_w: int = 360) -> Optional[str]:
+    """<name>.thumb.png (stride-downsampled, no PIL); skipped when up to date."""
+    thumb = png[:-4] + ".thumb.png"
+    try:
+        if os.path.isfile(thumb) and os.path.getmtime(thumb) >= os.path.getmtime(png):
+            return thumb
+        img = plt.imread(png)
+        stride = max(1, int(np.ceil(img.shape[1] / max_w)))
+        plt.imsave(thumb, img[::stride, ::stride])
+        return thumb
+    except Exception:
+        return None
+
+
+def build_gallery(root: str, out: Optional[str], title: str, thumbs: bool = True) -> str:
     out = out or os.path.join(root, "index.html")
     sections = []
     manifest = {"root": root, "stages": []}
-    for stage in sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))):
-        pngs = sorted(f for f in os.listdir(os.path.join(root, stage)) if f.lower().endswith(".png"))
+    stages = [d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+    stages.sort(key=lambda d: (STAGE_ORDER.index(d) if d in STAGE_ORDER else len(STAGE_ORDER), d))
+    for stage in stages:
+        pngs = sorted(f for f in os.listdir(os.path.join(root, stage)) if f.lower().endswith(".png") and not f.endswith(".thumb.png"))
         if not pngs:
             continue
         items = []
@@ -512,14 +532,15 @@ def build_gallery(root: str, out: Optional[str], title: str) -> str:
             base = f[:-4]
             cap_path = os.path.join(root, stage, base + ".caption.txt")
             caption = open(cap_path, encoding="utf-8", errors="replace").read().strip() if os.path.isfile(cap_path) else base.replace("_", " ")
-            items.append({"file": f"{stage}/{f}", "caption": caption})
+            th = _thumbnail(os.path.join(root, stage, f)) if thumbs else None
+            items.append({"file": f"{stage}/{f}", "thumb": f"{stage}/{os.path.basename(th)}" if th else f"{stage}/{f}", "caption": caption})
         manifest["stages"].append({"stage": stage, "items": items})
         cards = "\n".join(
-            f'<figure><a href="{html.escape(it["file"])}"><img loading="lazy" src="{html.escape(it["file"])}" alt="{html.escape(it["caption"])}"></a>'
+            f'<figure><a href="{html.escape(it["file"])}"><img loading="lazy" src="{html.escape(it["thumb"])}" alt="{html.escape(it["caption"])}"></a>'
             f'<figcaption>{html.escape(it["caption"])}</figcaption></figure>' for it in items)
         sections.append(f'<section id="{html.escape(stage)}"><h2>{html.escape(stage.replace("_", " "))}</h2><div class="grid">{cards}</div></section>')
     # top-level PNGs (legacy report visualisations) as their own section
-    top = sorted(f for f in os.listdir(root) if f.lower().endswith(".png"))
+    top = sorted(f for f in os.listdir(root) if f.lower().endswith(".png") and not f.endswith(".thumb.png"))
     if top:
         items = [{"file": f, "caption": f[:-4].replace("_", " ")} for f in top]
         manifest["stages"].append({"stage": "report", "items": items})

@@ -103,6 +103,10 @@ def test_gallery(vols, tmp_path):
     html_text = open(idx).read()
     assert "seg caption" in html_text and "segmentation/a.png" in html_text
     assert "empty_stage" not in html_text
+    assert "segmentation/a.thumb.png" in html_text and os.path.isfile(str(root / "segmentation" / "a.thumb.png"))
+    (root / "import").mkdir(); (root / "import" / "b.png").write_bytes(open(out, "rb").read())
+    idx2 = open(vr.build_gallery(str(root), None, "gallery")).read()
+    assert idx2.index('id="import"') < idx2.index('id="segmentation"')      # fixed stage order
     assert os.path.isfile(str(root / "manifest.json"))
 
 
