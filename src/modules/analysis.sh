@@ -268,6 +268,12 @@ detect_hyperintensities() {
 
         # Apply GMM-based analysis to each atlas region separately
         apply_per_region_gmm_analysis "$flair_brain" atlas_regions "$temp_dir" "$out_prefix"
+
+        # Any-region extension: user-supplied masks (DETECTION_REGION_SET=custom)
+        # analysed by the same engine into a SEPARATE union, so the brainstem
+        # outputs above stay the primary result. Non-fatal.
+        detect_custom_regions "$flair_brain" "$temp_dir" "$out_prefix" || \
+            log_formatted "WARNING" "custom region detection reported a non-fatal failure"
         
         log_message "Using advanced per-region GMM-based thresholding with atlas-specific z-scoring"
         
@@ -612,9 +618,10 @@ find_all_atlas_regions() {
     #   - Multi-atlas gross subdivisions (multi_atlas.sh aggregation):
     #     bianciardi_pons.nii.gz, bianciardi_left_midbrain.nii.gz, ... (matched by
     #     the *_pons / *left_pons globs below).
-    #   - Multi-atlas NUCLEUS-level masks: bianciardi_*_label*, cit168_*_label*,
-    #     aal3_*_label* — added explicitly so the CIT168 / AAL3 / Bianciardi nuclei
-    #     are part of the union, not just the aggregated subdivisions.
+    #   - Nucleus/tract-level masks: <tag>_*_label* for every tag in
+    #     MULTI_ATLAS_SOURCE_TAGS (bianciardi/cit168/aal3 + registry keys such as
+    #     jhu/xtract/aan/lc) and atlas-driven FS tools (nextbrain) — added so the
+    #     nuclei/tracts are part of the union, not just the aggregated subdivisions.
     # The voxel-size filter + sort -u dedup below keep the union clean.
     local region_patterns=(
         "*left_medulla*.nii.gz"
@@ -629,10 +636,14 @@ find_all_atlas_regions() {
         "*_midbrain.nii.gz"
         "*_medulla.nii.gz"
         "*_scp.nii.gz"
-        "bianciardi_*_label*.nii.gz"
-        "cit168_*_label*.nii.gz"
-        "aal3_*_label*.nii.gz"
     )
+    # Nucleus-level masks from EVERY multi-atlas source (built-ins + the
+    # registry keys in MULTI_ATLAS_SOURCE_TAGS, e.g. jhu/xtract/aan/lc) and
+    # from atlas-driven FreeSurfer tools (nextbrain): <tag>_<name>_label<v>.
+    local _tag
+    for _tag in $(_analysis_source_tags); do
+        region_patterns+=("${_tag}_*_label*.nii.gz")
+    done
     
     # Search for all region masks
     for search_dir in "${search_dirs[@]}"; do
@@ -644,7 +655,7 @@ find_all_atlas_regions() {
                     if [ -f "$region_file" ]; then
                         # Skip intensity/derivative files
                         local basename_file=$(basename "$region_file" .nii.gz)
-                        if [[ "$basename_file" == *"_intensity"* ]] || [[ "$basename_file" == *"_flair_"* ]] || [[ "$basename_file" == *"_t1_"* ]] || [[ "$basename_file" == *"_clustered"* ]]; then
+                        if [[ "$basename_file" == *"_intensity"* ]] || [[ "$basename_file" == *"_flair_"* ]] || [[ "$basename_file" == *"_t1_"* ]] || [[ "$basename_file" == *"_clustered"* ]] || [[ "$basename_file" == *"_core" ]]; then
                             continue
                         fi
                         
@@ -712,14 +723,48 @@ find_all_atlas_regions() {
 #   aal3          : AAL3 regions               aal3_*
 #   harvard_oxford: gross HO fallback mask     *_brainstem.nii.gz (segmentation/brainstem)
 #   atlas         : anything else (unattributed)
+# The list of atlas/tool source tags. Built-ins + the registry keys from config
+# (MULTI_ATLAS_SOURCE_TAGS) + the atlas-driven FreeSurfer tools (nextbrain).
+# Single source of truth for discovery globs, provenance and the report.
+_analysis_source_tags() {
+    local tags="${MULTI_ATLAS_SOURCE_TAGS:-bianciardi cit168 aal3}"
+    local extra="${SEG_TOOL_SOURCE_TAGS:-nextbrain}"
+    local t
+    for t in $extra; do
+        case " $tags " in *" $t "*) ;; *) tags="$tags $t" ;; esac
+    done
+    printf '%s' "$tags"
+}
+
+# Consensus vote unit. With many CORRELATED atlas sources (Bianciardi + AAN +
+# LC + NextBrain all label the LC; JHU + XTRACT both label the CST) a
+# ">= 2 sources agree" consensus is trivially satisfied by the same prior, not
+# by independent evidence. CONSENSUS_VOTE_BY=family (default) therefore counts
+# one vote per source FAMILY: atlas-prior masks, FreeSurfer-derived masks, the
+# Harvard-Oxford gross mask, SynthSeg. CONSENSUS_VOTE_BY=source restores the
+# legacy one-vote-per-source behaviour. Families: CONSENSUS_SOURCE_FAMILIES
+# ("family:src,src ..."); unknown sources vote as themselves.
+_analysis_consensus_key() {
+    local src="$1"
+    [ "${CONSENSUS_VOTE_BY:-family}" = "family" ] || { printf '%s' "$src"; return 0; }
+    local fams="${CONSENSUS_SOURCE_FAMILIES:-atlas:bianciardi,cit168,aal3,jhu,xtract,aan,lc,dr,nextbrainmni freesurfer:freesurfer,nextbrain harvard_oxford:harvard_oxford synthseg:synthseg}"
+    local f members
+    for f in $fams; do
+        members=",${f#*:},"
+        case "$members" in *",${src},"*) printf '%s' "${f%%:*}"; return 0 ;; esac
+    done
+    printf '%s' "$src"
+}
+
 _region_source_from_path() {
     local p="$1"
     local b
     b=$(basename "$p")
+    local _t
+    for _t in $(_analysis_source_tags); do
+        case "$b" in "${_t}"_*) echo "$_t"; return 0 ;; esac
+    done
     case "$b" in
-        bianciardi_*) echo "bianciardi" ;;
-        cit168_*)     echo "cit168" ;;
-        aal3_*)       echo "aal3" ;;
         *)
             case "$p" in
                 */segmentation/brainstem/*) echo "harvard_oxford" ;;
@@ -738,6 +783,46 @@ _region_source_from_path() {
 }
 
 # Function to apply Gaussian Mixture Model (n=3) thresholding
+# ---------------------------------------------------------------------------
+# _apply_posterior_engine <zscore_image> <region_mask> <params_file> <output_mask> <work_dir>
+#   DETECTION_ENGINE=posterior: lesion_posterior.py (robust lesion-uncontaminated
+#   null -> Efron two-groups empirical null + local fdr -> posterior-FDR decision
+#   -> mean-field MRF -> cluster filter). Runs on the region z-score image (a
+#   linear rescale of the FLAIR; the engine re-standardises robustly, so the
+#   result is identical to running on intensities). Writes the same params-file
+#   keys the report/figures read (THRESHOLD, NULL_MEAN, NULL_SD, PI0, FLAGS) and
+#   the posterior / lfdr maps next to the output mask. Falls back to the legacy
+#   GMM on failure (never leaves the region without a decision).
+# ---------------------------------------------------------------------------
+_apply_posterior_engine() {
+    local zscore_image="$1" region_mask="$2" params_file="$3" output_mask="$4" work_dir="${5:-/tmp}"
+    local script; script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lesion_posterior.py"
+    [ -f "$script" ] || { log_formatted "WARNING" "posterior engine script missing ($script); using legacy GMM"; return 1; }
+    command -v uv >/dev/null 2>&1 || { log_formatted "WARNING" "uv not found; posterior engine unavailable, using legacy GMM"; return 1; }
+    local prefix="${output_mask%.nii.gz}"; prefix="${prefix%_upper_tail}"
+    local region_name; region_name=$(basename "$region_mask" .nii.gz)
+    local -a args=(--image "$zscore_image" --region "$region_mask" --out-prefix "${prefix}_posterior_engine" --region-name "$region_name"
+                   --q "${LESION_FDR_Q:-0.05}" --beta "${LESION_MRF_BETA:-0.6}" --mrf-iters "${LESION_MRF_ITERS:-10}"
+                   --min-cluster "${LESION_MIN_CLUSTER_VOXELS:-3}" --cluster-post "${LESION_CLUSTER_POSTERIOR:-0.5}"
+                   --trend-degree "${LESION_TREND_DEGREE:-1}" --min-gated "${LESION_MIN_GATED_VOXELS:-300}" --pi0-floor "${LESION_PI0_FLOOR:-0.6}")
+    [ -n "${LESION_PARENT_NULL:-}" ] && args+=(--parent-null "$LESION_PARENT_NULL")
+    [ -n "${LESION_T2_IMAGE:-}" ] && [ -f "${LESION_T2_IMAGE:-}" ] && args+=(--t2 "$LESION_T2_IMAGE" --t2-weight "${LESION_T2_WEIGHT:-0.5}")
+    local out
+    if ! out=$(uv run --no-sync python "$script" "${args[@]}" 2>"${work_dir}/posterior_stderr.log"); then
+        log_formatted "WARNING" "posterior engine failed for $region_name ($(tail -1 "${work_dir}/posterior_stderr.log" 2>/dev/null)); falling back to legacy GMM"
+        return 1
+    fi
+    while IFS= read -r line; do log_message "POSTERIOR: $line"; done < "${work_dir}/posterior_stderr.log"
+    [ -n "$params_file" ] && printf '%s\n' "$out" > "$params_file"
+    cp -f "${prefix}_posterior_engine_mask.nii.gz" "$output_mask" 2>/dev/null || return 1
+    cp -f "${prefix}_posterior_engine_posterior.nii.gz" "${prefix}_posterior.nii.gz" 2>/dev/null || true
+    cp -f "${prefix}_posterior_engine_lfdr.nii.gz" "${prefix}_lfdr.nii.gz" 2>/dev/null || true
+    local nfin flags
+    nfin=$(printf '%s\n' "$out" | awk -F= '$1=="N_FINAL"{print $2}'); flags=$(printf '%s\n' "$out" | awk -F= '$1=="FLAGS"{print $2}')
+    log_message "✓ posterior engine for $region_name: ${nfin:-0} voxels (q=${LESION_FDR_Q:-0.05}, flags=${flags:-none})"
+    return 0
+}
+
 apply_gaussian_mixture_thresholding() {
     local zscore_image="$1"
     local region_mask="$2"
@@ -748,6 +833,15 @@ apply_gaussian_mixture_thresholding() {
     # Ensure output mask has proper .nii.gz extension
     if [[ "$output_mask" != *.nii.gz ]]; then
         output_mask="${output_mask}.nii.gz"
+    fi
+
+    # Engine dispatch: the principled posterior engine is the default; the
+    # legacy GMM chain below stays selectable (DETECTION_ENGINE=legacy) for A/B.
+    if [ "${DETECTION_ENGINE:-posterior}" = "posterior" ]; then
+        if _apply_posterior_engine "$zscore_image" "$region_mask" "$gmm_params_file" "$output_mask" "$gmm_temp_dir"; then
+            return 0
+        fi
+        log_formatted "WARNING" "DETECTION_ENGINE=posterior unavailable for this region — legacy GMM used"
     fi
 
     # Extract region name from mask file for better logging
@@ -823,7 +917,7 @@ apply_gaussian_mixture_thresholding() {
     fi
 
     # Parse stdout key=value pairs into local variables
-    local threshold="$THRESHOLD_WM_SD_MULTIPLIER"  # Default fallback
+    local threshold="${THRESHOLD_WM_SD_MULTIPLIER:-1.2}"  # Default fallback
     local n_voxels=""
     local gmm_failed=""
     local n_components=""
@@ -1081,7 +1175,9 @@ apply_per_region_gmm_analysis() {
     log_message "Applying per-region GMM analysis to ${#regions_ref[@]} atlas regions..."
 
     # Create PERMANENT per-region analysis directory for debugging
-    local per_region_dir="${RESULTS_DIR}/per_region_analysis"
+    # ANALYSIS_PER_REGION_DIR lets a second region set (DETECTION_REGION_SET=custom,
+    # see detect_custom_regions) run the same loop into its own directory.
+    local per_region_dir="${ANALYSIS_PER_REGION_DIR:-${RESULTS_DIR}/per_region_analysis}"
     mkdir -p "$per_region_dir"
 
     # Store results for each region
@@ -1093,7 +1189,7 @@ apply_per_region_gmm_analysis() {
 
     # --- Cross-source agreement / consensus (#1) -----------------------------
     # Alongside the OR-union (combined_result), accumulate ONE binary detection
-    # map per SOURCE (freesurfer/bianciardi/cit168/aal3/harvard_oxford). Summing
+    # map per SOURCE (freesurfer/bianciardi/cit168/aal3/registry atlases/harvard_oxford). Summing
     # the per-source maps yields an integer agreement count (how many INDEPENDENT
     # sources flagged each voxel); thresholding it gives a high-specificity
     # consensus mask. Counting per SOURCE (not per region) avoids inflating the
@@ -1111,6 +1207,8 @@ apply_per_region_gmm_analysis() {
     # outputs distinct and traceable in the report.
     local provenance_manifest="${per_region_dir}/region_provenance.tsv"
     printf 'region_tag\tregion_base\tsource\tmask_path\n' > "$provenance_manifest"
+    # Regions skipped as too small are recorded explicitly (not silently dropped).
+    printf 'region_tag\treason\tvoxels\tminimum\n' > "${per_region_dir}/region_skips.tsv"
 
     # Build the CSF exclusion mask ONCE (FLAIR space) since it is region-independent.
     # Region masks are resampled to FLAIR space below, so this mask aligns with all
@@ -1179,9 +1277,10 @@ apply_per_region_gmm_analysis() {
             elif [[ "$region_name" =~ right_ ]]; then
                 region_base="right_${region_base}"
             fi
-        elif [[ "$region_name" =~ ^(bianciardi|cit168|aal3)_(.+)_label[0-9]+$ ]]; then
-            # Multi-atlas nucleus mask <atlas>_<nucleus>_label<N>: use the nucleus
-            # name (atlas prefix is recorded separately as provenance below).
+        elif [[ "$region_name" =~ ^([a-z0-9]+)_(.+)_label[0-9]+$ ]]; then
+            # Nucleus/tract mask <source>_<name>_label<N> (any registry atlas or
+            # atlas-driven tool): use the name (the source prefix is recorded
+            # separately as provenance below).
             region_base="${BASH_REMATCH[2]}"
         else
             region_base=$(echo "$region_name" | sed -E 's/.*_([^_]+)$/\1/')
@@ -1244,8 +1343,10 @@ apply_per_region_gmm_analysis() {
         
         log_message "$region_base: $original_voxels voxels → $brain_masked_voxels brain voxels"
         
-        if [ "$brain_masked_voxels" -lt 50 ]; then
-            log_formatted "WARNING" "$region_base has insufficient brain voxels ($brain_masked_voxels) - skipping"
+        local min_region_vox="${ANALYSIS_MIN_REGION_VOXELS:-50}"
+        if [ "$brain_masked_voxels" -lt "$min_region_vox" ]; then
+            log_formatted "WARNING" "$region_base [source=$region_source] has insufficient brain voxels ($brain_masked_voxels < $min_region_vox) - skipping (too small for a per-region mixture fit; it still contributes through its subdivision aggregate)"
+            printf '%s\t%s\t%s\t%s\n' "$region_tag" "too_small_after_brain_mask" "$brain_masked_voxels" "$min_region_vox" >> "${per_region_dir}/region_skips.tsv"
             continue
         fi
         
@@ -1260,8 +1361,9 @@ apply_per_region_gmm_analysis() {
             csf_excluded_voxels=$(fslstats "$region_csf_excluded" -V | awk '{print $1}')
             # Coerce to a safe integer so the -lt comparison can't error out
             [[ "$csf_excluded_voxels" =~ ^[0-9]+$ ]] || csf_excluded_voxels=0
-            if [ "$csf_excluded_voxels" -lt 50 ]; then
-                log_formatted "WARNING" "$region_base has insufficient voxels ($csf_excluded_voxels) after CSF/PV exclusion - skipping"
+            if [ "$csf_excluded_voxels" -lt "$min_region_vox" ]; then
+                log_formatted "WARNING" "$region_base [source=$region_source] has insufficient voxels ($csf_excluded_voxels < $min_region_vox) after CSF/PV exclusion - skipping"
+                printf '%s\t%s\t%s\t%s\n' "$region_tag" "too_small_after_csf_exclusion" "$csf_excluded_voxels" "$min_region_vox" >> "${per_region_dir}/region_skips.tsv"
                 continue
             fi
             region_resampled="$region_csf_excluded"
@@ -1289,17 +1391,19 @@ apply_per_region_gmm_analysis() {
                     fslmaths "$combined_result" -add "$region_connectivity" "$combined_result"
                     region_results+=("$region_connectivity")
 
-                    # Accumulate a per-SOURCE BINARY detection map for the consensus.
+                    # Accumulate a BINARY detection map per consensus VOTE UNIT
+                    # (source family by default; see _analysis_consensus_key).
                     if [ "$emit_consensus" = "true" ]; then
                         local _rc_bin="${gmm_temp_dir}/_detect_bin.nii.gz"
-                        local _src_map="${agreement_dir}/source_${region_source}_detect.nii.gz"
+                        local _vote_key; _vote_key=$(_analysis_consensus_key "$region_source")
+                        local _src_map="${agreement_dir}/source_${_vote_key}_detect.nii.gz"
                         if fslmaths "$region_connectivity" -bin "$_rc_bin" >/dev/null 2>&1; then
                             if [ -f "$_src_map" ]; then
                                 fslmaths "$_src_map" -max "$_rc_bin" -bin "$_src_map" >/dev/null 2>&1 || true
                             else
                                 fslmaths "$_rc_bin" -bin "$_src_map" >/dev/null 2>&1 || true
                             fi
-                            _src_detect_seen["$region_source"]=1
+                            _src_detect_seen["$_vote_key"]=1
                         fi
                     fi
 
@@ -1345,6 +1449,7 @@ apply_per_region_gmm_analysis() {
             done
             local n_sources="${#_src_detect_seen[@]}"
             local min_agree="${CONSENSUS_MIN_SOURCES:-2}"
+            log_message "  Consensus vote unit: ${CONSENSUS_VOTE_BY:-family} (${!_src_detect_seen[*]})"
             [[ "$min_agree" =~ ^[0-9]+$ ]] || min_agree=2
             [ "$min_agree" -lt 1 ] && min_agree=1
             [ "$min_agree" -gt "$n_sources" ] && min_agree="$n_sources"
@@ -1371,6 +1476,11 @@ apply_per_region_gmm_analysis() {
             log_message "Provenance manifest: $provenance_manifest"
         fi
 
+        # Visual QC of the detection stage (python renderer; graceful no-op).
+        if declare -f viz_detection_stage_figures >/dev/null 2>&1; then
+            viz_detection_stage_figures "$RESULTS_DIR" "$flair_image" "$combined_result" "${ATLAS_GMM_AGREEMENT:-}" "$per_region_dir" || true
+        fi
+
         # Store combined result globally
         export ATLAS_GMM_RESULT="$combined_result"
 
@@ -1379,6 +1489,45 @@ apply_per_region_gmm_analysis() {
         log_formatted "ERROR" "No regions successfully processed with GMM analysis"
         return 1
     fi
+}
+
+# ---------------------------------------------------------------------------
+# detect_custom_regions <flair> <temp_dir> <out_prefix>
+#   DETECTION_REGION_SET=custom (or brainstem+custom): run the per-region
+#   engine over every mask matched by DETECTION_CUSTOM_MASKS (space-separated
+#   globs; e.g. a whole-brain WM mask, Harvard-Oxford lobes, tract masks)
+#   into <RESULTS_DIR>/per_region_analysis_custom, writing the union to
+#   <out_prefix>_regions_union.nii.gz. The brainstem union (ATLAS_GMM_RESULT)
+#   is left untouched. Default DETECTION_REGION_SET=brainstem => no-op.
+# ---------------------------------------------------------------------------
+detect_custom_regions() {
+    local flair_image="$1" temp_dir="$2" out_prefix="$3"
+    case "${DETECTION_REGION_SET:-brainstem}" in
+        custom|brainstem+custom|all) ;;
+        *) return 0 ;;
+    esac
+    local pat masks=()
+    for pat in ${DETECTION_CUSTOM_MASKS:-}; do
+        local f
+        for f in $pat; do [ -f "$f" ] && masks+=("$f"); done
+    done
+    if [ "${#masks[@]}" -eq 0 ]; then
+        log_formatted "WARNING" "DETECTION_REGION_SET=${DETECTION_REGION_SET} but DETECTION_CUSTOM_MASKS matched no files — skipping"
+        return 0
+    fi
+    log_formatted "INFO" "=== ANY-REGION DETECTION: ${#masks[@]} custom region mask(s) ==="
+    local saved_result="${ATLAS_GMM_RESULT:-}" saved_agree="${ATLAS_GMM_AGREEMENT:-}" saved_cons="${ATLAS_GMM_CONSENSUS:-}"
+    local custom_dir="${RESULTS_DIR}/per_region_analysis_custom"
+    local rc=0
+    ANALYSIS_PER_REGION_DIR="$custom_dir" apply_per_region_gmm_analysis "$flair_image" masks "$temp_dir" "${out_prefix}_regions" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "${ATLAS_GMM_RESULT:-}" ] && [ -f "${ATLAS_GMM_RESULT}" ]; then
+        cp -f "$ATLAS_GMM_RESULT" "${out_prefix}_regions_union.nii.gz"
+        log_formatted "SUCCESS" "Custom-region union: ${out_prefix}_regions_union.nii.gz (per-region outputs: $custom_dir)"
+    else
+        log_formatted "WARNING" "Custom-region detection produced no union (rc=$rc)"
+    fi
+    export ATLAS_GMM_RESULT="$saved_result" ATLAS_GMM_AGREEMENT="$saved_agree" ATLAS_GMM_CONSENSUS="$saved_cons"
+    return 0
 }
 
 # _hier_emit_row <level> <region> <source> <parent> <region_mask> <lesion_mask> <work> <out_tsv>
@@ -1439,7 +1588,7 @@ emit_hierarchical_region_summary() {
     printf 'gross\tbrainstem\tcombined\t-\t%s\t%s\t-\t-\t-\n' "$glv" "$gmm" >> "$out_tsv"
 
     # Known source prefixes (harvard_oxford contains an underscore, so parse by prefix).
-    local known_sources="freesurfer bianciardi cit168 aal3 harvard_oxford synthseg"
+    local known_sources="freesurfer $(_analysis_source_tags) harvard_oxford synthseg"
 
     # Collect (resampled_mask, source, region_base, level) from the per-region dirs.
     local -a R_mask=() R_src=() R_base=() R_level=()
@@ -1532,6 +1681,15 @@ apply_connectivity_weighting() {
     local initial_mask="$1"
     local zscore_image="$2"
     local output_weighted="$3"
+
+    # The posterior engine already regularised spatially (mean-field MRF +
+    # cluster filter with a stated FDR); the legacy smoothing re-threshold would
+    # only undo that, so pass its mask through unchanged.
+    if [ "${DETECTION_ENGINE:-posterior}" = "posterior" ] && [ -f "${initial_mask%.nii.gz}_posterior_engine_params.txt" ]; then
+        log_message "Connectivity weighting skipped (posterior engine output is already MRF-regularised)"
+        fslmaths "$initial_mask" -bin "$output_weighted"
+        return $?
+    fi
     
     log_message "Applying connectivity weighting for refined hyperintensity detection..."
     

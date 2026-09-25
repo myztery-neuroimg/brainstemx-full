@@ -449,6 +449,41 @@ def _present(flag: bool) -> str:
     return "present" if flag else "absent"
 
 
+# Human-readable titles for the atlas / tool source tags in the run manifest.
+_ATLAS_TAG_TITLES = {
+    "bianciardi": "Bianciardi nuclei",
+    "cit168": "CIT168 nuclei",
+    "aal3": "AAL3",
+    "jhu": "JHU ICBM-DTI-81 pontine tracts",
+    "xtract": "XTRACT tracts",
+    "aan": "Harvard AAN nuclei",
+    "lc": "locus coeruleus atlas",
+    "nextbrain": "NextBrain histological atlas",
+}
+_BUILTIN_TAGS = ("bianciardi", "cit168", "aal3")
+_TAG_RE = re.compile(r"^([a-z0-9]+)_.+_label\d+\.nii\.gz$")
+
+
+def _atlas_source_tags(detailed_dir: str) -> List[str]:
+    """Atlas/tool source tags to report: the built-ins, the configured registry
+    keys (MULTI_ATLAS_SOURCE_TAGS / SEG_TOOL_SOURCE_TAGS in the environment)
+    and any ``<tag>_<name>_label<N>.nii.gz`` family actually present on disk,
+    so a registry key added in config needs no change here."""
+    tags: List[str] = list(_BUILTIN_TAGS)
+    for env in ("MULTI_ATLAS_SOURCE_TAGS", "SEG_TOOL_SOURCE_TAGS"):
+        for t in os.environ.get(env, "").split():
+            if t and t not in tags:
+                tags.append(t)
+    if "nextbrain" not in tags:
+        tags.append("nextbrain")
+    if os.path.isdir(detailed_dir):
+        for f in _glob_sorted(os.path.join(detailed_dir, "*_label*.nii.gz")):
+            m = _TAG_RE.match(os.path.basename(f))
+            if m and m.group(1) not in tags:
+                tags.append(m.group(1))
+    return tags
+
+
 def build_run_manifest(
     results_dir: str, subject_id: str, populated: Dict[str, bool]
 ) -> Table:
@@ -467,14 +502,19 @@ def build_run_manifest(
         "segmentation/brainstem",
     ])
     detailed = os.path.join(seg, "detailed_brainstem")
-    has_fs = bool(_glob_sorted(os.path.join(detailed, "*_pons.nii.gz")))
-    has_bianciardi = bool(_glob_sorted(os.path.join(detailed, "bianciardi_*.nii.gz")))
-    has_cit168 = bool(_glob_sorted(os.path.join(detailed, "cit168_*.nii.gz")))
-    has_aal3 = bool(_glob_sorted(os.path.join(detailed, "aal3_*.nii.gz")))
-    table.add(["segmentation: FS substructures", _present(has_fs), "detailed_brainstem (FS parcels)"])
-    table.add(["segmentation: Bianciardi nuclei", _present(has_bianciardi), "detailed_brainstem (bianciardi_*)"])
-    table.add(["segmentation: CIT168 nuclei", _present(has_cit168), "detailed_brainstem (cit168_*)"])
-    table.add(["segmentation: AAL3", _present(has_aal3), "detailed_brainstem (aal3_*)"])
+    tags = _atlas_source_tags(detailed)
+    fs_parcels = [
+        f for f in _glob_sorted(os.path.join(detailed, "*_pons.nii.gz"))
+        if not any(os.path.basename(f).startswith(t + "_") for t in tags)
+    ]
+    table.add(["segmentation: FS substructures", _present(bool(fs_parcels)), "detailed_brainstem (FS parcels)"])
+    for tag in tags:
+        present = bool(_glob_sorted(os.path.join(detailed, f"{tag}_*.nii.gz")))
+        table.add([
+            f"segmentation: {_ATLAS_TAG_TITLES.get(tag, tag)}",
+            _present(present),
+            f"detailed_brainstem ({tag}_*)",
+        ])
 
     fs_harvest = os.path.join(results_dir, "freesurfer", "harvest")
     table.add([

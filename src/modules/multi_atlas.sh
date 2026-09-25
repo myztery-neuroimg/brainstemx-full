@@ -14,6 +14,11 @@
 #     to FSL MNI152 (no resample needed).
 #   - AAL3 (1mm) — 170-label whole-brain dseg stored on the SPM/neurological grid;
 #     reoriented + resampled onto the FSL MNI152 grid before warping.
+#   - EXTRA registry atlases (atlas_registry.sh, config MULTI_ATLAS_EXTRA): JHU
+#     ICBM-DTI-81 pontine tract labels + XTRACT tracts (both ship with FSL),
+#     Harvard AAN nuclei, locus-coeruleus maps, ... — each a config entry, warped
+#     with the SAME shared MNI->subject transform and split into
+#     <key>_<name>_label<v>.nii.gz masks.
 #
 # IMPORTANT: This is a sourced module — do NOT set `set -e -u -o pipefail` here
 # (it would leak into the pipeline shell). Match the idiom of segmentation.sh.
@@ -26,6 +31,10 @@ if [ -n "${_MULTI_ATLAS_LOADED:-}" ]; then return 0 2>/dev/null || true; fi
 _MULTI_ATLAS_LOADED=1
 
 source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
+# Registry-driven EXTRA MNI atlases (JHU/XTRACT tract labels, AAN, LC, ... —
+# see atlas_registry.sh + MULTI_ATLAS_EXTRA in config). Sourced here so
+# run_multi_atlas_brainstem can fan out to them with the same shared warp.
+source "$(dirname "${BASH_SOURCE[0]}")/atlas_registry.sh"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration defaults (only set if not already provided by default_config.sh)
@@ -664,7 +673,7 @@ run_multi_atlas_brainstem() {
     local input_basename="${2:-$(basename "$subject_t1" .nii.gz)}"
     local flair_file="${3:-}"
 
-    log_formatted "INFO" "=== MULTI-ATLAS BRAINSTEM LABELING (Bianciardi/CIT168/AAL3) ==="
+    log_formatted "INFO" "=== MULTI-ATLAS BRAINSTEM LABELING (Bianciardi/CIT168/AAL3 + extra: ${MULTI_ATLAS_EXTRA:-none}) ==="
     log_message "Subject T1: $subject_t1"
     [ -n "$flair_file" ] && log_message "FLAIR: $flair_file"
 
@@ -740,6 +749,17 @@ run_multi_atlas_brainstem() {
         fi
     fi
 
+    # ── Registry-driven extra atlases (JHU / XTRACT / AAN / LC / ...) ──
+    # Each enabled key is prepared (cached MNI dseg + LUT, space-normalised,
+    # optionally brainstem-restricted), warped with the SAME shared transform,
+    # split into <key>_<name>_label<v>.nii.gz masks, aggregated and viewed.
+    # Non-fatal: a missing atlas logs a WARNING and is skipped.
+    if declare -f run_registry_atlases >/dev/null 2>&1; then
+        if run_registry_atlases "$subject_t1" "$reg_prefix" "$work_dir" "$region_out" "$views_dir"; then
+            any=true
+        fi
+    fi
+
     if [ "$any" = "true" ]; then
         log_formatted "SUCCESS" "Multi-atlas brainstem labeling complete: $region_out"
         return 0
@@ -760,15 +780,28 @@ _warp_bianciardi_overlay() {
     [ -f "$overlay_list" ] || return 0
 
     local overlay_out="${work_dir}/overlay"
-    mkdir -p "$overlay_out"
-    local nm src out
+    local region_out="${RESULTS_DIR}/segmentation/detailed_brainstem"
+    mkdir -p "$overlay_out" "$region_out"
+    local nm src out safe_nm i=0 mask vox
     while IFS=$'\t' read -r nm src; do
         case "$nm" in \#*|"") continue ;; esac
         [ -f "$src" ] || continue
         out="${overlay_out}/bianciardi_overlay_${nm}.nii.gz"
-        warp_atlas_dseg_to_subject "$src" "$out" "$subject_t1" "$reg_prefix" "true" || true
+        warp_atlas_dseg_to_subject "$src" "$out" "$subject_t1" "$reg_prefix" "true" || continue
+        # The overlay nuclei lost every voxel to the argmax dseg; expose each as
+        # its OWN discoverable region mask (label 1000+i, the "overlay" range)
+        # so per-region detection sees them instead of silently dropping them.
+        i=$((i + 1))
+        safe_nm=$(echo "$nm" | tr '[:upper:]' '[:lower:]' | tr ' /' '__' | tr -cd 'a-z0-9_')
+        mask="${region_out}/bianciardi_${safe_nm}_label$((1000 + i)).nii.gz"
+        if safe_fslmaths "overlay nucleus $nm" "$out" -bin "$mask" >/dev/null 2>&1 && [ -f "$mask" ]; then
+            read -r vox _ < <(fslstats "$mask" -V 2>/dev/null)
+            if [ -z "$vox" ] || [ "${vox%.*}" -le 0 ] 2>/dev/null; then rm -f "$mask"; else
+                log_message "    bianciardi_${safe_nm}_label$((1000 + i)) (overlay nucleus): ${vox} voxels"
+            fi
+        fi
     done < "$overlay_list"
-    log_message "  Warped Bianciardi overlay nuclei into subject space: $overlay_out"
+    log_message "  Warped Bianciardi overlay nuclei into subject space: $overlay_out (+ per-nucleus masks in $region_out)"
 }
 
 # ── Exports ──────────────────────────────────────────────────────────────────
@@ -780,4 +813,4 @@ export -f split_dseg_to_region_masks
 export -f _emit_atlas_view
 export -f run_multi_atlas_brainstem
 
-log_message "Multi-atlas module loaded (Bianciardi/CIT168/AAL3)"
+log_message "Multi-atlas module loaded (Bianciardi/CIT168/AAL3 + registry: ${MULTI_ATLAS_EXTRA:-none})"

@@ -286,3 +286,30 @@ def test_freesurfer_measure_without_unit_column(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_atlas_source_tags_dynamic_discovery(tmp_path, monkeypatch):
+    """Registry keys from the environment AND <tag>_*_label*.nii.gz families on
+    disk are reported in the run manifest without code changes."""
+    detailed = tmp_path / "results" / "segmentation" / "detailed_brainstem"
+    detailed.mkdir(parents=True)
+    (detailed / "jhu_middle_cerebellar_peduncle_label1.nii.gz").write_bytes(b"x")
+    (detailed / "mystery_nucleus_label7.nii.gz").write_bytes(b"x")
+    (detailed / "subj_pons.nii.gz").write_bytes(b"x")          # FS parcel (no tag)
+    (detailed / "bianciardi_pons.nii.gz").write_bytes(b"x")    # tagged aggregate
+    monkeypatch.setenv("MULTI_ATLAS_SOURCE_TAGS", "bianciardi cit168 aal3 jhu xtract aan lc")
+    monkeypatch.setenv("SEG_TOOL_SOURCE_TAGS", "nextbrain")
+    tags = rt._atlas_source_tags(str(detailed))
+    for t in ("bianciardi", "cit168", "aal3", "jhu", "xtract", "aan", "lc", "nextbrain", "mystery"):
+        assert t in tags, t
+    table = rt.build_run_manifest(str(tmp_path / "results"), "s1", {})
+    rows = {r[0]: r[1] for r in table.rows}
+    assert rows["segmentation: JHU ICBM-DTI-81 pontine tracts"] == "present"
+    assert rows["segmentation: XTRACT tracts"] == "absent"
+    assert rows["segmentation: mystery"] == "present"
+    # bianciardi_pons must not be mistaken for a FreeSurfer parcel
+    assert rows["segmentation: FS substructures"] == "present"  # subj_pons.nii.gz
+    (detailed / "subj_pons.nii.gz").unlink()
+    table = rt.build_run_manifest(str(tmp_path / "results"), "s1", {})
+    rows = {r[0]: r[1] for r in table.rows}
+    assert rows["segmentation: FS substructures"] == "absent"

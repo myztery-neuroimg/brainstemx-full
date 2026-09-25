@@ -1,0 +1,51 @@
+{
+  "_note": "Published reference numbers for orientation only. Values are APPROXIMATE (from the cited papers' headline results); each entry carries verified=false until checked against the source table. Metrics differ in protocol (evaluation masks, lesion-wise rules), so compare like with like.",
+  "wmh2017": {
+    "name": "WMH Segmentation Challenge 2017 (MICCAI), test set, top entry (sysu_media) and challenge summary",
+    "citation": "Kuijf HJ, et al. IEEE TMI 2019;38(11):2556-2568",
+    "url": "https://wmh.isi.uu.nl/results/",
+    "metrics": {"dice": 0.80, "hd95_mm": 6.3, "avd_percent": 21.9, "lesion_tpr": 0.84, "lesion_f1": 0.76},
+    "protocol": "voxel Dice, H95, AVD, lesion-wise recall/F1 (any-voxel overlap, 26-connectivity) on 110 test subjects, 3 scanners",
+    "verified": false
+  },
+  "isbi2015": {
+    "name": "ISBI 2015 longitudinal MS lesion challenge: inter-rater agreement and top automated entries",
+    "citation": "Carass A, et al. NeuroImage 2017;148:77-102",
+    "url": "https://smart-stats-tools.org/lesion-challenge",
+    "metrics": {"dice": 0.63, "lesion_tpr": 0.60, "lesion_ppv": 0.65},
+    "protocol": "inter-rater Dice ~0.63 between the two human raters; leading automated methods reach comparable Dice (challenge score ~90 = human level)",
+    "verified": false
+  },
+  "msseg2016": {
+    "name": "MICCAI MSSEG 2016: best automated methods vs 7-expert consensus",
+    "citation": "Commowick O, et al. Sci Rep 2018;8:13650",
+    "url": "https://portal.fli-iam.irisa.fr/msseg-challenge/",
+    "metrics": {"dice": 0.66, "lesion_f1": 0.60},
+    "protocol": "Dice vs consensus on 38 test subjects; expert-vs-consensus Dice ~0.66-0.79",
+    "verified": false
+  },
+  "lst_lpa_lga": {
+    "name": "LST toolbox (LGA / LPA) typical MS-lesion Dice on 3T FLAIR",
+    "citation": "Schmidt P, et al. NeuroImage 2012;59(4):3774-3783 (LGA); Schmidt P. PhD thesis LMU 2017 (LPA)",
+    "url": "https://www.applied-statistics.de/lst.html",
+    "metrics": {"dice": 0.60},
+    "protocol": "LGA kappa=0.3 Dice ~0.75 at high lesion load in the original paper, ~0.5-0.6 in independent evaluations; LPA similar",
+    "verified": false
+  },
+  "shifts_ms": {
+    "name": "Shifts 2.0 MS lesion segmentation baseline (nnU-Net-style ensemble)",
+    "citation": "Malinin A, et al. arXiv 2206.15407 (2022)",
+    "url": "https://shifts.ai/",
+    "metrics": {"dice": 0.70, "lesion_f1": 0.60},
+    "protocol": "in-distribution test Dice; degrades under scanner/site shift",
+    "verified": false
+  },
+  "ds004199": {
+    "name": "OpenNeuro ds004199 FCD lesions (no published automated-detection baseline in the dataset paper)",
+    "citation": "Schuch F, et al. Sci Data 2023;10:475",
+    "url": "https://openneuro.org/datasets/ds004199",
+    "metrics": {"control_fp_volume_mm3": 0.0},
+    "protocol": "85 healthy controls: any detection is a false positive; FCD lesions are cortical/subcortical (not brainstem)",
+    "verified": true
+  }
+}

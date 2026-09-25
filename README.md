@@ -15,7 +15,8 @@ An end-to-end neuroimaging pipeline for analyzing T2/FLAIR hyperintensity and T1
 - **Canonical results tree + reporting layer** — per-method/cluster/multi-modal visualizations, CSV/HTML summary tables, and a top-level `reports/brainstemx_report.html` dashboard
 - **DICOM backtrace capability** for clinical validation in native scanner format (cluster→source mapping is currently gated off pending a rewrite — `RUN_DICOM_MAPPING=false`)
 - **Adaptive processing** handles both high-end research and routine clinical protocols
-- **Optional multi-atlas brainstem nuclei labeling** (Bianciardi/CIT168/AAL3) warped into subject space
+- **Multi-atlas brainstem nuclei labeling** (Bianciardi/CIT168/AAL3) warped into subject space, plus a config-driven **atlas registry** (JHU pontine tracts, XTRACT, Harvard AAN v2, locus coeruleus, dorsal raphe, NextBrain-MNI) with explicit MNI template-space handling
+- **NextBrain histological-atlas nuclei** via FreeSurfer 8 `mri_histo_atlas_segment_fireants` (no recon-all; gated, non-fatal)
 - **Optional supervised/DL WMH modules** (BIANCA, LST-AI/SAMSEG, segcsvdWMH, SHIVA-WMH, MARS-WMH, WMH-SynthSeg) — exploratory; none validated in the brainstem
 
 ## Quick Start
@@ -77,7 +78,9 @@ Use `-t STAGE` to resume from any stage (e.g., `-t 4` or `-t registration`).
 
 - **[Technical Overview](docs/TECHNICAL_OVERVIEW.md)** - Comprehensive technical documentation
 - **[Output Structure](docs/output_structure.md)** - Canonical results tree, summary tables, and the top-level report
-- **[Multi-Atlas Integration](docs/multi_atlas_integration_spec.md)** - Optional Bianciardi/CIT168/AAL3 brainstem labeling
+- **[Detection engine](docs/detection_engine.md)** - Empirical-null / local-FDR posterior engine with MRF prior (default), legacy GMM kept for A/B
+- **[Benchmarking](docs/benchmarking.md)** - Ground-truth evaluation on public datasets / synthetic phantom, A/B comparison of detection engines, published reference numbers
+- **[Multi-Atlas Integration](docs/multi_atlas_integration_spec.md)** - Bianciardi/CIT168/AAL3 brainstem labeling + the atlas registry (JHU/XTRACT/AAN/LC/DR/NextBrain-MNI) + the NextBrain tool wrapper
 - **[FreeSurfer Brainstem Substructures](docs/brainstem_freesurfer_segmentation_spec.md)** - Iglesias 2015 `segmentBS` parcels (replaces Talairach)
 - **[Scan Selection](docs/README_scan_selection.md)** - Details on intelligent scan selection
 - **[Reference Space Selection](docs/README_reference_space_selection.md)** - Reference space optimization
@@ -101,6 +104,15 @@ Optional multi-atlas brainstem labeling (warped MNI→subject, GenericLabel):
 - **Bianciardi Brainstem Navigator** - Probabilistic brainstem-nuclei atlas (Bianciardi et al., *Brain Connect* 2015)
 - **CIT168** - Subcortical atlas (Pauli, Nili & Tyszka, *Sci Data* 2018;5:180063)
 - **AAL3** - Anatomical atlas (Rolls et al., *NeuroImage* 2020;206:116189)
+
+Registry atlases (config entries; **not vendored** — download under their own licences into `$FSLDIR/data/atlases`):
+- **JHU ICBM-DTI-81 white-matter labels** (Mori et al. 2005; Hua et al., *NeuroImage* 2008) - pontine tracts; ships with FSL
+- **XTRACT** (Warrington et al., *NeuroImage* 2020;217:116923) - CST / MCP probability maps; ships with FSL
+- **Harvard Ascending Arousal Network atlas v2.0** (Edlow et al., *Sci Transl Med* 2024; Dryad doi:10.5061/dryad.zw3r228d2)
+- **Locus coeruleus 7T probabilistic atlas** (Ye et al., *NeuroImage* 2021;225:117487; NITRC) / LC meta-mask (Dahl et al. 2022; OSF)
+- **Dorsal raphe mask** (Wearn et al. 2024; Zenodo 10680563, CC BY 4.0)
+- **NextBrain** (Casamitjana et al., *Nature* 2025) - histological atlas: FreeSurfer 8 tool + MNI152 rendering (compneurobilbao/nextbrain-mni-atlas)
+- **TemplateFlow** (Ciric et al., *Nat Methods* 2022) - MNI152NLin2009c→NLin6Asym transform for atlases released in ICBM 2009 space
 
 ## License
 

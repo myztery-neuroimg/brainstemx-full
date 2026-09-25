@@ -132,10 +132,16 @@ generate_interactive_viewer() {
 
     # atlases (exclusive): per-atlas subject-space dseg (all nuclei, colour-coded)
     local af aname
-    for aname in bianciardi cit168 aal3; do
+    for aname in ${MULTI_ATLAS_SOURCE_TAGS:-bianciardi cit168 aal3}; do
         af="${seg}/multi_atlas/${aname}_in_subject.nii.gz"
         if [ -f "$af" ]; then u=$(_vw_rel_url "$af" "$results_dir"); [ -n "$u" ] && G_atlas+=("$(_vw_layer_json "${aname} (nuclei)" "$u" random 70)"); fi
     done
+
+    # atlas-driven FreeSurfer tools (NextBrain histological atlas): subject-space dseg
+    local nbf="${seg}/nextbrain/nextbrain_in_subject.nii.gz"
+    if [ -f "$nbf" ]; then
+        u=$(_vw_rel_url "$nbf" "$results_dir"); [ -n "$u" ] && G_atlas+=("$(_vw_layer_json "nextbrain (histological atlas)" "$u" random 70)")
+    fi
 
     # hyperintensity (exclusive): GMM union + per-threshold masks
     local gmm
