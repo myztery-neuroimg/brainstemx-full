@@ -777,6 +777,46 @@ _region_source_from_path() {
 }
 
 # Function to apply Gaussian Mixture Model (n=3) thresholding
+# ---------------------------------------------------------------------------
+# _apply_posterior_engine <zscore_image> <region_mask> <params_file> <output_mask> <work_dir>
+#   DETECTION_ENGINE=posterior: lesion_posterior.py (robust lesion-uncontaminated
+#   null -> Efron two-groups empirical null + local fdr -> posterior-FDR decision
+#   -> mean-field MRF -> cluster filter). Runs on the region z-score image (a
+#   linear rescale of the FLAIR; the engine re-standardises robustly, so the
+#   result is identical to running on intensities). Writes the same params-file
+#   keys the report/figures read (THRESHOLD, NULL_MEAN, NULL_SD, PI0, FLAGS) and
+#   the posterior / lfdr maps next to the output mask. Falls back to the legacy
+#   GMM on failure (never leaves the region without a decision).
+# ---------------------------------------------------------------------------
+_apply_posterior_engine() {
+    local zscore_image="$1" region_mask="$2" params_file="$3" output_mask="$4" work_dir="${5:-/tmp}"
+    local script; script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lesion_posterior.py"
+    [ -f "$script" ] || { log_formatted "WARNING" "posterior engine script missing ($script); using legacy GMM"; return 1; }
+    command -v uv >/dev/null 2>&1 || { log_formatted "WARNING" "uv not found; posterior engine unavailable, using legacy GMM"; return 1; }
+    local prefix="${output_mask%.nii.gz}"; prefix="${prefix%_upper_tail}"
+    local region_name; region_name=$(basename "$region_mask" .nii.gz)
+    local -a args=(--image "$zscore_image" --region "$region_mask" --out-prefix "${prefix}_posterior_engine" --region-name "$region_name"
+                   --q "${LESION_FDR_Q:-0.05}" --beta "${LESION_MRF_BETA:-0.6}" --mrf-iters "${LESION_MRF_ITERS:-10}"
+                   --min-cluster "${LESION_MIN_CLUSTER_VOXELS:-3}" --cluster-post "${LESION_CLUSTER_POSTERIOR:-0.5}"
+                   --trend-degree "${LESION_TREND_DEGREE:-1}" --min-gated "${LESION_MIN_GATED_VOXELS:-300}" --pi0-floor "${LESION_PI0_FLOOR:-0.6}")
+    [ -n "${LESION_PARENT_NULL:-}" ] && args+=(--parent-null "$LESION_PARENT_NULL")
+    [ -n "${LESION_T2_IMAGE:-}" ] && [ -f "${LESION_T2_IMAGE:-}" ] && args+=(--t2 "$LESION_T2_IMAGE" --t2-weight "${LESION_T2_WEIGHT:-0.5}")
+    local out
+    if ! out=$(uv run --no-sync python "$script" "${args[@]}" 2>"${work_dir}/posterior_stderr.log"); then
+        log_formatted "WARNING" "posterior engine failed for $region_name ($(tail -1 "${work_dir}/posterior_stderr.log" 2>/dev/null)); falling back to legacy GMM"
+        return 1
+    fi
+    while IFS= read -r line; do log_message "POSTERIOR: $line"; done < "${work_dir}/posterior_stderr.log"
+    [ -n "$params_file" ] && printf '%s\n' "$out" > "$params_file"
+    cp -f "${prefix}_posterior_engine_mask.nii.gz" "$output_mask" 2>/dev/null || return 1
+    cp -f "${prefix}_posterior_engine_posterior.nii.gz" "${prefix}_posterior.nii.gz" 2>/dev/null || true
+    cp -f "${prefix}_posterior_engine_lfdr.nii.gz" "${prefix}_lfdr.nii.gz" 2>/dev/null || true
+    local nfin flags
+    nfin=$(printf '%s\n' "$out" | awk -F= '$1=="N_FINAL"{print $2}'); flags=$(printf '%s\n' "$out" | awk -F= '$1=="FLAGS"{print $2}')
+    log_message "✓ posterior engine for $region_name: ${nfin:-0} voxels (q=${LESION_FDR_Q:-0.05}, flags=${flags:-none})"
+    return 0
+}
+
 apply_gaussian_mixture_thresholding() {
     local zscore_image="$1"
     local region_mask="$2"
@@ -787,6 +827,15 @@ apply_gaussian_mixture_thresholding() {
     # Ensure output mask has proper .nii.gz extension
     if [[ "$output_mask" != *.nii.gz ]]; then
         output_mask="${output_mask}.nii.gz"
+    fi
+
+    # Engine dispatch: the principled posterior engine is the default; the
+    # legacy GMM chain below stays selectable (DETECTION_ENGINE=legacy) for A/B.
+    if [ "${DETECTION_ENGINE:-posterior}" = "posterior" ]; then
+        if _apply_posterior_engine "$zscore_image" "$region_mask" "$gmm_params_file" "$output_mask" "$gmm_temp_dir"; then
+            return 0
+        fi
+        log_formatted "WARNING" "DETECTION_ENGINE=posterior unavailable for this region — legacy GMM used"
     fi
 
     # Extract region name from mask file for better logging
@@ -862,7 +911,7 @@ apply_gaussian_mixture_thresholding() {
     fi
 
     # Parse stdout key=value pairs into local variables
-    local threshold="$THRESHOLD_WM_SD_MULTIPLIER"  # Default fallback
+    local threshold="${THRESHOLD_WM_SD_MULTIPLIER:-1.2}"  # Default fallback
     local n_voxels=""
     local gmm_failed=""
     local n_components=""
@@ -1585,6 +1634,15 @@ apply_connectivity_weighting() {
     local initial_mask="$1"
     local zscore_image="$2"
     local output_weighted="$3"
+
+    # The posterior engine already regularised spatially (mean-field MRF +
+    # cluster filter with a stated FDR); the legacy smoothing re-threshold would
+    # only undo that, so pass its mask through unchanged.
+    if [ "${DETECTION_ENGINE:-posterior}" = "posterior" ] && [ -f "${initial_mask%.nii.gz}_posterior_engine_params.txt" ]; then
+        log_message "Connectivity weighting skipped (posterior engine output is already MRF-regularised)"
+        fslmaths "$initial_mask" -bin "$output_weighted"
+        return $?
+    fi
     
     log_message "Applying connectivity weighting for refined hyperintensity detection..."
     

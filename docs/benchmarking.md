@@ -67,6 +67,17 @@ protocols differ between challenges — use them for orientation, not as a
 pass/fail bar. No brainstem-specific public benchmark exists; the phantom and
 the ds004199 controls are the brainstem-relevant checks.
 
+## Current phantom A/B (legacy GMM vs posterior engine)
+
+8 lesion + 4 control phantoms, region-scoped scoring (`scripts/benchmark.py run … --region brainstem|wm`):
+
+| region | engine | Dice | lesion F1 | lesion TPR | control FP volume |
+|---|---|---|---|---|---|
+| brainstem | legacy | 0.01 | 0.38 | 0.38 | 25 mm³ |
+| brainstem | posterior | 0.85 | 1.00 | 1.00 | 0 |
+| white matter | legacy | 0.00 | 0.00 | 0.00 | 614 mm³ |
+| white matter | posterior | 0.89 | 1.00 | 1.00 | 0 |
+
 ## Tests
 
 `tests/test_benchmark.py` (pytest, no FSL): phantom generation, metric

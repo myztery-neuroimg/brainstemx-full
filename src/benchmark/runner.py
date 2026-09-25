@@ -48,7 +48,11 @@ def cmd_fetch(a) -> int:
 
 
 def run(dataset: str, root: str, adapter: str, region: str, out: str, subjects=None, params=None,
-        gt_suffix=None, save_masks=True, eval_region_only=False) -> Dict:
+        gt_suffix=None, save_masks=True, eval_region_only=True) -> Dict:
+    """eval_region_only (default): score prediction AND ground truth inside the
+    analysed region, so a brainstem run is not penalised for supratentorial
+    lesions it was never asked to find. Pass False (--eval-whole-image) to
+    score against the full ground truth."""
     params = params or {}
     subs = datasets.load_subjects(dataset, root, subjects, gt_suffix)
     if not subs:
@@ -70,7 +74,12 @@ def run(dataset: str, root: str, adapter: str, region: str, out: str, subjects=N
         spacing = img.header.get_zooms()[:3]
         gt = np.asanyarray(nib.load(s.gt).dataobj) if s.gt else None
         row = {"subject": s.id, "adapter": adapter, "region": region, "region_voxels": float(reg.sum()),
-               "seconds": round(time.time() - ts, 2)}
+               "seconds": round(time.time() - ts, 2), "eval_region_only": float(eval_region_only)}
+        if gt is not None and eval_region_only and not (np.asarray(gt) > 0.5)[reg].any():
+            row["gt_in_region"] = 0.0     # no ground-truth lesion inside this region: scored as a control
+            gt = None
+        elif gt is not None:
+            row["gt_in_region"] = 1.0
         row.update(metrics.evaluate(mask, gt, spacing, prob=prob, eval_mask=reg if eval_region_only else None))
         rows.append(row)
         if save_masks:
@@ -99,7 +108,7 @@ def run(dataset: str, root: str, adapter: str, region: str, out: str, subjects=N
 
 
 def cmd_run(a) -> int:
-    s = run(a.dataset, a.root, a.adapter, a.region, a.out, a.subjects, _params(a.param), a.gt_suffix, not a.no_masks, a.eval_region_only)
+    s = run(a.dataset, a.root, a.adapter, a.region, a.out, a.subjects, _params(a.param), a.gt_suffix, not a.no_masks, not a.eval_whole_image)
     agg = s["aggregate_lesion_subjects"]
     print(json.dumps({k: {kk: round(vv, 4) if isinstance(vv, float) else vv for kk, vv in v.items()} for k, v in agg.items()}, indent=1))
     print(f"summary -> {os.path.join(a.out, 'summary.json')}")
@@ -193,7 +202,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dataset", required=True, choices=list(datasets.REGISTRY)); p.add_argument("--root", required=True)
     p.add_argument("--adapter", required=True, choices=adapters.ADAPTERS); p.add_argument("--region", default="wm")
     p.add_argument("--out", required=True); p.add_argument("--subjects", nargs="*"); p.add_argument("--param", action="append", default=[])
-    p.add_argument("--gt-suffix", default=None); p.add_argument("--no-masks", action="store_true"); p.add_argument("--eval-region-only", action="store_true")
+    p.add_argument("--gt-suffix", default=None); p.add_argument("--no-masks", action="store_true")
+    p.add_argument("--eval-whole-image", action="store_true", help="score against the full ground truth instead of within the analysed region")
     p.set_defaults(func=cmd_run)
     p = sub.add_parser("ab", help="paired A/B comparison of two runs"); p.add_argument("--a", required=True); p.add_argument("--b", required=True); p.add_argument("--out", required=True); p.set_defaults(func=cmd_ab)
     p = sub.add_parser("compare-known", help="compare a run with published reference numbers"); p.add_argument("--run", required=True); p.add_argument("--reference", default=None); p.set_defaults(func=cmd_compare_known)

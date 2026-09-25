@@ -61,7 +61,12 @@ def lesion_wise(pred, gt, min_overlap_frac: float = 0.0) -> Dict[str, float]:
             fp_lesions += 1
     tpr = detected / ng if ng else float("nan")
     ppv = (npred - fp_lesions) / npred if npred else float("nan")
-    f1 = (2 * tpr * ppv / (tpr + ppv)) if (ng and npred and (tpr + ppv) > 0) else (float("nan") if ng else (1.0 if npred == 0 else 0.0))
+    if ng and npred:
+        f1 = (2 * tpr * ppv / (tpr + ppv)) if (tpr + ppv) > 0 else 0.0
+    elif ng:                      # lesions exist, nothing predicted
+        f1 = 0.0
+    else:                         # no lesions: perfect only if nothing predicted
+        f1 = 1.0 if npred == 0 else 0.0
     return {"gt_lesions": float(ng), "pred_lesions": float(npred), "detected_lesions": float(detected),
             "fp_lesions": float(fp_lesions), "lesion_tpr": tpr, "lesion_ppv": ppv, "lesion_f1": f1}
 

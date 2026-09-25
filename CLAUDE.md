@@ -35,7 +35,8 @@ bash tests/test_nextbrain_unit.sh
 bash tests/test_reporting_unit.sh
 bash tests/test_viz_unit.sh
 bash tests/test_cross_modal_unit.sh
-uv run pytest tests/ -q                    # CI job "Python Unit Tests" (incl. tests/test_viz_render.py)
+bash tests/test_detection_engine_unit.sh
+uv run pytest tests/ -q                    # CI job "Python Unit Tests" (viz_render, benchmark, lesion_posterior, reporting, gmm)
 
 # Smoke test
 bash src/pipeline.sh --help | grep -q "Usage:"
@@ -64,7 +65,9 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
                          #   jhu (JHU ICBM-DTI-81 pontine tracts, FSL), xtract (FSL), aan (Harvard AAN v2), lc, dr (dorsal raphe), nextbrainmni
   brainstem_nextbrain.sh # FreeSurfer 8 NextBrain histological-atlas nuclei (mri_histo_atlas_segment_fireants; no recon; gated, non-fatal)
   analysis.sh            # hyperintensity detection, cluster analysis
-  gmm_threshold.py       # standalone GMM thresholder (called by analysis.sh)
+  gmm_threshold.py       # LEGACY GMM thresholder (DETECTION_ENGINE=legacy only)
+  lesion_posterior.py    # DEFAULT detection engine: robust lesion-uncontaminated null -> Efron empirical null + local fdr -> posterior-FDR
+                         #   decision -> mean-field MRF -> cluster filter; region-agnostic, calibrated posteriors, reliability flags (docs/detection_engine.md)
   cross_modal_analysis.sh # MULTI-MODAL: per-cluster corroboration of FLAIR clusters with co-registered SWI/DWI-trace/ADC/T2 (default on, graceful)
   cross_modal_sample.py  # samples co-registered modalities per cluster, emits the cross-modal table + flags (called by cross_modal_analysis.sh)
   fp_filter.sh           # post-detection false-positive suppression (config-gated; complements CSF/PV exclusion)
@@ -123,7 +126,9 @@ _MODULE_LOADED=1
 | `MAX_CPU_INTENSIVE_JOBS` | ANTs thread cap |
 | `USE_ANTS_SYN` | `true` = ANTs SyN, `false` = FLIRT |
 | `SCAN_SELECTION_MODE` | `registration_optimized` \| `highest_resolution` \| `interactive` |
-| `THRESHOLD_WM_SD_MULTIPLIER` | authoritative fallback threshold (GMM inherits this) |
+| `DETECTION_ENGINE` | `posterior` (default; `lesion_posterior.py`) or `legacy` (GMM chain, A/B only) |
+| `LESION_FDR_Q`, `LESION_MRF_BETA`, `LESION_MIN_CLUSTER_VOXELS`, `LESION_TREND_DEGREE`, `LESION_MIN_GATED_VOXELS`, `LESION_PARENT_NULL`, `LESION_T2_IMAGE` | posterior-engine knobs (FDR level, MRF coupling, cluster filter, spatial trend, small-region guard, reference null, optional T2 channel) |
+| `THRESHOLD_WM_SD_MULTIPLIER` | authoritative fallback threshold (legacy GMM inherits this) |
 | `GMM_*` (11 vars) | GMM per-region thresholding — see `config/default_config.sh` |
 | `BRAINSTEM_SEGMENTATION_METHOD` | `all` (default, parallel) \| `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |
 | `SEG_RUN_HARVARD_OXFORD` / `SEG_RUN_MULTI_ATLAS` / `SEG_RUN_FREESURFER` | per-path toggles for `all` mode (all default on; `SEG_RUN_FREESURFER=false` skips the multi-hour recon-all) |
@@ -189,6 +194,10 @@ Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv
 ## Agentic environment (Claude Code on the web)
 
 `.claude/hooks/session-start.sh` (registered in `.claude/settings.json`, tracked despite `.claude/*` being ignored) runs only in remote sessions: `uv sync`, `uv tool install shellcheck-py` (puts `shellcheck` on `~/.local/bin`, exported via `CLAUDE_ENV_FILE`), and a `/tmp/fake_fsl` `FSLDIR` stub so `bash src/pipeline.sh --help` works without FSL. After it runs, every check in "CI / local checks" is runnable as-is. No FSL/ANTs/FreeSurfer exist in the container: unit tests mock them (`tests/test_helpers.sh` `create_mock_*`).
+
+## Detection engine
+
+`DETECTION_ENGINE=posterior` (default) runs `src/modules/lesion_posterior.py` per region from `analysis.sh::apply_gaussian_mixture_thresholding` (drop-in: same output names, params keys `NULL_MEAN/NULL_SD/PI0/THRESHOLD/FLAGS`); `apply_connectivity_weighting` passes its MRF-regularised mask through. Legacy GMM chain = `DETECTION_ENGINE=legacy` (fallback when `uv` is absent). Phantom A/B: brainstem Dice 0.01 → 0.85, WM 0.00 → 0.89, control false positives → 0 (`docs/detection_engine.md`). Never reintroduce SD multipliers or percentile floors: decisions are FDR-controlled.
 
 ## Benchmarking
 

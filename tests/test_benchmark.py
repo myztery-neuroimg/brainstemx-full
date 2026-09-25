@@ -41,6 +41,22 @@ def test_metrics_perfect_and_empty():
     assert c["control"] == 1.0 and c["fp_volume_mm3"] == 0.0
 
 
+def test_lesion_f1_zero_when_nothing_predicted():
+    g = np.zeros((10, 10, 10), bool); g[2:4, 2:4, 2:4] = True
+    lw = metrics.lesion_wise(np.zeros_like(g), g)
+    assert lw["lesion_f1"] == 0.0 and lw["lesion_tpr"] == 0.0
+
+
+def test_region_scoped_scoring(phantom_ds, tmp_path):
+    """A brainstem run is scored on brainstem ground truth only; subjects whose
+    lesions all lie outside the region become controls for that run."""
+    root, _ = phantom_ds
+    s = runner.run("phantom", root, "threshold", "brainstem", str(tmp_path / "bs"), params={"k": "3"}, save_masks=False)
+    rows = json.load(open(tmp_path / "bs" / "per_subject.json"))
+    assert all(r.get("eval_region_only") == 1.0 for r in rows if "error" not in r)
+    assert s["aggregate_lesion_subjects"]["dice"]["mean"] > 0.5
+
+
 def test_lesion_wise_counts():
     g = np.zeros((20, 20, 20), bool); g[2:4, 2:4, 2:4] = True; g[10:13, 10:13, 10:13] = True
     p = np.zeros_like(g); p[2:4, 2:4, 2:4] = True; p[16:18, 16:18, 16:18] = True   # one hit, one miss, one FP

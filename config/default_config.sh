@@ -803,6 +803,32 @@ export CROSS_MODAL_SUBDIR="cross_modal"
 # GMM path and the non-GMM detect_hyperintensities() path reference this value,
 # so changing it here changes all fallback behaviour consistently.
 export THRESHOLD_WM_SD_MULTIPLIER=1.2   # SD multiplier from local norm; used by GMM fallback + legacy path
+
+# ---------------------------------------------------------------------------
+# DETECTION ENGINE (per-region hyperintensity decision)
+# ---------------------------------------------------------------------------
+#   posterior (DEFAULT): src/modules/lesion_posterior.py — lesion-uncontaminated
+#     robust null (biweight location + MAD, optional spatial trend, CSF/PV
+#     gating), Efron two-groups empirical null with local false-discovery
+#     rates, posterior-expected-FDR decision at LESION_FDR_Q (a healthy region
+#     yields NO detections), mean-field MRF spatial prior, cluster filter,
+#     calibrated per-voxel posterior maps and reliability flags (small region,
+#     high lesion load). Region-agnostic (any mask). Benchmarked with
+#     scripts/benchmark.py (docs/benchmarking.md).
+#   legacy: region-mean z-score + GMM upper component + k*SD + 95th-percentile
+#     floor + smoothed re-threshold (kept for A/B comparison only).
+export DETECTION_ENGINE="${DETECTION_ENGINE:-posterior}"
+export LESION_FDR_Q="${LESION_FDR_Q:-0.05}"                 # FDR level of the primary mask
+export LESION_MRF_BETA="${LESION_MRF_BETA:-0.6}"            # MRF coupling (0 = off)
+export LESION_MRF_ITERS="${LESION_MRF_ITERS:-10}"
+export LESION_MIN_CLUSTER_VOXELS="${LESION_MIN_CLUSTER_VOXELS:-3}"
+export LESION_CLUSTER_POSTERIOR="${LESION_CLUSTER_POSTERIOR:-0.5}"   # drop clusters with mean posterior below this
+export LESION_TREND_DEGREE="${LESION_TREND_DEGREE:-1}"      # spatial trend removed from the null (regions >= 3000 voxels)
+export LESION_MIN_GATED_VOXELS="${LESION_MIN_GATED_VOXELS:-300}"     # below: 'small region, low confidence' (shrunk to LESION_PARENT_NULL when set)
+export LESION_PI0_FLOOR="${LESION_PI0_FLOOR:-0.6}"          # pi0 below this => 'high lesion load' flag
+export LESION_PARENT_NULL="${LESION_PARENT_NULL:-}"         # optional "mean,sd" reference null for tiny regions
+export LESION_T2_IMAGE="${LESION_T2_IMAGE:-}"               # optional co-registered T2 (analysis space) as a second channel
+export LESION_T2_WEIGHT="${LESION_T2_WEIGHT:-0.5}"
 export MIN_HYPERINTENSITY_SIZE=3        # Minimum cluster size in voxels (FSL cluster --minextent)
 
 # Primary analysis engine selector (Step 6).  Controls which detector runs as
