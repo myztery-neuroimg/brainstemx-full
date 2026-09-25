@@ -112,6 +112,15 @@ _atlas_resolve_path() {
     local root; root=$(_atlas_root "$key")
     if [ -e "${root}/${p}" ]; then printf '%s/%s' "$root" "$p"; return 0; fi
     if [ -e "${ATLAS_DIR}/${p}" ]; then printf '%s/%s' "$ATLAS_DIR" "$p"; return 0; fi
+    # Glob patterns (e.g. "LC*prob*.nii*") resolve to the first match, so a
+    # release whose exact file name varies still works without editing config.
+    case "$p" in
+        *[\*\?\[]*)
+            local m
+            m=$(compgen -G "${root}/${p}" 2>/dev/null | sort | head -1)
+            [ -n "$m" ] || m=$(compgen -G "${ATLAS_DIR}/${p}" 2>/dev/null | sort | head -1)
+            if [ -n "$m" ]; then printf '%s' "$m"; return 0; fi ;;
+    esac
     printf '%s/%s' "$root" "$p"
     return 0
 }

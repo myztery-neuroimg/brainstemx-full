@@ -391,6 +391,45 @@ export ATLAS_DR_CITATION="${ATLAS_DR_CITATION:-Wearn AR, et al. Dorsal raphe (su
 export ATLAS_DR_LICENSE="${ATLAS_DR_LICENSE:-CC-BY-4.0}"
 
 # --- Locus coeruleus probabilistic atlas (download) --------------------------
+# Default: Ye et al. 2021 7T probabilistic LC atlas (NITRC lc_7t_prob, release
+# LC_7T_prob_v1_060220.zip; 53 adults, 0.5 mm, ICBM 2009b asymmetric space ->
+# needs the TemplateFlow 2009->NLin6 transform, else skipped). Unzip under
+# ATLAS_DIR/LC; the IMAGE glob picks the probabilistic map (set it explicitly
+# to a thresholded 5%/25% mask if preferred). Alternative: the Dahl et al. 2022
+# LC meta-mask (OSF sf2ky, linear MNI 0.5 mm) with ATLAS_LC_SPACE=MNI152Lin and
+# ATLAS_LC_XFM pointing at the ANTs transforms shipped in that bundle.
+# LC is ~20 voxels at 1 mm, so the subject-space mask is dilated 1 voxel for
+# the per-region statistics (the undilated core is kept as *_core).
+export USE_LC="${USE_LC:-true}"
+export ATLAS_LC_REL="${ATLAS_LC_REL:-LC}"
+export ATLAS_LC_TYPE="${ATLAS_LC_TYPE:-probmap}"
+export ATLAS_LC_IMAGE="${ATLAS_LC_IMAGE:-LC*prob*.nii*}"
+export ATLAS_LC_SPACE="${ATLAS_LC_SPACE:-MNI152NLin2009bAsym}"
+export ATLAS_LC_XFM="${ATLAS_LC_XFM:-}"
+export ATLAS_LC_PROB_THR="${ATLAS_LC_PROB_THR:-0.25}"
+export ATLAS_LC_SUBDIV="${ATLAS_LC_SUBDIV:-lc=pons}"
+export ATLAS_LC_DILATE="${ATLAS_LC_DILATE:-1}"
+export ATLAS_LC_URL="${ATLAS_LC_URL:-https://www.nitrc.org/projects/lc_7t_prob/ (Ye 2021; alt. https://osf.io/sf2ky/ Dahl 2022 meta-mask)}"
+export ATLAS_LC_CITATION="${ATLAS_LC_CITATION:-Ye R, et al. An in vivo probabilistic atlas of the human locus coeruleus at ultra-high field. NeuroImage 2021;225:117487; Dahl MJ, et al. LC meta-mask, OSF 2022}"
+export ATLAS_LC_LICENSE="${ATLAS_LC_LICENSE:-Ye 2021: CC BY-NC-ND 4.0 (research use); Dahl 2022 meta-mask: CC BY 4.0}"
+
+# --- Dorsal raphe (supratrochlear subnucleus) mask, Wearn et al. 2024 ---------
+# Zenodo 10680563 (CC-BY-4.0): AW_DR.nii.gz, a ~32 mm^3 binary mask in ICBM
+# 2009b space -> needs the TemplateFlow 2009->NLin6 transform (skipped without
+# it). Tiny: dilated 1 voxel for the per-region statistics (core kept).
+export USE_DR="${USE_DR:-true}"
+export ATLAS_DR_REL="${ATLAS_DR_REL:-DorsalRaphe}"
+export ATLAS_DR_TYPE="${ATLAS_DR_TYPE:-probmap}"
+export ATLAS_DR_IMAGE="${ATLAS_DR_IMAGE:-AW_DR.nii.gz}"
+export ATLAS_DR_SPACE="${ATLAS_DR_SPACE:-MNI152NLin2009bAsym}"
+export ATLAS_DR_PROB_THR="${ATLAS_DR_PROB_THR:-0.5}"
+export ATLAS_DR_SUBDIV="${ATLAS_DR_SUBDIV:-dr=midbrain}"
+export ATLAS_DR_DILATE="${ATLAS_DR_DILATE:-1}"
+export ATLAS_DR_URL="${ATLAS_DR_URL:-https://zenodo.org/records/10680563}"
+export ATLAS_DR_CITATION="${ATLAS_DR_CITATION:-Wearn AR, et al. Dorsal raphe (supratrochlear subnucleus) mask in MNI space (ICBM 2009b). Zenodo 2024. doi:10.5281/zenodo.10680563}"
+export ATLAS_DR_LICENSE="${ATLAS_DR_LICENSE:-CC-BY-4.0}"
+
+# --- Locus coeruleus probabilistic atlas (download) --------------------------
 # A single LC probability map (e.g. Ye et al. 2021 7T atlas, or the Dahl et al.
 # 2022 LC meta-mask). Those releases are on the MNI152NLin6Asym 0.5 mm grid;
 # the registry resamples onto the FSL 1 mm grid. LC is ~20 voxels at 1 mm, so

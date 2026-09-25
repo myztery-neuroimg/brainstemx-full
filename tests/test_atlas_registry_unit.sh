@@ -131,6 +131,12 @@ assert_equals "bianciardi cit168 aal3 jhu xtract" "$(atlas_registry_source_tags)
 assert_equals "$ATLAS_DIR/JHU/JHU-ICBM-labels-1mm.nii.gz" "$(_atlas_resolve_path jhu JHU-ICBM-labels-1mm.nii.gz)" "image resolves under the atlas root"
 assert_equals "$ATLAS_DIR/JHU-labels.xml" "$(_atlas_resolve_path jhu JHU-labels.xml)" "LUT falls back to the atlases root (FSL XML layout)"
 atlas_registry_present jhu; assert_exit_code 0 $? "atlas_registry_present: JHU on disk"
+mkdir -p "$ATLAS_DIR/LC"; create_fake_nifti "$ATLAS_DIR/LC/LC_7T_prob_atlas_v1_something.nii.gz"
+export ATLAS_LCG_REL=LC ATLAS_LCG_IMAGE="LC*prob*.nii*"
+assert_equals "$ATLAS_DIR/LC/LC_7T_prob_atlas_v1_something.nii.gz" "$(_atlas_resolve_path lcg "LC*prob*.nii*")" "glob IMAGE pattern resolves to the on-disk file"
+atlas_registry_present lcg; assert_exit_code 0 $? "atlas_registry_present: glob pattern present"
+export ATLAS_LCG_IMAGE="NOPE*.nii*"
+atlas_registry_present lcg; assert_exit_code 1 $? "atlas_registry_present: glob with no match -> absent"
 atlas_registry_present xtract; assert_exit_code 1 $? "atlas_registry_present: XTRACT absent"
 
 # ══════════════════════════════════════════════════════════════════════════════
