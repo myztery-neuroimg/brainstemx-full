@@ -612,9 +612,10 @@ find_all_atlas_regions() {
     #   - Multi-atlas gross subdivisions (multi_atlas.sh aggregation):
     #     bianciardi_pons.nii.gz, bianciardi_left_midbrain.nii.gz, ... (matched by
     #     the *_pons / *left_pons globs below).
-    #   - Multi-atlas NUCLEUS-level masks: bianciardi_*_label*, cit168_*_label*,
-    #     aal3_*_label* — added explicitly so the CIT168 / AAL3 / Bianciardi nuclei
-    #     are part of the union, not just the aggregated subdivisions.
+    #   - Nucleus/tract-level masks: <tag>_*_label* for every tag in
+    #     MULTI_ATLAS_SOURCE_TAGS (bianciardi/cit168/aal3 + registry keys such as
+    #     jhu/xtract/aan/lc) and atlas-driven FS tools (nextbrain) — added so the
+    #     nuclei/tracts are part of the union, not just the aggregated subdivisions.
     # The voxel-size filter + sort -u dedup below keep the union clean.
     local region_patterns=(
         "*left_medulla*.nii.gz"
@@ -629,10 +630,14 @@ find_all_atlas_regions() {
         "*_midbrain.nii.gz"
         "*_medulla.nii.gz"
         "*_scp.nii.gz"
-        "bianciardi_*_label*.nii.gz"
-        "cit168_*_label*.nii.gz"
-        "aal3_*_label*.nii.gz"
     )
+    # Nucleus-level masks from EVERY multi-atlas source (built-ins + the
+    # registry keys in MULTI_ATLAS_SOURCE_TAGS, e.g. jhu/xtract/aan/lc) and
+    # from atlas-driven FreeSurfer tools (nextbrain): <tag>_<name>_label<v>.
+    local _tag
+    for _tag in $(_analysis_source_tags); do
+        region_patterns+=("${_tag}_*_label*.nii.gz")
+    done
     
     # Search for all region masks
     for search_dir in "${search_dirs[@]}"; do
@@ -644,7 +649,7 @@ find_all_atlas_regions() {
                     if [ -f "$region_file" ]; then
                         # Skip intensity/derivative files
                         local basename_file=$(basename "$region_file" .nii.gz)
-                        if [[ "$basename_file" == *"_intensity"* ]] || [[ "$basename_file" == *"_flair_"* ]] || [[ "$basename_file" == *"_t1_"* ]] || [[ "$basename_file" == *"_clustered"* ]]; then
+                        if [[ "$basename_file" == *"_intensity"* ]] || [[ "$basename_file" == *"_flair_"* ]] || [[ "$basename_file" == *"_t1_"* ]] || [[ "$basename_file" == *"_clustered"* ]] || [[ "$basename_file" == *"_core" ]]; then
                             continue
                         fi
                         
@@ -712,14 +717,28 @@ find_all_atlas_regions() {
 #   aal3          : AAL3 regions               aal3_*
 #   harvard_oxford: gross HO fallback mask     *_brainstem.nii.gz (segmentation/brainstem)
 #   atlas         : anything else (unattributed)
+# The list of atlas/tool source tags. Built-ins + the registry keys from config
+# (MULTI_ATLAS_SOURCE_TAGS) + the atlas-driven FreeSurfer tools (nextbrain).
+# Single source of truth for discovery globs, provenance and the report.
+_analysis_source_tags() {
+    local tags="${MULTI_ATLAS_SOURCE_TAGS:-bianciardi cit168 aal3}"
+    local extra="${SEG_TOOL_SOURCE_TAGS:-nextbrain}"
+    local t
+    for t in $extra; do
+        case " $tags " in *" $t "*) ;; *) tags="$tags $t" ;; esac
+    done
+    printf '%s' "$tags"
+}
+
 _region_source_from_path() {
     local p="$1"
     local b
     b=$(basename "$p")
+    local _t
+    for _t in $(_analysis_source_tags); do
+        case "$b" in "${_t}"_*) echo "$_t"; return 0 ;; esac
+    done
     case "$b" in
-        bianciardi_*) echo "bianciardi" ;;
-        cit168_*)     echo "cit168" ;;
-        aal3_*)       echo "aal3" ;;
         *)
             case "$p" in
                 */segmentation/brainstem/*) echo "harvard_oxford" ;;
@@ -1093,7 +1112,7 @@ apply_per_region_gmm_analysis() {
 
     # --- Cross-source agreement / consensus (#1) -----------------------------
     # Alongside the OR-union (combined_result), accumulate ONE binary detection
-    # map per SOURCE (freesurfer/bianciardi/cit168/aal3/harvard_oxford). Summing
+    # map per SOURCE (freesurfer/bianciardi/cit168/aal3/registry atlases/harvard_oxford). Summing
     # the per-source maps yields an integer agreement count (how many INDEPENDENT
     # sources flagged each voxel); thresholding it gives a high-specificity
     # consensus mask. Counting per SOURCE (not per region) avoids inflating the
@@ -1179,9 +1198,10 @@ apply_per_region_gmm_analysis() {
             elif [[ "$region_name" =~ right_ ]]; then
                 region_base="right_${region_base}"
             fi
-        elif [[ "$region_name" =~ ^(bianciardi|cit168|aal3)_(.+)_label[0-9]+$ ]]; then
-            # Multi-atlas nucleus mask <atlas>_<nucleus>_label<N>: use the nucleus
-            # name (atlas prefix is recorded separately as provenance below).
+        elif [[ "$region_name" =~ ^([a-z0-9]+)_(.+)_label[0-9]+$ ]]; then
+            # Nucleus/tract mask <source>_<name>_label<N> (any registry atlas or
+            # atlas-driven tool): use the name (the source prefix is recorded
+            # separately as provenance below).
             region_base="${BASH_REMATCH[2]}"
         else
             region_base=$(echo "$region_name" | sed -E 's/.*_([^_]+)$/\1/')
@@ -1439,7 +1459,7 @@ emit_hierarchical_region_summary() {
     printf 'gross\tbrainstem\tcombined\t-\t%s\t%s\t-\t-\t-\n' "$glv" "$gmm" >> "$out_tsv"
 
     # Known source prefixes (harvard_oxford contains an underscore, so parse by prefix).
-    local known_sources="freesurfer bianciardi cit168 aal3 harvard_oxford synthseg"
+    local known_sources="freesurfer $(_analysis_source_tags) harvard_oxford synthseg"
 
     # Collect (resampled_mask, source, region_base, level) from the per-region dirs.
     local -a R_mask=() R_src=() R_base=() R_level=()

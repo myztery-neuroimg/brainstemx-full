@@ -996,13 +996,14 @@ check_optional_dependencies() {
   local wmh_mars="${WMH_MARS_ENABLED:-true}"
   local mars_brainstem="${MARS_BRAINSTEM_ENABLED:-false}"
   local aanseg="${BRAINSTEM_AANSEG_ENABLED:-false}"
+  local nextbrain_enabled="${BRAINSTEM_NEXTBRAIN_ENABLED:-true}"
 
   # FreeSurfer is needed when its seg path or any FS-backed WMH/seg feature runs.
   local fs_enabled=false
   if { [ "$seg_method" = "all" ] && [ "$seg_run_fs" = true ]; } || \
      [ "$seg_method" = "freesurfer" ] || \
      [ "$wmh_samseg" = true ] || [ "$wmh_synthseg" = true ] || \
-     [ "$use_synthsr" = true ] || [ "$aanseg" = true ]; then
+     [ "$use_synthsr" = true ] || [ "$aanseg" = true ] || [ "$nextbrain_enabled" = true ]; then
     fs_enabled=true
   fi
 
@@ -1052,6 +1053,11 @@ check_optional_dependencies() {
   _dep_report "segmentBS.sh/segment_subregions" "OPT" "$segbs" "FS brainstem substructures" "$fs_enabled"
   _dep_report "SegmentAAN.sh"        "OPT" "$(_dep_probe_cmd SegmentAAN.sh)"          "AANSegment nuclei"        "$aanseg"
   _dep_report "mri_synthseg"         "OPT" "$(_dep_probe_cmd mri_synthseg)"           "SynthSeg ML seg"          "$seg_run_synthseg"
+  # NextBrain histological-atlas segmentation (FS 8 dev): fast FireANTs entry
+  # point preferred, legacy full-Bayesian command accepted.
+  local nextbrain; nextbrain="$(_dep_probe_cmd mri_histo_atlas_segment_fireants)"
+  [ "${nextbrain%%|*}" != present ] && nextbrain="$(_dep_probe_cmd mri_histo_atlas_segment)"
+  _dep_report "mri_histo_atlas_segment(_fireants)" "OPT" "$nextbrain" "NextBrain brainstem nuclei" "$nextbrain_enabled"
   _dep_report "mri_synthsr"          "OPT" "$(_dep_probe_cmd mri_synthsr)"            "SynthSR super-res"        "$use_synthsr"
   _dep_report "mri_synthstrip"       "OPT" "$(_dep_probe_cmd mri_synthstrip)"         "SynthStrip brain extract"
   _dep_report "mri_WMHsynthseg"      "OPT" "$(_dep_probe_cmd mri_WMHsynthseg)"        "WMH-SynthSeg"             "$wmh_synthseg"
@@ -1110,7 +1116,7 @@ check_optional_dependencies() {
   # ── Atlases (OPTIONAL) — delegate the heavy on-disk probing to the dedicated
   # check_atlas_availability (called separately from main() after config load).
   log_formatted "INFO" "---- Atlases (OPTIONAL) ----"
-  log_message "Atlas presence/absence is reported in detail by the Atlas Availability Check (see below): Bianciardi / CIT168 / AAL3 / HarvardOxford under \${FSLDIR}/data/atlases"
+  log_message "Atlas presence/absence is reported in detail by the Atlas Availability Check (see below): Bianciardi / CIT168 / AAL3 / HarvardOxford + registry atlases (${MULTI_ATLAS_EXTRA:-none}) under \${FSLDIR}/data/atlases"
   local atlas_root="${FSLDIR:-}/data/atlases"
   local ho_probe="absent"
   if [ -d "${atlas_root}/${ATLAS_HARVARDOXFORD_REL:-HarvardOxford}" ]; then
@@ -1122,6 +1128,14 @@ check_optional_dependencies() {
     std_probe="present|${FSLDIR}/data/standard"
   fi
   _dep_report "FSL standard templates" "OPT" "$std_probe" "MNI registration targets"
+  # FSL-shipped tract atlases consumed by the registry (JHU labels / XTRACT).
+  local jhu_probe="absent" xtract_probe="absent"
+  [ -f "${atlas_root}/${ATLAS_JHU_REL:-JHU}/${ATLAS_JHU_IMAGE:-JHU-ICBM-labels-1mm.nii.gz}" ] && \
+    jhu_probe="present|${atlas_root}/${ATLAS_JHU_REL:-JHU}"
+  [ -f "${atlas_root}/${ATLAS_XTRACT_REL:-XTRACT}/${ATLAS_XTRACT_IMAGE:-xtract-tract-atlases-prob-1mm.nii.gz}" ] && \
+    xtract_probe="present|${atlas_root}/${ATLAS_XTRACT_REL:-XTRACT}"
+  _dep_report "atlas:JHU-ICBM-DTI-81 labels" "OPT" "$jhu_probe"    "pontine tract masks (USE_JHU)"    "${USE_JHU:-true}"
+  _dep_report "atlas:XTRACT"                "OPT" "$xtract_probe" "pontine tract masks (USE_XTRACT)" "${USE_XTRACT:-true}"
 
   # ── Inventory summary ──
   log_formatted "INFO" "==== Optional Dependency Inventory Summary ===="
@@ -1200,6 +1214,35 @@ check_atlas_availability() {
   _report_atlas "AAL3"                            "$aal3_ok"
   _report_atlas "HarvardOxford (subcortical)"     "$ho_ok"
 
+  # Registry atlases (MULTI_ATLAS_EXTRA, atlas_registry.sh): one line per key,
+  # with the configured image path, and a hint (URL) when an ENABLED atlas is
+  # absent. Absence is non-fatal — the key is simply skipped at run time.
+  local _rk _rk_up _rk_use _rk_rel _rk_img _rk_path _rk_url _rk_ok _extra_summary=""
+  for _rk in ${MULTI_ATLAS_EXTRA:-}; do
+    _rk_up=$(printf '%s' "$_rk" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_\n' '_')
+    _rk_use="USE_${_rk_up}"; _rk_use="${!_rk_use:-false}"
+    _rk_rel="ATLAS_${_rk_up}_REL"; _rk_rel="${!_rk_rel:-$_rk}"
+    _rk_img="ATLAS_${_rk_up}_IMAGE"; _rk_img="${!_rk_img:-}"
+    _rk_url="ATLAS_${_rk_up}_URL"; _rk_url="${!_rk_url:-}"
+    _rk_ok=false
+    if [ -n "$_rk_img" ]; then
+      case "$_rk_img" in
+        /*) _rk_path="$_rk_img" ;;
+        *)  _rk_path="${atlas_root}/${_rk_rel}/${_rk_img}"
+            [ -e "$_rk_path" ] || [ ! -e "${atlas_root}/${_rk_img}" ] || _rk_path="${atlas_root}/${_rk_img}" ;;
+      esac
+      [ -e "$_rk_path" ] && _rk_ok=true
+    fi
+    if [ "$_rk_ok" = true ]; then
+      log_formatted "SUCCESS" "✓ Atlas present: registry '${_rk}' (${_rk_path})"
+    elif [ "$_rk_use" = true ]; then
+      log_formatted "WARNING" "⚠ Atlas absent: registry '${_rk}' is ENABLED (USE_${_rk_up}=true) but ${_rk_rel}/${_rk_img:-<no ATLAS_${_rk_up}_IMAGE>} is not under ${atlas_root} — it will be SKIPPED${_rk_url:+ (obtain: ${_rk_url})}"
+    else
+      log_message "· Atlas absent: registry '${_rk}' (disabled)"
+    fi
+    _extra_summary="${_extra_summary}, ${_rk}=$([ "$_rk_ok" = true ] && echo yes || echo no)"
+  done
+
   # Warn if the selected segmentation method needs an atlas that is missing.
   # Default mirrors config (BRAINSTEM_SEGMENTATION_METHOD default = 'all').
   local seg_method="${BRAINSTEM_SEGMENTATION_METHOD:-all}"
@@ -1242,7 +1285,7 @@ check_atlas_availability() {
   [ "$cit168_ok" = true ]     && _c="CIT168=yes"     || _c="CIT168=no"
   [ "$aal3_ok" = true ]       && _a="AAL3=yes"       || _a="AAL3=no"
   [ "$ho_ok" = true ]         && _h="HarvardOxford=yes" || _h="HarvardOxford=no"
-  log_message "Atlas availability: ${_b}, ${_c}, ${_a}, ${_h}"
+  log_message "Atlas availability: ${_b}, ${_c}, ${_a}, ${_h}${_extra_summary}"
 
   return 0
 }

@@ -111,7 +111,7 @@ source "${PIPELINE_DIR}/modules/enhanced_registration_validation.sh"
 # "… module loaded" line when sourced. The [ -f ] guard keeps a missing
 # file from tripping `set -e`. Do NOT add multi_atlas.sh here — that
 # module owns its own source line (added by a concurrent PR).
-for _opt in wmh_bianca wmh_lst_samseg wmh_synthseg wmh_segcsvd wmh_shiva wmh_mars brainstem_aanseg fp_filter cross_modal_analysis; do
+for _opt in wmh_bianca wmh_lst_samseg wmh_synthseg wmh_segcsvd wmh_shiva wmh_mars brainstem_aanseg brainstem_nextbrain fp_filter cross_modal_analysis; do
   _optf="${PIPELINE_DIR}/modules/${_opt}.sh"
   [ -f "$_optf" ] && source "$_optf"
 done

@@ -31,6 +31,15 @@ skipped cleanly and recorded as `absent` in the run manifest.
 │   │                               #   Bianciardi nuclei: bianciardi_*.nii.gz
 │   │                               #   CIT168 nuclei:     cit168_*.nii.gz
 │   │                               #   AAL3 (optional):   aal3_*.nii.gz
+│   │                               #   registry atlases:  <key>_<name>_label<v>.nii.gz  (jhu_/xtract_/aan_/lc_/dr_/nextbrainmni_)
+│   │                               #                      <key>_{pons,midbrain,medulla}.nii.gz aggregates (when configured)
+│   │                               #                      *_core.nii.gz = undilated tiny nuclei (not analysed)
+│   │                               #   NextBrain tool:    nextbrain_<name>_<l|r>_label<v>.nii.gz
+│   ├── multi_atlas/                # subject-space atlas dsegs <key>_in_subject.nii.gz, <key>_provenance.tsv,
+│   │   ├── registration/           #   the shared MNI->subject transform copy, views/ (fsleyes scripts + PNG)
+│   │   └── cache/<key>/            #   per-run derived cache when the atlas tree is read-only
+│   ├── nextbrain/                  # FreeSurfer NextBrain outputs: seg.<side>.nii.gz, lut.txt, vols.<side>.csv,
+│   │                               #   nextbrain_<side>_in_subject.nii.gz, nextbrain_in_subject.nii.gz, nextbrain_provenance.tsv
 │   └── freesurfer/  (or freesurfer/ at top level — harvest under harvest/)
 ├── freesurfer/
 │   └── harvest/                    # FS recon harvest (freesurfer_harvest.sh)
@@ -55,7 +64,7 @@ skipped cleanly and recorded as `absent` in the run manifest.
 ├── advanced_visualization/         # 3D renderings, intensity profiles
 ├── visualizations/                 # report visualizations (NEW)
 │   ├── seg_harvard_oxford_brainstem.png
-│   ├── seg_{freesurfer,bianciardi,cit168,aal3}.png
+│   ├── seg_{freesurfer,bianciardi,cit168,aal3,jhu,xtract,aan,lc,dr,nextbrainmni,nextbrain}.png
 │   ├── hyperintensities_on_flair.png
 │   └── montage_{FLAIR,DWI,SWI,T2}.png
 ├── validation/                     # per-stage validation reports

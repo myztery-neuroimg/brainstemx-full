@@ -64,7 +64,10 @@ jobs:
       - name: Run unit test suites
         run: |
           failed=0
-          for suite in tests/test_environment_unit.sh tests/test_pipeline_control_unit.sh tests/test_import_unit.sh; do
+          for suite in tests/test_environment_unit.sh tests/test_pipeline_control_unit.sh tests/test_import_unit.sh \
+                       tests/test_dependency_report_unit.sh tests/test_multi_atlas_unit.sh \
+                       tests/test_atlas_registry_unit.sh tests/test_nextbrain_unit.sh \
+                       tests/test_reporting_unit.sh; do
             echo ""
             echo "========================================"
             echo "Running: $suite"
@@ -84,6 +87,21 @@ jobs:
           else
             echo "All test suites passed"
           fi
+
+  python-tests:
+    name: Python Unit Tests (uv / pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync the locked Python 3.12.8 environment
+        run: uv sync --frozen
+
+      - name: Run pytest
+        run: uv run pytest tests/ -q
 
   pipeline-smoke-test:
     name: Pipeline Smoke Test

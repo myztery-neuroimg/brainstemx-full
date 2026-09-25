@@ -14,6 +14,11 @@
 #     to FSL MNI152 (no resample needed).
 #   - AAL3 (1mm) — 170-label whole-brain dseg stored on the SPM/neurological grid;
 #     reoriented + resampled onto the FSL MNI152 grid before warping.
+#   - EXTRA registry atlases (atlas_registry.sh, config MULTI_ATLAS_EXTRA): JHU
+#     ICBM-DTI-81 pontine tract labels + XTRACT tracts (both ship with FSL),
+#     Harvard AAN nuclei, locus-coeruleus maps, ... — each a config entry, warped
+#     with the SAME shared MNI->subject transform and split into
+#     <key>_<name>_label<v>.nii.gz masks.
 #
 # IMPORTANT: This is a sourced module — do NOT set `set -e -u -o pipefail` here
 # (it would leak into the pipeline shell). Match the idiom of segmentation.sh.
@@ -26,6 +31,10 @@ if [ -n "${_MULTI_ATLAS_LOADED:-}" ]; then return 0 2>/dev/null || true; fi
 _MULTI_ATLAS_LOADED=1
 
 source "$(dirname "${BASH_SOURCE[0]}")/require_env.sh"
+# Registry-driven EXTRA MNI atlases (JHU/XTRACT tract labels, AAN, LC, ... —
+# see atlas_registry.sh + MULTI_ATLAS_EXTRA in config). Sourced here so
+# run_multi_atlas_brainstem can fan out to them with the same shared warp.
+source "$(dirname "${BASH_SOURCE[0]}")/atlas_registry.sh"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration defaults (only set if not already provided by default_config.sh)
@@ -664,7 +673,7 @@ run_multi_atlas_brainstem() {
     local input_basename="${2:-$(basename "$subject_t1" .nii.gz)}"
     local flair_file="${3:-}"
 
-    log_formatted "INFO" "=== MULTI-ATLAS BRAINSTEM LABELING (Bianciardi/CIT168/AAL3) ==="
+    log_formatted "INFO" "=== MULTI-ATLAS BRAINSTEM LABELING (Bianciardi/CIT168/AAL3 + extra: ${MULTI_ATLAS_EXTRA:-none}) ==="
     log_message "Subject T1: $subject_t1"
     [ -n "$flair_file" ] && log_message "FLAIR: $flair_file"
 
@@ -740,6 +749,17 @@ run_multi_atlas_brainstem() {
         fi
     fi
 
+    # ── Registry-driven extra atlases (JHU / XTRACT / AAN / LC / ...) ──
+    # Each enabled key is prepared (cached MNI dseg + LUT, space-normalised,
+    # optionally brainstem-restricted), warped with the SAME shared transform,
+    # split into <key>_<name>_label<v>.nii.gz masks, aggregated and viewed.
+    # Non-fatal: a missing atlas logs a WARNING and is skipped.
+    if declare -f run_registry_atlases >/dev/null 2>&1; then
+        if run_registry_atlases "$subject_t1" "$reg_prefix" "$work_dir" "$region_out" "$views_dir"; then
+            any=true
+        fi
+    fi
+
     if [ "$any" = "true" ]; then
         log_formatted "SUCCESS" "Multi-atlas brainstem labeling complete: $region_out"
         return 0
@@ -780,4 +800,4 @@ export -f split_dseg_to_region_masks
 export -f _emit_atlas_view
 export -f run_multi_atlas_brainstem
 
-log_message "Multi-atlas module loaded (Bianciardi/CIT168/AAL3)"
+log_message "Multi-atlas module loaded (Bianciardi/CIT168/AAL3 + registry: ${MULTI_ATLAS_EXTRA:-none})"

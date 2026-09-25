@@ -24,10 +24,16 @@ find . -name '*.sh' -not -path './.git/*' | sort | xargs -I{} bash -n {}
 # ShellCheck (error-level)
 find . -name '*.sh' -not -path './.git/*' | sort | xargs shellcheck --severity=error
 
-# Unit test suites
+# Unit test suites (CI runs all of these)
 bash tests/test_environment_unit.sh
 bash tests/test_pipeline_control_unit.sh
 bash tests/test_import_unit.sh
+bash tests/test_dependency_report_unit.sh
+bash tests/test_multi_atlas_unit.sh
+bash tests/test_atlas_registry_unit.sh
+bash tests/test_nextbrain_unit.sh
+bash tests/test_reporting_unit.sh
+uv run pytest tests/ -q                    # CI job "Python Unit Tests"
 
 # Smoke test
 bash src/pipeline.sh --help | grep -q "Usage:"
@@ -49,7 +55,12 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   brainstem_freesurfer.sh # FreeSurfer recon-all → segmentBS/segment_subregions substructures (Iglesias 2015): midbrain/pons/medulla/SCP in native space (+ topology-salvage of a recon-all that died in the surface stages)
   freesurfer_harvest.sh  # harvests EVERYTHING from the SAME recon-all: aseg/wmparc/aparc + ML methods (mri_synthseg/mri_synthsr) + optional subregion/sclimbic/hypothalamus segs + aseg/eTIV stats (feeds aseg-CSF into FP exclusion)
   brainstem_aanseg.sh    # EXPLORATORY: FreeSurfer SegmentAAN.sh arousal-network nuclei (≤1mm only; off by default)
-  multi_atlas.sh         # Bianciardi + CIT168 + AAL3 → subject-space per-region masks (SyN→MNI + GenericLabel)
+  multi_atlas.sh         # Bianciardi + CIT168 + AAL3 → subject-space per-region masks (SyN→MNI + GenericLabel); fans out to the registry
+  atlas_registry.sh      # REGISTRY of extra MNI atlases as config entries (MULTI_ATLAS_EXTRA + ATLAS_<KEY>_*): dseg / prob4d / probdir / probmap,
+                         #   FSL-XML / FreeSurfer / txt LUTs, NLin6 vs ICBM-2009 space handling (TemplateFlow xfm or ATLAS_<KEY>_XFM, else SKIP),
+                         #   brainstem restriction for whole-brain tract atlases, subdivision aggregation, tiny-nucleus dilation. Shipped keys:
+                         #   jhu (JHU ICBM-DTI-81 pontine tracts, FSL), xtract (FSL), aan (Harvard AAN v2), lc, dr (dorsal raphe), nextbrainmni
+  brainstem_nextbrain.sh # FreeSurfer 8 NextBrain histological-atlas nuclei (mri_histo_atlas_segment_fireants; no recon; gated, non-fatal)
   analysis.sh            # hyperintensity detection, cluster analysis
   gmm_threshold.py       # standalone GMM thresholder (called by analysis.sh)
   cross_modal_analysis.sh # MULTI-MODAL: per-cluster corroboration of FLAIR clusters with co-registered SWI/DWI-trace/ADC/T2 (default on, graceful)
@@ -66,7 +77,8 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   reporting_tables.py    # stdlib-only aggregator behind reporting.sh (parses provenance/summaries, renders tables + top-level report; called via uv)
   qa.sh                  # 20+ validation checks
 config/default_config.sh # all pipeline defaults (has include guard)
-tests/                   # 29 bash test scripts (incl. test_dependency_report_unit.sh) + 2 pytest modules
+tests/                   # 31 bash test scripts (incl. test_atlas_registry_unit.sh, test_nextbrain_unit.sh) + 2 pytest modules
+.claude/hooks/session-start.sh  # web-session bootstrap (uv sync, shellcheck, FSLDIR stub) — registered in .claude/settings.json
 ```
 
 ## Code style
@@ -110,6 +122,10 @@ _MODULE_LOADED=1
 | `BRAINSTEM_SEGMENTATION_METHOD` | `all` (default, parallel) \| `freesurfer` \| `atlas`/`harvard_oxford` \| `multi_atlas`/`bianciardi` |
 | `SEG_RUN_HARVARD_OXFORD` / `SEG_RUN_MULTI_ATLAS` / `SEG_RUN_FREESURFER` | per-path toggles for `all` mode (all default on; `SEG_RUN_FREESURFER=false` skips the multi-hour recon-all) |
 | `USE_BIANCIARDI` / `USE_CIT168` / `USE_AAL3` | per-atlas enables for `multi_atlas` (AAL3 off by default) |
+| `MULTI_ATLAS_EXTRA` | registry keys (default `jhu xtract aan lc dr nextbrainmni`); each described by `ATLAS_<KEY>_{REL,TYPE,IMAGE,LUT,SPACE,XFM,PROB_THR,LABELS,LABEL_REGEX,RESTRICT,SUBDIV,DILATE,URL,CITATION,LICENSE}` + `USE_<KEY>` |
+| `MULTI_ATLAS_SOURCE_TAGS` / `SEG_TOOL_SOURCE_TAGS` | the ONE list of atlas/tool source tags downstream consumers iterate over (derived; `nextbrain` for the FS tool) |
+| `MNI_2009C_TO_NLIN6_XFM` | TemplateFlow `tpl-MNI152NLin6Asym_from-MNI152NLin2009cAsym_mode-image_xfm.h5` for atlases released in ICBM-2009 space |
+| `BRAINSTEM_NEXTBRAIN_ENABLED` / `SEG_RUN_NEXTBRAIN` / `NEXTBRAIN_*` | NextBrain tool path (default on, no-op without FreeSurfer 8 + licence) |
 | `ATLAS_DIR` | atlas root, default `${FSLDIR}/data/atlases` |
 
 ## Brainstem segmentation method & optional modules
@@ -123,7 +139,9 @@ _MODULE_LOADED=1
 
 The single-method values (`freesurfer`/`multi_atlas`/`bianciardi`/`atlas`/`harvard_oxford`) remain mutually exclusive and behave exactly as before.
 
-**Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`. The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
+**Atlas registry** — extra MNI atlases are CONFIG ENTRIES (`atlas_registry.sh`, `docs/multi_atlas_integration_spec.md`): add a key to `MULTI_ATLAS_EXTRA` + an `ATLAS_<KEY>_*` block and nothing else; discovery (`find_all_atlas_regions`), provenance (`_region_source_from_path`), reporting and visualisation all iterate over `MULTI_ATLAS_SOURCE_TAGS`. Rules that matter: (1) whole-brain tract atlases MUST set `RESTRICT=brainstem`; (2) atlases in ICBM-2009 space need the TemplateFlow transform or an explicit `XFM` chain, otherwise they are skipped (never mis-warped); (3) FSL `<type>Label</type>` XMLs (JHU) are offset 0, `<type>Probabilistic</type>` (XTRACT/HO maxprob) offset 1; (4) NEVER commit atlas data/LUTs/libraries — reference them by URL, citation and licence only.
+
+**Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`; registry keys under their `ATLAS_<KEY>_REL` (`JHU/` and `XTRACT/` ship with FSL; `AAN/`, `LC/`, `DorsalRaphe/`, `NextBrain/` are downloads). The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
 
 **Optional WMH / seg modules** — supervised/DL add-ons, each intersected with the brainstem mask, each self-gated (graceful WARNING + skip when its tool/training-data/model is absent) and called non-fatally from `pipeline.sh`: `wmh_bianca.sh` (FSL BIANCA), `wmh_lst_samseg.sh` (LST-AI + SAMSEG), `wmh_synthseg.sh` (WMH-SynthSeg), `wmh_segcsvd.sh` (segcsvdWMH), `wmh_shiva.sh` (SHIVA-WMH), `wmh_mars.sh` (MARS-WMH); plus `brainstem_aanseg.sh` (EXPLORATORY AANSegment, ≤1 mm only) and the post-detection `fp_filter.sh`. **Default-ON** (master switch `true`, no-op until their tool/data is present): `WMH_SYNTHSEG_ENABLED`, `WMH_SHIVA_ENABLED`, `WMH_MARS_ENABLED`, `BRAINSTEM_AANSEG_ENABLED`, and `WMH_BIANCA_ENABLED` (the last is a no-op until `BIANCA_TRAINING_MASTERFILE`/`BIANCA_LOAD_CLASSIFIER` is set). **Default-OFF** (opt-in via env): `WMH_LSTAI_ENABLED`, `WMH_SAMSEG_ENABLED`, `WMH_SEGCSVD_ENABLED`, `FP_FILTER_ENABLED` (lossy — removes true small lesions; keep off for brainstem). All master switches honour env overrides (`${VAR:-default}`). These add-ons only CORROBORATE — none alters the primary FLAIR detection. None is validated in the brainstem — keep conservative pons QA / human-in-the-loop.
 
@@ -133,7 +151,7 @@ At startup `pipeline.sh::main` runs `check_all_dependencies` (`environment.sh`) 
 
 - **Output format** — one line per dependency: `name | REQ/OPT | present/absent (+path/version) | gates: <feature>`, grouped into `Core (REQUIRED)`, `FreeSurfer (OPTIONAL)`, `MRtrix (OPTIONAL)`, `WMH / ML tools (OPTIONAL)`, `Container runtimes & images (OPTIONAL)`, `Atlases (OPTIONAL)`.
 - **Core (REQUIRED, fatal):** FSL (`fslmaths`/`flirt`/`fast`/`bet`/`robustfov`/`cluster`/`fslstats`/`fslinfo`), ANTs (`antsRegistration`/`antsApplyTransforms`/`N4BiasFieldCorrection`/`DenoiseImage`/`Atropos`/`ThresholdImage`/`ImageMath`/`ResampleImage`/`antsRegistrationSyN.sh`), `dcm2niix`, `c3d`, and Python via `uv` (`nibabel`/`numpy`/`sklearn`). The fatal enforcement still lives in `check_ants`/`check_fsl`/`check_c3d`/`check_dcm2niix`; the inventory mirrors them as REQ for one combined view.
-- **Optional (report-only, NEVER fatal):** FreeSurfer (`FREESURFER_HOME`+license, `recon-all`, `segmentBS.sh`/`segment_subregions`, `SegmentAAN.sh`, `mri_synthseg`, `mri_synthsr`, `mri_synthstrip`, `mri_WMHsynthseg`, `mri_sclimbic_seg`, `mri_segment_hypothalamic_subunits`, `run_samseg`); MRtrix (`dwidenoise`, `mrdegibbs`, `dwifslpreproc`, `dwibiascorrect`, `dwi2mask`, `mrconvert`); WMH/ML (`bianca`, `make_bianca_mask`, `python:antspynet` → SHIVA, `lst`/`lst_ai` → LST-AI); container runtimes (`docker`, `apptainer`/`singularity`) AND the specific images the WMH modules reference (segcsvd, LST-AI, SHiVAi, MARS-WMH, MARS-brainstem) probed via `docker image inspect` / `.sif`-on-disk with **short timeouts** so a wedged Docker daemon can never hang startup; atlases (HarvardOxford, FSL standard templates — the full Bianciardi/CIT168/AAL3 probe is done by `check_atlas_availability`).
+- **Optional (report-only, NEVER fatal):** FreeSurfer (`FREESURFER_HOME`+license, `recon-all`, `segmentBS.sh`/`segment_subregions`, `SegmentAAN.sh`, `mri_histo_atlas_segment(_fireants)` → NextBrain, `mri_synthseg`, `mri_synthsr`, `mri_synthstrip`, `mri_WMHsynthseg`, `mri_sclimbic_seg`, `mri_segment_hypothalamic_subunits`, `run_samseg`); MRtrix (`dwidenoise`, `mrdegibbs`, `dwifslpreproc`, `dwibiascorrect`, `dwi2mask`, `mrconvert`); WMH/ML (`bianca`, `make_bianca_mask`, `python:antspynet` → SHIVA, `lst`/`lst_ai` → LST-AI); container runtimes (`docker`, `apptainer`/`singularity`) AND the specific images the WMH modules reference (segcsvd, LST-AI, SHiVAi, MARS-WMH, MARS-brainstem) probed via `docker image inspect` / `.sif`-on-disk with **short timeouts** so a wedged Docker daemon can never hang startup; atlases (HarvardOxford, FSL standard templates, JHU labels, XTRACT — the full Bianciardi/CIT168/AAL3 + registry-key probe is done by `check_atlas_availability`, which prints one line per registry key with a download hint when an ENABLED key is absent).
 - **Config cross-reference** — the inventory reads the feature toggles (`BRAINSTEM_SEGMENTATION_METHOD`, `SEG_RUN_FREESURFER`/`SEG_RUN_MULTI_ATLAS`/`SEG_RUN_SYNTHSEG`, `USE_SYNTHSR`, `PROCESS_DWI`, `WMH_*_ENABLED`, `MARS_BRAINSTEM_ENABLED`, `BRAINSTEM_AANSEG_ENABLED`). When a feature is **enabled but its dependency is absent** it logs a clear `WARNING` ("X is ENABLED but <tool> not found — that feature will be SKIPPED") and adds it to the end-of-section **skip list**. The summary block prints present/absent counts and the concise list of optional features that WILL be skipped.
 - **Container image env vars / defaults** (override to point at your pull / `.sif`): `SEGCSVD_DOCKER_IMAGE` (`segcsvd_rc03`) / `SEGCSVD_CONTAINER_IMAGE` (.sif); `LSTAI_DOCKER_IMAGE` (`jqmcginnis/lst-ai:latest`); `SHIVA_WMH_CONTAINER_IMAGE` (docker name OR .sif); `MARS_WMH_DOCKER_IMAGE` (`ghcr.io/miac-research/wmh-nnunet:latest`) / `MARS_WMH_SIF`; `MARS_BRAINSTEM_DOCKER_IMAGE` (`ghcr.io/miac-research/dl-brainstem:latest`) / `MARS_BRAINSTEM_SIF`.
 - **Implementation** — helpers in `environment.sh`: `_dep_probe_cmd` (command→path), `_dep_probe_pymodule` (`uv run --no-sync python -c "import …"`, bounded), `_dep_probe_image` (docker/`.sif`, bounded), `_dep_timeout` (portable `timeout`/`gtimeout`/watchdog bound), `_dep_report` (matrix line + enabled-but-missing WARNING + counters). Unit-tested in `tests/test_dependency_report_unit.sh` (mocked present/absent, skip-list, non-fatal). The CI smoke test still greps the preserved strings `Comprehensive Pipeline Dependency Check` and `Dependency Check Summary`.
@@ -155,6 +173,10 @@ The FINAL pipeline stage (Step 8.5, `reporting.sh::generate_summary_report`, aft
 - **Top-level report** `reports/brainstemx_report.html` (+ `.md` fallback): a one-stop dashboard embedding all populated tables, the run manifest, and the discovered visualizations.
 
 Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv`); the bash layer owns only the FSL-dependent parts (mask discovery + `fslstats` volume sidecars). Everything is **gated/graceful** (a minimal T1+FLAIR run still produces a valid smaller report; absent sections render as "No data") and **idempotent**. Governed by `REPORTING_ENABLED` (default `true`). Canonical tree + table schemas: `docs/output_structure.md`.
+
+## Agentic environment (Claude Code on the web)
+
+`.claude/hooks/session-start.sh` (registered in `.claude/settings.json`, tracked despite `.claude/*` being ignored) runs only in remote sessions: `uv sync`, `uv tool install shellcheck-py` (puts `shellcheck` on `~/.local/bin`, exported via `CLAUDE_ENV_FILE`), and a `/tmp/fake_fsl` `FSLDIR` stub so `bash src/pipeline.sh --help` works without FSL. After it runs, every check in "CI / local checks" is runnable as-is. No FSL/ANTs/FreeSurfer exist in the container: unit tests mock them (`tests/test_helpers.sh` `create_mock_*`).
 
 ## Runtime notes
 

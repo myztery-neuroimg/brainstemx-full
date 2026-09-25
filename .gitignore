@@ -24,7 +24,9 @@ data
 *.git
 *.jpg
 *.pyc
-.claude
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 .shellcheckrc
 .pytest
 pytest_cache

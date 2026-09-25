@@ -102,13 +102,19 @@ _reporting_same_grid() {
 #   Classify a detailed_brainstem / segmentation mask by provenance source from
 #   its filename, mirroring analysis.sh's _region_source_from_path tagging.
 # ---------------------------------------------------------------------------
+_reporting_source_tags() {
+    local tags="${MULTI_ATLAS_SOURCE_TAGS:-bianciardi cit168 aal3} ${SEG_TOOL_SOURCE_TAGS:-nextbrain}"
+    printf '%s' "$tags"
+}
+
 _reporting_source_for_mask() {
     local base
     base=$(basename "$1")
+    local t
+    for t in $(_reporting_source_tags); do
+        case "$base" in "${t}"_*) echo "$t"; return 0 ;; esac
+    done
     case "$base" in
-        bianciardi_*) echo "bianciardi" ;;
-        cit168_*)     echo "cit168" ;;
-        aal3_*)       echo "aal3" ;;
         synthseg_*)   echo "synthseg" ;;
         aseg_*)       echo "aseg" ;;
         *)            echo "freesurfer" ;;
@@ -185,11 +191,10 @@ _reporting_emit_volume_row() {
     vol=$(printf '%s' "$vol_line" | cut -f2)
     region=$(basename "$mask" .nii.gz)
     # Strip a leading atlas/source prefix so the region column is anatomy-focused.
-    region="${region#bianciardi_}"
-    region="${region#cit168_}"
-    region="${region#aal3_}"
-    region="${region#synthseg_}"
-    region="${region#aseg_}"
+    local t
+    for t in $(_reporting_source_tags) synthseg aseg; do
+        region="${region#"${t}"_}"
+    done
     printf '%s\t%s\t%s\t%s\n' "$region" "$source" "$vol" "$nvox" >> "$out_tsv"
     return 0
 }

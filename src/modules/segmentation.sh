@@ -241,6 +241,7 @@ _seg_method_report_line() {
     [ "${SEG_RUN_HARVARD_OXFORD:-true}" = "true" ] && enabled="${enabled}harvard_oxford "
     [ "${SEG_RUN_MULTI_ATLAS:-true}" = "true" ]    && enabled="${enabled}multi_atlas "
     [ "${SEG_RUN_FREESURFER:-true}" = "true" ]     && enabled="${enabled}freesurfer "
+    [ "${SEG_RUN_NEXTBRAIN:-true}" = "true" ] && [ "${BRAINSTEM_NEXTBRAIN_ENABLED:-true}" = "true" ] && enabled="${enabled}nextbrain "
     enabled="${enabled% }"
     local line="all (parallel paths enabled: ${enabled:-none})"
     # Append the succeeded-paths list once the parallel run has populated the
@@ -452,9 +453,13 @@ _extract_brainstem_all_parallel() {
     # volumes immediately. Default on. sclimbic is a gated DL limbic seg (off by default).
     local run_ss="${SEG_RUN_SYNTHSEG:-true}"
     local run_sc="${FS_HARVEST_SCLIMBIC:-false}"
+    # NextBrain histological-atlas nuclei (FS 8 dev, no recon; ~15-30 min/side).
+    local run_nb="${SEG_RUN_NEXTBRAIN:-true}"
+    [ "${BRAINSTEM_NEXTBRAIN_ENABLED:-true}" = "true" ] || run_nb=false
+    declare -f run_nextbrain_brainstem >/dev/null 2>&1 || run_nb=false
 
     log_formatted "INFO" "=== PARALLEL BRAINSTEM SEGMENTATION (method=all) ==="
-    log_message "Enabled paths: harvard_oxford=$run_ho  multi_atlas=$run_ma  freesurfer=$run_fs  synthseg=$run_ss  sclimbic=$run_sc"
+    log_message "Enabled paths: harvard_oxford=$run_ho  multi_atlas=$run_ma  freesurfer=$run_fs  synthseg=$run_ss  sclimbic=$run_sc  nextbrain=$run_nb"
 
     # Compute the shared MNI->subject warp ONCE (before fan-out) so the HO and
     # multi-atlas paths reuse the same transform instead of racing on it.
@@ -585,6 +590,23 @@ _extract_brainstem_all_parallel() {
         log_message "  sclimbic path PID=$sc_pid (log: ${log_dir}/sclimbic.log)"
     fi
 
+    # NextBrain: atlas-driven Bayesian nuclei (no recon). Gated + graceful.
+    local nb_pid=""
+    if [ "$run_nb" = "true" ]; then
+        (
+            export ANTS_THREADS="$per_path_threads"
+            log_formatted "INFO" "[parallel] NextBrain histological-atlas path starting"
+            if run_nextbrain_brainstem "$input_file" "$input_basename"; then
+                log_formatted "SUCCESS" "[parallel] NextBrain path complete"
+            else
+                log_formatted "WARNING" "[parallel] NextBrain path unavailable (non-fatal)"
+                exit 1
+            fi
+        ) >"${log_dir}/nextbrain.log" 2>&1 &
+        nb_pid=$!
+        log_message "  NextBrain path PID=$nb_pid (log: ${log_dir}/nextbrain.log)"
+    fi
+
     # ── Collect each path independently (failure is non-fatal) ──────────────
     # `wait <pid>` returns the job's exit status; we capture it without letting a
     # non-zero status abort the parent under set -e.
@@ -648,6 +670,18 @@ _extract_brainstem_all_parallel() {
             log_formatted "SUCCESS" "sclimbic path: OK"
         else
             log_formatted "WARNING" "sclimbic path: unavailable (rc=$sc_rc) — non-fatal"
+        fi
+    fi
+
+    if [ -n "$nb_pid" ]; then
+        local nb_rc=0; wait "$nb_pid" || nb_rc=$?
+        cat "${log_dir}/nextbrain.log" 2>/dev/null || true
+        SEG_ALL_PATHS_RAN+=("nextbrain")
+        if [ "$nb_rc" -eq 0 ]; then
+            SEG_ALL_PATHS_OK+=("nextbrain")
+            log_formatted "SUCCESS" "NextBrain path: OK"
+        else
+            log_formatted "WARNING" "NextBrain path: unavailable (rc=$nb_rc) — non-fatal"
         fi
     fi
 

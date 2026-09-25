@@ -763,12 +763,16 @@ generate_segmentation_overlays() {
 
     local detailed="${subject_dir}/segmentation/detailed_brainstem"
     if [ -d "$detailed" ]; then
-        local src f
-        for src in freesurfer bianciardi cit168 aal3; do
+        local src f t
+        local tags="${MULTI_ATLAS_SOURCE_TAGS:-bianciardi cit168 aal3} ${SEG_TOOL_SOURCE_TAGS:-nextbrain}"
+        # FreeSurfer parcels carry no source prefix: exclude every tagged family.
+        local -a fs_excl=()
+        for t in $tags; do fs_excl+=(! -name "${t}_*"); done
+        for src in freesurfer $tags; do
             f=""
             case "$src" in
-                freesurfer) f=$(find "$detailed" -name "*_pons.nii.gz" ! -name "bianciardi_*" ! -name "cit168_*" ! -name "aal3_*" 2>/dev/null | head -1) ;;
-                *)          f=$(find "$detailed" -name "${src}_*.nii.gz" ! -name "*intensity*" 2>/dev/null | head -1) ;;
+                freesurfer) f=$(find "$detailed" -name "*_pons.nii.gz" "${fs_excl[@]}" 2>/dev/null | head -1) ;;
+                *)          f=$(find "$detailed" -name "${src}_*.nii.gz" ! -name "*intensity*" ! -name "*_core.nii.gz" 2>/dev/null | head -1) ;;
             esac
             if [ -n "$f" ] && [ -f "$f" ]; then
                 _viz_snapshot "$t1" "$f" "${viz_dir}/seg_${src}.png" && \

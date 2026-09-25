@@ -36,7 +36,7 @@ mkdir -p "$EXTRACT_DIR"
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Ensure ANTS_PATH is properly expanded
-export ANTS_PATH="${ANTS_PATH}"
+export ANTS_PATH="${ANTS_PATH:-}"
 # Replace tilde with $HOME if present
 export ANTS_PATH="${ANTS_PATH/#\~/$HOME}"
 export ANTS_BIN="${ANTS_PATH}/bin"
@@ -157,6 +157,33 @@ export SEG_SYNTHSEG_ROBUST="${SEG_SYNTHSEG_ROBUST:-true}"   # --robust => SynthS
 export SEG_SYNTHSEG_PARC="${SEG_SYNTHSEG_PARC:-false}"      # --parc => add cortical parcellation (slower)
 
 # ---------------------------------------------------------------------------
+# NextBrain histological-atlas brainstem nuclei (brainstem_nextbrain.sh)
+# ---------------------------------------------------------------------------
+# FreeSurfer 8 (dev) mri_histo_atlas_segment_fireants: Bayesian segmentation with
+# the NextBrain probabilistic histological atlas (~300 ROIs/hemisphere incl.
+# pontine nuclei, LC, raphe, reticular formation, cranial-nerve nuclei, ...).
+# Contrast-agnostic, NO recon-all needed (takes the T1 directly), ~15-30 min per
+# side on CPU. Default ON but a NO-OP until the tool + FS license are present;
+# the first run must be done ONCE interactively to download the atlas files
+# (the pipeline runs it with stdin closed so the prompt cannot hang).
+# In 'all' mode it is one more parallel path (SEG_RUN_NEXTBRAIN). Outputs:
+# segmentation/detailed_brainstem/nextbrain_<name>_<l|r>_label<v>.nii.gz
+# (source tag 'nextbrain', analysed by the per-region GMM like any atlas).
+export BRAINSTEM_NEXTBRAIN_ENABLED="${BRAINSTEM_NEXTBRAIN_ENABLED:-true}"
+export SEG_RUN_NEXTBRAIN="${SEG_RUN_NEXTBRAIN:-true}"
+export NEXTBRAIN_MODE="${NEXTBRAIN_MODE:-invivo}"        # invivo | exvivo | cerebrum | hemi
+export NEXTBRAIN_DEVICE="${NEXTBRAIN_DEVICE:-cpu}"       # cpu | cuda
+export NEXTBRAIN_SIDES="${NEXTBRAIN_SIDES:-left right}"
+export NEXTBRAIN_THREADS="${NEXTBRAIN_THREADS:-}"        # empty -> ANTS_THREADS
+export NEXTBRAIN_EXTRA_ARGS="${NEXTBRAIN_EXTRA_ARGS:-}"  # e.g. "--skip 2" to save memory
+export NEXTBRAIN_OUTPUT_DIR="${NEXTBRAIN_OUTPUT_DIR:-}"  # default RESULTS_DIR/segmentation/nextbrain
+# Case-insensitive regex on lut.txt names selecting the brainstem labels to split.
+export NEXTBRAIN_LABEL_REGEX="${NEXTBRAIN_LABEL_REGEX:-pons|pontine|locus|coeruleus|raphe|reticular|lemnisc|peduncle|corticospinal|pyramid|trigemin|abducens|facial|vestibul|cochlear|oliv|trapezoid|parabrachial|pedunculopontine|tegment|medulla|midbrain|nigra|red_nucleus|periaqueductal|central_gray|colliculus|oculomotor|trochlear|hypoglossal|solitar|cuneate|gracile|ambiguus|vagus|brainstem|brain_stem|interpeduncular|cuneiform|laterodorsal|dorsal_motor|area_postrema|substantia|tectum|cerebellar_peduncle}"
+# Source tags of atlas-driven TOOLS (not MNI atlases) whose masks follow the
+# <tag>_<name>_label<v> convention in detailed_brainstem.
+export SEG_TOOL_SOURCE_TAGS="${SEG_TOOL_SOURCE_TAGS:-nextbrain}"
+
+# ---------------------------------------------------------------------------
 # FreeSurfer FULL-RECON HARVEST + extra ML methods (freesurfer_harvest.sh)
 # ---------------------------------------------------------------------------
 # recon-all is paid for ONCE; these harvest the rest of its output (NO second
@@ -234,7 +261,7 @@ export FS_BS_AGREEMENT_LEAKAGE_MAX="${FS_BS_AGREEMENT_LEAKAGE_MAX:-0.2}"  # max 
 #   Bianciardi/BrainstemNavigatorv1.0/1.0/{2a,2b}.* (MNI dirs only; IIT 1a/1b excluded)
 #   CIT168/MNI152/tpl-MNI152NLin6Asym_atlas-CIT168_res-01_dseg.nii.gz + CIT168_labels.txt
 #   AAL3/AAL3/AAL3v1_1mm.nii.gz + AAL3v1.nii.txt
-export ATLAS_DIR="${ATLAS_DIR:-${FSLDIR}/data/atlases}"
+export ATLAS_DIR="${ATLAS_DIR:-${FSLDIR:-}/data/atlases}"
 # Derived/cached MNI dsegs live under each atlas's */derived subdir by default.
 export MULTI_ATLAS_CACHE_DIR="${MULTI_ATLAS_CACHE_DIR:-${ATLAS_DIR}}"
 # Per-atlas enables. AAL3 is whole-brain and OFF by default (brainstem subset
@@ -246,6 +273,149 @@ export USE_AAL3="${USE_AAL3:-false}"
 export BIANCIARDI_PROB_THRESHOLD="${BIANCIARDI_PROB_THRESHOLD:-0.35}"
 # Bianciardi MNI source subdirs (relative to the BrainstemNavigator 1.0 root).
 export BIANCIARDI_MNI_SUBDIRS="${BIANCIARDI_MNI_SUBDIRS:-2a.BrainstemNucleiAtlas_MNI/labels_thresholded_probabilistic_${BIANCIARDI_PROB_THRESHOLD} 2b.DiencephalicNucleiAtlas_MNI/labels_thresholded_probabilistic_${BIANCIARDI_PROB_THRESHOLD}}"
+
+# ---------------------------------------------------------------------------
+# EXTRA MNI-space atlases — the ATLAS REGISTRY (src/modules/atlas_registry.sh)
+# ---------------------------------------------------------------------------
+# Any further MNI atlas is a CONFIG ENTRY, not a code change. Each key in
+# MULTI_ATLAS_EXTRA is described by ATLAS_<KEY>_* variables and enabled with
+# USE_<KEY>. All keys are warped with the SAME shared MNI->subject SyN warp and
+# split into segmentation/detailed_brainstem/<key>_<name>_label<v>.nii.gz masks
+# (discovered by analysis.sh through MULTI_ATLAS_SOURCE_TAGS below). Absence of
+# an atlas on disk is NON-fatal (WARNING + skip). Fields:
+#   TYPE      dseg (label image) | prob4d (4D prob atlas) | probdir (one prob
+#             map per nucleus) | probmap (single prob map -> one label)
+#   IMAGE     image file / dir, relative to ATLAS_DIR/REL (or absolute)
+#   LUT       FSL atlas .xml or "idx name" .txt (relative to REL, else ATLAS_DIR)
+#   SPACE     MNI152NLin6Asym (FSL MNI152; default) | MNI152NLin2009cAsym —
+#             2009c atlases are moved into NLin6 with the TemplateFlow transform
+#             MNI_2009C_TO_NLIN6_XFM (or TEMPLATEFLOW_HOME / ATLAS_DIR/templateflow)
+#             and SKIPPED when it is absent (never warped through the wrong template)
+#   LUT_OFFSET auto | 0 | 1  (image voxel value = LUT index + offset)
+#   PROB_THR  probability threshold for the prob* types
+#   LABELS    optional subset (LUT indices or names) — e.g. the pontine tracts
+#   RESTRICT  brainstem | none — intersect with the (dilated) HO brainstem extent;
+#             REQUIRED for whole-brain tract atlases
+#   SUBDIV    "<name_prefix>=<pons|midbrain|medulla> ..." gross aggregation
+#   DILATE    dilate tiny nuclei n voxels in subject space (LC is ~20 voxels)
+#   URL / CITATION / LICENSE  informational (availability report + provenance)
+export MULTI_ATLAS_EXTRA="${MULTI_ATLAS_EXTRA:-jhu xtract aan lc dr nextbrainmni}"
+
+# --- JHU ICBM-DTI-81 white-matter LABELS (ships with FSL) --------------------
+# Pontine/brainstem tracts: 1 MCP, 2 pontine crossing tract, 7/8 CST R/L,
+# 9/10 medial lemniscus R/L, 11/12 ICP R/L, 13/14 SCP R/L, 15/16 cerebral
+# peduncle R/L. FSL "Label" XML: index == voxel value (0 = Unclassified).
+# Whole-brain tracts (CST) are restricted to the brainstem extent.
+export USE_JHU="${USE_JHU:-true}"
+export ATLAS_JHU_REL="${ATLAS_JHU_REL:-JHU}"
+export ATLAS_JHU_TYPE="${ATLAS_JHU_TYPE:-dseg}"
+export ATLAS_JHU_IMAGE="${ATLAS_JHU_IMAGE:-JHU-ICBM-labels-1mm.nii.gz}"
+export ATLAS_JHU_LUT="${ATLAS_JHU_LUT:-JHU-labels.xml}"
+export ATLAS_JHU_SPACE="${ATLAS_JHU_SPACE:-MNI152NLin6Asym}"
+export ATLAS_JHU_LUT_OFFSET="${ATLAS_JHU_LUT_OFFSET:-0}"
+export ATLAS_JHU_LABELS="${ATLAS_JHU_LABELS:-1 2 7 8 9 10 11 12 13 14 15 16}"
+export ATLAS_JHU_RESTRICT="${ATLAS_JHU_RESTRICT:-brainstem}"
+export ATLAS_JHU_CITATION="${ATLAS_JHU_CITATION:-Mori S, et al. MRI Atlas of Human White Matter. Elsevier 2005; Hua K, et al. NeuroImage 2008;39(1):336-347 (ICBM-DTI-81)}"
+export ATLAS_JHU_LICENSE="${ATLAS_JHU_LICENSE:-distributed with FSL (FSL licence)}"
+
+# --- FSL XTRACT HCP probabilistic tract atlas (ships with FSL >= 6.0.4) -------
+# 4D population probability maps (xtract-tract-atlases-prob-1mm, one volume per
+# tract, XML index == volume). Pons-relevant: 15/16 corticospinal tract L/R,
+# 35 middle cerebellar peduncle. Thresholded winner-take-all -> dseg, then
+# restricted to the brainstem extent.
+export USE_XTRACT="${USE_XTRACT:-true}"
+export ATLAS_XTRACT_REL="${ATLAS_XTRACT_REL:-XTRACT}"
+export ATLAS_XTRACT_TYPE="${ATLAS_XTRACT_TYPE:-prob4d}"
+export ATLAS_XTRACT_IMAGE="${ATLAS_XTRACT_IMAGE:-xtract-tract-atlases-prob-1mm.nii.gz}"
+export ATLAS_XTRACT_LUT="${ATLAS_XTRACT_LUT:-XTRACT.xml}"
+export ATLAS_XTRACT_SPACE="${ATLAS_XTRACT_SPACE:-MNI152NLin6Asym}"
+export ATLAS_XTRACT_PROB_THR="${ATLAS_XTRACT_PROB_THR:-0.30}"
+export ATLAS_XTRACT_LABELS="${ATLAS_XTRACT_LABELS:-15 16 35}"
+export ATLAS_XTRACT_RESTRICT="${ATLAS_XTRACT_RESTRICT:-brainstem}"
+export ATLAS_XTRACT_CITATION="${ATLAS_XTRACT_CITATION:-Warrington S, et al. XTRACT - Standardised protocols for automated tractography in the human and macaque brain. NeuroImage 2020;217:116923}"
+export ATLAS_XTRACT_LICENSE="${ATLAS_XTRACT_LICENSE:-distributed with FSL (FSL licence)}"
+
+# --- Harvard Ascending Arousal Network (AAN) atlas v2.0 (download) -----------
+# Edlow lab, Dryad doi:10.5061/dryad.zw3r228d2 (v2.0, 2023): a combined label
+# image AAN_Brainstem_MNI152_1mm_v2p0.nii on the FSL MNI152 1 mm grid + a
+# FreeSurfer-style colour LUT (values == label indices) + per-nucleus binary
+# masks. Nuclei: LC, DR, MnR, PAG, PBC, PnO, PTg, LDTg, mRt, VTA (L/R splits).
+# Place the unzipped files under ATLAS_DIR/AAN. No-op until present.
+export USE_AAN="${USE_AAN:-true}"
+export ATLAS_AAN_REL="${ATLAS_AAN_REL:-AAN}"
+export ATLAS_AAN_TYPE="${ATLAS_AAN_TYPE:-dseg}"
+export ATLAS_AAN_IMAGE="${ATLAS_AAN_IMAGE:-AAN_Brainstem_MNI152_1mm_v2p0.nii}"
+export ATLAS_AAN_LUT="${ATLAS_AAN_LUT:-AAN_Brainstem_v2p0_Color_LUT_FreeSurfer.txt}"
+export ATLAS_AAN_LUT_FORMAT="${ATLAS_AAN_LUT_FORMAT:-freesurfer}"
+export ATLAS_AAN_LUT_OFFSET="${ATLAS_AAN_LUT_OFFSET:-0}"
+export ATLAS_AAN_SPACE="${ATLAS_AAN_SPACE:-MNI152NLin6Asym}"
+export ATLAS_AAN_SUBDIV="${ATLAS_AAN_SUBDIV:-lc=pons pbc=pons pno=pons ldtg=pons mnr=pons ptg=pons dr=midbrain pag=midbrain vta=midbrain mrt=midbrain}"
+export ATLAS_AAN_URL="${ATLAS_AAN_URL:-https://datadryad.org/dataset/doi:10.5061/dryad.zw3r228d2 (Harvard AAN atlas v2.0)}"
+export ATLAS_AAN_CITATION="${ATLAS_AAN_CITATION:-Edlow BL, et al. Sustaining wakefulness: Brainstem connectivity in human consciousness. Sci Transl Med 2024;16(745):eadj4303 (AAN atlas v2.0); Edlow BL, et al. J Neuropathol Exp Neurol 2012;71(6):531-546 (v1)}"
+export ATLAS_AAN_LICENSE="${ATLAS_AAN_LICENSE:-Dryad release (CC0 1.0 per Dryad policy; verify in the bundled README)}"
+
+# --- NextBrain whole-brain histological atlas in MNI152 1 mm (download) ------
+# compneurobilbao/nextbrain-mni-atlas: NextBrain (Casamitjana 2025) run on the
+# FSL MNI152_T1_1mm template -> nextbrain_wholebrain_MNI152_1mm.nii.gz (496
+# ROIs; right-hemisphere labels offset by 10000) + FreeSurfer-style LUT. The
+# brainstem ROIs are selected by name regex (same list as NEXTBRAIN_LABEL_REGEX)
+# so pontine nuclei / LC / raphe / lemnisci / peduncles reach the per-region
+# detection WITHOUT FreeSurfer 8 (the tool wrapper is preferred when available).
+export USE_NEXTBRAINMNI="${USE_NEXTBRAINMNI:-true}"
+export ATLAS_NEXTBRAINMNI_REL="${ATLAS_NEXTBRAINMNI_REL:-NextBrain}"
+export ATLAS_NEXTBRAINMNI_TYPE="${ATLAS_NEXTBRAINMNI_TYPE:-dseg}"
+export ATLAS_NEXTBRAINMNI_IMAGE="${ATLAS_NEXTBRAINMNI_IMAGE:-nextbrain_wholebrain_MNI152_1mm.nii.gz}"
+export ATLAS_NEXTBRAINMNI_LUT="${ATLAS_NEXTBRAINMNI_LUT:-nextbrain_wholebrain_MNI152_1mm_lut.txt}"
+export ATLAS_NEXTBRAINMNI_LUT_FORMAT="${ATLAS_NEXTBRAINMNI_LUT_FORMAT:-auto}"
+export ATLAS_NEXTBRAINMNI_LUT_OFFSET="${ATLAS_NEXTBRAINMNI_LUT_OFFSET:-0}"
+export ATLAS_NEXTBRAINMNI_SPACE="${ATLAS_NEXTBRAINMNI_SPACE:-MNI152NLin6Asym}"
+export ATLAS_NEXTBRAINMNI_LABEL_REGEX="${ATLAS_NEXTBRAINMNI_LABEL_REGEX:-pons|pontine|locus|coeruleus|raphe|reticular|lemnisc|peduncle|corticospinal|pyramid|trigemin|abducens|facial|vestibul|cochlear|oliv|trapezoid|parabrachial|pedunculopontine|tegment|medulla|midbrain|nigra|red_nucleus|periaqueductal|central_gray|colliculus|oculomotor|trochlear|hypoglossal|solitar|cuneate|gracile|ambiguus|vagus|brainstem|brain_stem|interpeduncular|cuneiform|laterodorsal|dorsal_motor|area_postrema|substantia|tectum}"
+export ATLAS_NEXTBRAINMNI_URL="${ATLAS_NEXTBRAINMNI_URL:-https://github.com/compneurobilbao/nextbrain-mni-atlas}"
+export ATLAS_NEXTBRAINMNI_CITATION="${ATLAS_NEXTBRAINMNI_CITATION:-Casamitjana A, et al. A probabilistic histological atlas of the human brain for MRI segmentation. Nature 2025 (NextBrain); MNI152 rendering: compneurobilbao/nextbrain-mni-atlas}"
+export ATLAS_NEXTBRAINMNI_LICENSE="${ATLAS_NEXTBRAINMNI_LICENSE:-see the repository + NextBrain atlas licence (FreeSurfer)}"
+
+# --- Dorsal raphe (supratrochlear subnucleus) mask, Wearn et al. 2024 ---------
+# Zenodo 10680563 (CC-BY-4.0): AW_DR.nii.gz, a ~32 mm^3 binary mask in ICBM
+# 2009b space -> needs the TemplateFlow 2009->NLin6 transform (skipped without
+# it). Tiny: dilated 1 voxel for the per-region statistics (core kept).
+export USE_DR="${USE_DR:-true}"
+export ATLAS_DR_REL="${ATLAS_DR_REL:-DorsalRaphe}"
+export ATLAS_DR_TYPE="${ATLAS_DR_TYPE:-probmap}"
+export ATLAS_DR_IMAGE="${ATLAS_DR_IMAGE:-AW_DR.nii.gz}"
+export ATLAS_DR_SPACE="${ATLAS_DR_SPACE:-MNI152NLin2009bAsym}"
+export ATLAS_DR_PROB_THR="${ATLAS_DR_PROB_THR:-0.5}"
+export ATLAS_DR_SUBDIV="${ATLAS_DR_SUBDIV:-dr=midbrain}"
+export ATLAS_DR_DILATE="${ATLAS_DR_DILATE:-1}"
+export ATLAS_DR_URL="${ATLAS_DR_URL:-https://zenodo.org/records/10680563}"
+export ATLAS_DR_CITATION="${ATLAS_DR_CITATION:-Wearn AR, et al. Dorsal raphe (supratrochlear subnucleus) mask in MNI space (ICBM 2009b). Zenodo 2024. doi:10.5281/zenodo.10680563}"
+export ATLAS_DR_LICENSE="${ATLAS_DR_LICENSE:-CC-BY-4.0}"
+
+# --- Locus coeruleus probabilistic atlas (download) --------------------------
+# A single LC probability map (e.g. Ye et al. 2021 7T atlas, or the Dahl et al.
+# 2022 LC meta-mask). Those releases are on the MNI152NLin6Asym 0.5 mm grid;
+# the registry resamples onto the FSL 1 mm grid. LC is ~20 voxels at 1 mm, so
+# the subject-space mask is dilated 1 voxel for the per-region statistics
+# (the undilated core is kept as *_core).
+export USE_LC="${USE_LC:-true}"
+export ATLAS_LC_REL="${ATLAS_LC_REL:-LC}"
+export ATLAS_LC_TYPE="${ATLAS_LC_TYPE:-probmap}"
+export ATLAS_LC_IMAGE="${ATLAS_LC_IMAGE:-LC_probability_MNI152.nii.gz}"
+export ATLAS_LC_SPACE="${ATLAS_LC_SPACE:-MNI152NLin6Asym}"
+export ATLAS_LC_PROB_THR="${ATLAS_LC_PROB_THR:-0.25}"
+export ATLAS_LC_SUBDIV="${ATLAS_LC_SUBDIV:-lc=pons}"
+export ATLAS_LC_DILATE="${ATLAS_LC_DILATE:-1}"
+export ATLAS_LC_CITATION="${ATLAS_LC_CITATION:-Ye R, et al. An in vivo probabilistic atlas of the human locus coeruleus at ultra-high field. NeuroImage 2021;225:117487; Dahl MJ, et al. NeuroImage 2022;250:118944 (LC meta-mask)}"
+export ATLAS_LC_LICENSE="${ATLAS_LC_LICENSE:-see the atlas distribution}"
+
+# TemplateFlow MNI152NLin2009cAsym -> MNI152NLin6Asym image transform, used for
+# any registry atlas declared in 2009c space (e.g. CIT168 2009cAsym variants).
+# Download: https://templateflow.s3.amazonaws.com/tpl-MNI152NLin6Asym/tpl-MNI152NLin6Asym_from-MNI152NLin2009cAsym_mode-image_xfm.h5
+export MNI_2009C_TO_NLIN6_XFM="${MNI_2009C_TO_NLIN6_XFM:-}"
+
+# Every multi-atlas provenance tag (built-ins + registry keys). analysis.sh
+# discovery, provenance tagging, reporting and visualisation iterate over this
+# list, so adding a registry key above is the ONLY change needed downstream.
+export MULTI_ATLAS_SOURCE_TAGS="${MULTI_ATLAS_SOURCE_TAGS:-bianciardi cit168 aal3 ${MULTI_ATLAS_EXTRA}}"
 
 # Harvard-Oxford subcortical maxprob probability threshold for the gross
 # Brain-Stem extent. thr25 is tighter than the most-dilated thr0 variant; the
@@ -261,6 +431,7 @@ export ATLAS_BIANCIARDI_REL="${ATLAS_BIANCIARDI_REL:-Bianciardi/BrainstemNavigat
 export ATLAS_CIT168_REL="${ATLAS_CIT168_REL:-CIT168/MNI152}"
 export ATLAS_AAL3_REL="${ATLAS_AAL3_REL:-AAL3/AAL3}"
 export ATLAS_HARVARDOXFORD_REL="${ATLAS_HARVARDOXFORD_REL:-HarvardOxford}"
+# (registry atlases use ATLAS_<KEY>_REL above: JHU, XTRACT, AAN, LC, DorsalRaphe, NextBrain)
 
 # ANTs registration parameters (existing)
 # REG_TRANSFORM_TYPE is set in the "Registration & motion correction" section below
