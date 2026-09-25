@@ -703,14 +703,104 @@ _viz_find_base_image() {
 }
 
 # ---------------------------------------------------------------------------
-# _viz_snapshot <base> <overlay> <out_png> [cmap]
-#   Resample the overlay onto the base grid if dims differ, then write a
-#   tri-planar PNG via FSL slicer. GRACEFUL: returns non-zero (no crash) on any
-#   failure (e.g. slicer absent).
+# Shared python renderer (src/modules/viz_render.py: numpy/nibabel/matplotlib)
+#
+#   _viz_py               -> "uv run python" when the renderer is usable, else ""
+#   viz_stage_dir <stage> -> <RESULTS_DIR>/visualizations/<stage> (created)
+#   viz_render <subcmd> <args...>
+#                         -> runs viz_render.py <subcmd> ...; honours
+#                            SKIP_VISUALIZATION / VIZ_PYTHON_RENDERER; NEVER
+#                            fatal (returns 1 on any failure, logs a WARNING)
+#   viz_figure <stage> <name> <subcmd> <args...>
+#                         -> viz_render with --out <stage dir>/<name>.png
+#
+# Every per-stage QC figure in the pipeline goes through these so the figures
+# are consistent (same colours per source, same planes/annotations) and so a
+# host without FSL slicer / fsleyes still gets full visual QC. Bash only
+# discovers inputs; all drawing happens in python.
+# ---------------------------------------------------------------------------
+_VIZ_PY_CACHE=""
+_viz_py() {
+    if [ -n "$_VIZ_PY_CACHE" ]; then
+        [ "$_VIZ_PY_CACHE" = "none" ] && return 1
+        printf '%s' "$_VIZ_PY_CACHE"; return 0
+    fi
+    if [ "${VIZ_PYTHON_RENDERER:-true}" != "true" ]; then _VIZ_PY_CACHE="none"; return 1; fi
+    if command -v uv >/dev/null 2>&1 && \
+       uv run --no-sync python -c "import numpy, nibabel, matplotlib" >/dev/null 2>&1; then
+        _VIZ_PY_CACHE="uv run --no-sync python"; printf '%s' "$_VIZ_PY_CACHE"; return 0
+    fi
+    _VIZ_PY_CACHE="none"
+    return 1
+}
+
+_viz_render_script() {
+    printf '%s/viz_render.py' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+}
+
+viz_stage_dir() {
+    local d="${RESULTS_DIR:-.}/visualizations/${1:-misc}"
+    mkdir -p "$d" 2>/dev/null || true
+    printf '%s' "$d"
+}
+
+viz_render() {
+    local subcmd="${1:-}"; shift || true
+    if [ "${SKIP_VISUALIZATION:-false}" = "true" ]; then return 1; fi
+    local py
+    py=$(_viz_py) || { log_message "viz: python renderer unavailable (uv/numpy/nibabel/matplotlib) — skipping ${subcmd}"; return 1; }
+    local script; script=$(_viz_render_script)
+    [ -f "$script" ] || { log_formatted "WARNING" "viz: renderer script missing: $script"; return 1; }
+    local err
+    # shellcheck disable=SC2086
+    if err=$($py "$script" "$subcmd" "$@" 2>&1 >/dev/null); then
+        return 0
+    fi
+    log_formatted "WARNING" "viz: ${subcmd} failed (non-fatal): $(printf '%s' "$err" | tail -1)"
+    return 1
+}
+
+viz_figure() {
+    local stage="$1" name="$2" subcmd="$3"; shift 3 || return 1
+    local out; out="$(viz_stage_dir "$stage")/${name}.png"
+    if viz_render "$subcmd" --out "$out" "$@"; then
+        log_message "viz: ${stage}/${name}.png"
+        printf '%s' "$out"
+        return 0
+    fi
+    return 1
+}
+
+# viz_gallery — (re)build visualizations/index.html + manifest.json.
+viz_gallery() {
+    local root="${RESULTS_DIR:-.}/visualizations"
+    [ -d "$root" ] || return 1
+    viz_render gallery --root "$root" --title "BrainStemX visual QC: ${SUBJECT_ID:-subject}" && \
+        log_message "viz: gallery -> ${root}/index.html"
+}
+
+# ---------------------------------------------------------------------------
+# _viz_snapshot <base> <overlay> <out_png> [colour]
+#   Overlay figure on the base image. Prefers the python renderer (contour of
+#   the overlay, slices centred on it, L/R annotated); falls back to FSL slicer
+#   when python is unavailable. GRACEFUL: returns non-zero (no crash) on any
+#   failure.
 # ---------------------------------------------------------------------------
 _viz_snapshot() {
     local base="$1" overlay="$2" out_png="$3" cmap="${4:-red}"
     [ -n "$base" ] && [ -f "$base" ] || return 1
+    if [ "${SKIP_VISUALIZATION:-false}" != "true" ] && _viz_py >/dev/null 2>&1; then
+        local nm; nm=$(basename "${overlay:-$base}" .nii.gz)
+        local col="$cmap"
+        case "$col" in red) col="" ;; esac   # let the renderer pick the source colour
+        if [ -n "$overlay" ] && [ -f "$overlay" ]; then
+            viz_render overlay --bg "$base" --out "$out_png" --slices 5 \
+                --mask "${overlay}:name=${nm}${col:+,colour=$col}" --title "$nm" && return 0
+        else
+            viz_render overlay --bg "$base" --out "$out_png" --slices 5 --center bg --title "$(basename "$base" .nii.gz)" && return 0
+        fi
+        # fall through to slicer on failure
+    fi
     command -v slicer >/dev/null 2>&1 || return 1
     if [ -n "$overlay" ] && [ -f "$overlay" ]; then
         local ov="$overlay"
@@ -896,6 +986,8 @@ generate_report_visualizations() {
     generate_multimodal_montage "$subject_id" "$subject_dir" "$mask" || \
         log_formatted "WARNING" "Viz: multi-modal montage reported a non-fatal failure"
     log_message "Report visualizations written to: ${subject_dir}/visualizations"
+    # Gallery index over every stage subdir + the legacy top-level PNGs.
+    viz_gallery || true
     return 0
 }
 
@@ -910,6 +1002,7 @@ export -f generate_segmentation_overlays
 export -f generate_hyperintensity_overlays
 export -f generate_multimodal_montage
 export -f generate_report_visualizations
+export -f _viz_py viz_stage_dir viz_render viz_figure viz_gallery
 
 # Function to launch visual QA in freeview without blocking pipeline execution
 launch_visual_qa() {

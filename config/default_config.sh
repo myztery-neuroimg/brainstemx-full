@@ -826,7 +826,17 @@ export ANALYSIS_PRIMARY_ENGINE="detect_hyperintensities"
 # HIERARCHICAL emits <prefix>_hierarchical_region_summary.tsv rolling the detected
 # lesion up across gross brainstem -> midbrain/pons/medulla -> nucleus (deduped).
 export ANALYSIS_EMIT_CONSENSUS=true       # emit cross-source agreement count + consensus mask
-export CONSENSUS_MIN_SOURCES=2            # consensus mask = voxels flagged by >= this many sources
+export CONSENSUS_MIN_SOURCES=2            # consensus mask = voxels flagged by >= this many vote units
+# Vote unit for the consensus: 'family' (default) counts ONE vote per source
+# family so several correlated atlas priors (Bianciardi + AAN + LC + NextBrain
+# on the same LC voxels, JHU + XTRACT on the CST) cannot satisfy a ">= 2
+# sources" consensus by themselves; 'source' = legacy one vote per source.
+export CONSENSUS_VOTE_BY="${CONSENSUS_VOTE_BY:-family}"
+export CONSENSUS_SOURCE_FAMILIES="${CONSENSUS_SOURCE_FAMILIES:-atlas:bianciardi,cit168,aal3,jhu,xtract,aan,lc,dr,nextbrainmni freesurfer:freesurfer,nextbrain harvard_oxford:harvard_oxford synthseg:synthseg}"
+# Minimum voxels (after brain masking / CSF-PV exclusion) for a per-region
+# mixture fit; smaller regions are logged in per_region_analysis/region_skips.tsv
+# and still contribute via their subdivision aggregates.
+export ANALYSIS_MIN_REGION_VOXELS="${ANALYSIS_MIN_REGION_VOXELS:-50}"
 export ANALYSIS_HIERARCHICAL_SUMMARY=true # emit the gross/subdivision/nucleus lesion roll-up TSV
 
 # ---------------------------------------------------------------------------

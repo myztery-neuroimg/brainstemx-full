@@ -780,15 +780,28 @@ _warp_bianciardi_overlay() {
     [ -f "$overlay_list" ] || return 0
 
     local overlay_out="${work_dir}/overlay"
-    mkdir -p "$overlay_out"
-    local nm src out
+    local region_out="${RESULTS_DIR}/segmentation/detailed_brainstem"
+    mkdir -p "$overlay_out" "$region_out"
+    local nm src out safe_nm i=0 mask vox
     while IFS=$'\t' read -r nm src; do
         case "$nm" in \#*|"") continue ;; esac
         [ -f "$src" ] || continue
         out="${overlay_out}/bianciardi_overlay_${nm}.nii.gz"
-        warp_atlas_dseg_to_subject "$src" "$out" "$subject_t1" "$reg_prefix" "true" || true
+        warp_atlas_dseg_to_subject "$src" "$out" "$subject_t1" "$reg_prefix" "true" || continue
+        # The overlay nuclei lost every voxel to the argmax dseg; expose each as
+        # its OWN discoverable region mask (label 1000+i, the "overlay" range)
+        # so per-region detection sees them instead of silently dropping them.
+        i=$((i + 1))
+        safe_nm=$(echo "$nm" | tr '[:upper:]' '[:lower:]' | tr ' /' '__' | tr -cd 'a-z0-9_')
+        mask="${region_out}/bianciardi_${safe_nm}_label$((1000 + i)).nii.gz"
+        if safe_fslmaths "overlay nucleus $nm" "$out" -bin "$mask" >/dev/null 2>&1 && [ -f "$mask" ]; then
+            read -r vox _ < <(fslstats "$mask" -V 2>/dev/null)
+            if [ -z "$vox" ] || [ "${vox%.*}" -le 0 ] 2>/dev/null; then rm -f "$mask"; else
+                log_message "    bianciardi_${safe_nm}_label$((1000 + i)) (overlay nucleus): ${vox} voxels"
+            fi
+        fi
     done < "$overlay_list"
-    log_message "  Warped Bianciardi overlay nuclei into subject space: $overlay_out"
+    log_message "  Warped Bianciardi overlay nuclei into subject space: $overlay_out (+ per-nucleus masks in $region_out)"
 }
 
 # ── Exports ──────────────────────────────────────────────────────────────────

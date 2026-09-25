@@ -730,6 +730,26 @@ _analysis_source_tags() {
     printf '%s' "$tags"
 }
 
+# Consensus vote unit. With many CORRELATED atlas sources (Bianciardi + AAN +
+# LC + NextBrain all label the LC; JHU + XTRACT both label the CST) a
+# ">= 2 sources agree" consensus is trivially satisfied by the same prior, not
+# by independent evidence. CONSENSUS_VOTE_BY=family (default) therefore counts
+# one vote per source FAMILY: atlas-prior masks, FreeSurfer-derived masks, the
+# Harvard-Oxford gross mask, SynthSeg. CONSENSUS_VOTE_BY=source restores the
+# legacy one-vote-per-source behaviour. Families: CONSENSUS_SOURCE_FAMILIES
+# ("family:src,src ..."); unknown sources vote as themselves.
+_analysis_consensus_key() {
+    local src="$1"
+    [ "${CONSENSUS_VOTE_BY:-family}" = "family" ] || { printf '%s' "$src"; return 0; }
+    local fams="${CONSENSUS_SOURCE_FAMILIES:-atlas:bianciardi,cit168,aal3,jhu,xtract,aan,lc,dr,nextbrainmni freesurfer:freesurfer,nextbrain harvard_oxford:harvard_oxford synthseg:synthseg}"
+    local f members
+    for f in $fams; do
+        members=",${f#*:},"
+        case "$members" in *",${src},"*) printf '%s' "${f%%:*}"; return 0 ;; esac
+    done
+    printf '%s' "$src"
+}
+
 _region_source_from_path() {
     local p="$1"
     local b
@@ -1130,6 +1150,8 @@ apply_per_region_gmm_analysis() {
     # outputs distinct and traceable in the report.
     local provenance_manifest="${per_region_dir}/region_provenance.tsv"
     printf 'region_tag\tregion_base\tsource\tmask_path\n' > "$provenance_manifest"
+    # Regions skipped as too small are recorded explicitly (not silently dropped).
+    printf 'region_tag\treason\tvoxels\tminimum\n' > "${per_region_dir}/region_skips.tsv"
 
     # Build the CSF exclusion mask ONCE (FLAIR space) since it is region-independent.
     # Region masks are resampled to FLAIR space below, so this mask aligns with all
@@ -1264,8 +1286,10 @@ apply_per_region_gmm_analysis() {
         
         log_message "$region_base: $original_voxels voxels → $brain_masked_voxels brain voxels"
         
-        if [ "$brain_masked_voxels" -lt 50 ]; then
-            log_formatted "WARNING" "$region_base has insufficient brain voxels ($brain_masked_voxels) - skipping"
+        local min_region_vox="${ANALYSIS_MIN_REGION_VOXELS:-50}"
+        if [ "$brain_masked_voxels" -lt "$min_region_vox" ]; then
+            log_formatted "WARNING" "$region_base [source=$region_source] has insufficient brain voxels ($brain_masked_voxels < $min_region_vox) - skipping (too small for a per-region mixture fit; it still contributes through its subdivision aggregate)"
+            printf '%s\t%s\t%s\t%s\n' "$region_tag" "too_small_after_brain_mask" "$brain_masked_voxels" "$min_region_vox" >> "${per_region_dir}/region_skips.tsv"
             continue
         fi
         
@@ -1280,8 +1304,9 @@ apply_per_region_gmm_analysis() {
             csf_excluded_voxels=$(fslstats "$region_csf_excluded" -V | awk '{print $1}')
             # Coerce to a safe integer so the -lt comparison can't error out
             [[ "$csf_excluded_voxels" =~ ^[0-9]+$ ]] || csf_excluded_voxels=0
-            if [ "$csf_excluded_voxels" -lt 50 ]; then
-                log_formatted "WARNING" "$region_base has insufficient voxels ($csf_excluded_voxels) after CSF/PV exclusion - skipping"
+            if [ "$csf_excluded_voxels" -lt "$min_region_vox" ]; then
+                log_formatted "WARNING" "$region_base [source=$region_source] has insufficient voxels ($csf_excluded_voxels < $min_region_vox) after CSF/PV exclusion - skipping"
+                printf '%s\t%s\t%s\t%s\n' "$region_tag" "too_small_after_csf_exclusion" "$csf_excluded_voxels" "$min_region_vox" >> "${per_region_dir}/region_skips.tsv"
                 continue
             fi
             region_resampled="$region_csf_excluded"
@@ -1309,17 +1334,19 @@ apply_per_region_gmm_analysis() {
                     fslmaths "$combined_result" -add "$region_connectivity" "$combined_result"
                     region_results+=("$region_connectivity")
 
-                    # Accumulate a per-SOURCE BINARY detection map for the consensus.
+                    # Accumulate a BINARY detection map per consensus VOTE UNIT
+                    # (source family by default; see _analysis_consensus_key).
                     if [ "$emit_consensus" = "true" ]; then
                         local _rc_bin="${gmm_temp_dir}/_detect_bin.nii.gz"
-                        local _src_map="${agreement_dir}/source_${region_source}_detect.nii.gz"
+                        local _vote_key; _vote_key=$(_analysis_consensus_key "$region_source")
+                        local _src_map="${agreement_dir}/source_${_vote_key}_detect.nii.gz"
                         if fslmaths "$region_connectivity" -bin "$_rc_bin" >/dev/null 2>&1; then
                             if [ -f "$_src_map" ]; then
                                 fslmaths "$_src_map" -max "$_rc_bin" -bin "$_src_map" >/dev/null 2>&1 || true
                             else
                                 fslmaths "$_rc_bin" -bin "$_src_map" >/dev/null 2>&1 || true
                             fi
-                            _src_detect_seen["$region_source"]=1
+                            _src_detect_seen["$_vote_key"]=1
                         fi
                     fi
 
@@ -1365,6 +1392,7 @@ apply_per_region_gmm_analysis() {
             done
             local n_sources="${#_src_detect_seen[@]}"
             local min_agree="${CONSENSUS_MIN_SOURCES:-2}"
+            log_message "  Consensus vote unit: ${CONSENSUS_VOTE_BY:-family} (${!_src_detect_seen[*]})"
             [[ "$min_agree" =~ ^[0-9]+$ ]] || min_agree=2
             [ "$min_agree" -lt 1 ] && min_agree=1
             [ "$min_agree" -gt "$n_sources" ] && min_agree="$n_sources"

@@ -74,7 +74,7 @@ _cross_modal_find_coregistered() {
     # Keyword set per modality (mirrors scan selection / detect_modality).
     local kw
     case "${modality^^}" in
-        T2)  kw="T2 SPACE" ;;
+        T2)  kw="SPACE T2W T2" ;;   # a true T2 (T2_SPACE / T2W) wins over a bare "T2" match
         SWI) kw="SWI SWAN susceptib t2_hemo venobold" ;;
         DWI) kw="DWI trace TRACE b1000 diffusion" ;;
         ADC) kw="ADC adc" ;;
@@ -86,6 +86,14 @@ _cross_modal_find_coregistered() {
     # collapsing to one result, so the trace is never lost to find ordering.
     local dwi_excl="cat"
     [ "${modality^^}" = "DWI" ] && dwi_excl="grep -vi adc"
+    # A T2 candidate must not be a FLAIR / DWI / SWI / ADC series that merely
+    # carries "T2" in its series description (T2*-weighted SWI such as
+    # "T2_SWI_AX", "T2_SPACE_FLAIR"). Mirrors the exclusion in
+    # scan_selection.sh::select_secondary_modality_scan.
+    # The test is applied to the SOURCE-series part of the name only (before
+    # "_to_"), because the cascade suffix itself contains "flair".
+    local t2_excl="cat"
+    [ "${modality^^}" = "T2" ] && t2_excl="_cross_modal_drop_t2_contaminants"
 
     local k found suffix
     # Pass 1: FLAIR-anchor-space resample (closest to the analysis space).
@@ -94,12 +102,25 @@ _cross_modal_find_coregistered() {
         for k in $kw; do
             found=$(find "$cm_dir" -maxdepth 1 -type f -iname "*${k}*${suffix}" \
                         ! -iname "*FLAIR*to_flair*" 2>/dev/null \
-                        | $dwi_excl | head -1)
+                        | $dwi_excl | $t2_excl | head -1)
             [ -n "$found" ] && { echo "$found"; return 0; }
         done
     done
     echo ""
     return 1
+}
+
+# Filter (stdin -> stdout) dropping T2 candidates whose source-series name
+# (basename up to "_to_") is really a FLAIR/DWI/SWI/ADC series.
+_cross_modal_drop_t2_contaminants() {
+    local f base src
+    while IFS= read -r f; do
+        base=$(basename "$f"); src="${base%%_to_*}"
+        case "${src,,}" in
+            *flair*|*dwi*|*trace*|*swi*|*swan*|*adc*|*susceptib*|*hemo*|*venobold*) continue ;;
+        esac
+        printf '%s\n' "$f"
+    done
 }
 
 # ---------------------------------------------------------------------------

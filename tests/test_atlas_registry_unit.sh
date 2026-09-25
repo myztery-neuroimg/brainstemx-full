@@ -334,6 +334,13 @@ if declare -f _region_source_from_path >/dev/null 2>&1; then
     assert_equals "bianciardi" "$(_region_source_from_path "$region_out/bianciardi_LC_label5.nii.gz")" "analysis: built-in tags unchanged"
     assert_equals "freesurfer" "$(_region_source_from_path "$region_out/subj_pons.nii.gz")" "analysis: untagged detailed_brainstem parcel -> freesurfer"
     assert_contains "$(_analysis_source_tags)" "xtract" "analysis: source tags include registry keys"
+    unset CONSENSUS_VOTE_BY CONSENSUS_SOURCE_FAMILIES
+    assert_equals "atlas" "$(_analysis_consensus_key jhu)"             "consensus: jhu votes as the 'atlas' family"
+    assert_equals "atlas" "$(_analysis_consensus_key bianciardi)"      "consensus: bianciardi votes as 'atlas'"
+    assert_equals "freesurfer" "$(_analysis_consensus_key nextbrain)"  "consensus: nextbrain votes with freesurfer"
+    assert_equals "harvard_oxford" "$(_analysis_consensus_key harvard_oxford)" "consensus: HO is its own family"
+    assert_equals "mystery" "$(_analysis_consensus_key mystery)"       "consensus: unknown source votes as itself"
+    assert_equals "jhu" "$(CONSENSUS_VOTE_BY=source _analysis_consensus_key jhu)" "consensus: CONSENSUS_VOTE_BY=source keeps per-source votes"
 fi
 source "$PROJECT_ROOT/src/modules/reporting.sh" 2>/dev/null || true
 if declare -f _reporting_source_for_mask >/dev/null 2>&1; then
