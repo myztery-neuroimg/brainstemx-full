@@ -81,7 +81,9 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   reporting_tables.py    # stdlib-only aggregator behind reporting.sh (parses provenance/summaries, renders tables + top-level report; called via uv)
   qa.sh                  # 20+ validation checks
 config/default_config.sh # all pipeline defaults (has include guard)
-tests/                   # 31 bash test scripts (incl. test_atlas_registry_unit.sh, test_nextbrain_unit.sh) + 2 pytest modules
+src/benchmark/           # benchmark scaffolding: phantom generator, metrics, dataset registry (ds004199 anonymous fetch; MS/WMH challenges referenced), adapters (threshold / legacy_gmm / posterior / precomputed), A/B runner, report — docs/benchmarking.md
+scripts/benchmark.py     # CLI: phantom | datasets | fetch | run | ab | compare-known | report
+tests/                   # 31 bash test scripts (incl. test_atlas_registry_unit.sh, test_nextbrain_unit.sh) + pytest modules (reporting, gmm, viz_render, benchmark)
 .claude/hooks/session-start.sh  # web-session bootstrap (uv sync, shellcheck, FSLDIR stub) — registered in .claude/settings.json
 ```
 
@@ -187,6 +189,10 @@ Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv
 ## Agentic environment (Claude Code on the web)
 
 `.claude/hooks/session-start.sh` (registered in `.claude/settings.json`, tracked despite `.claude/*` being ignored) runs only in remote sessions: `uv sync`, `uv tool install shellcheck-py` (puts `shellcheck` on `~/.local/bin`, exported via `CLAUDE_ENV_FILE`), and a `/tmp/fake_fsl` `FSLDIR` stub so `bash src/pipeline.sh --help` works without FSL. After it runs, every check in "CI / local checks" is runnable as-is. No FSL/ANTs/FreeSurfer exist in the container: unit tests mock them (`tests/test_helpers.sh` `create_mock_*`).
+
+## Benchmarking
+
+`uv run python scripts/benchmark.py {phantom,datasets,fetch,run,ab,compare-known,report}` (see `docs/benchmarking.md`). Ground truth from public datasets (OpenNeuro ds004199 via anonymous S3; WMH 2017 / ISBI 2015 / MSSEG 2016 / Shifts referenced, never vendored) or the synthetic phantom; adapters evaluate the legacy engine, the posterior engine or pre-computed masks over a region (`brain|wm|brainstem|<glob>`); A/B runs are paired with bootstrap CIs + Wilcoxon. Reference numbers in `src/benchmark/known_benchmarks.json` are approximate until `verified: true`.
 
 ## Runtime notes
 

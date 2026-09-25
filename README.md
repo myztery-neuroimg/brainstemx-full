@@ -78,6 +78,7 @@ Use `-t STAGE` to resume from any stage (e.g., `-t 4` or `-t registration`).
 
 - **[Technical Overview](docs/TECHNICAL_OVERVIEW.md)** - Comprehensive technical documentation
 - **[Output Structure](docs/output_structure.md)** - Canonical results tree, summary tables, and the top-level report
+- **[Benchmarking](docs/benchmarking.md)** - Ground-truth evaluation on public datasets / synthetic phantom, A/B comparison of detection engines, published reference numbers
 - **[Multi-Atlas Integration](docs/multi_atlas_integration_spec.md)** - Bianciardi/CIT168/AAL3 brainstem labeling + the atlas registry (JHU/XTRACT/AAN/LC/DR/NextBrain-MNI) + the NextBrain tool wrapper
 - **[FreeSurfer Brainstem Substructures](docs/brainstem_freesurfer_segmentation_spec.md)** - Iglesias 2015 `segmentBS` parcels (replaces Talairach)
 - **[Scan Selection](docs/README_scan_selection.md)** - Details on intelligent scan selection
