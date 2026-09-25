@@ -1488,6 +1488,20 @@ export REPORTING_ENABLED=true     # master switch for the reporting stage
 # visualizations/index.html is the gallery. Falls back to FSL slicer for the
 # legacy snapshots when python is unavailable. SKIP_VISUALIZATION still wins.
 export VIZ_PYTHON_RENDERER="${VIZ_PYTHON_RENDERER:-true}"
+# Per-stage figure gates (all default on; each figure is a graceful no-op when
+# its inputs are absent). Outputs: visualizations/<stage>/<name>.png
+#   preprocess       : denoise + N4 before/after/difference per modality
+#   brain_extraction : mask contour tri-planar + posterior-fossa coverage
+#   registration     : checkerboard + moving-edge overlays per registered pair
+#   segmentation     : per-source label maps (legend), pons focus, subdivisions
+#   detection        : lesion union + agreement heat, per-vote-unit maps,
+#                      per-region z-score maps + fit histograms (capped)
+export VIZ_PREPROCESS_ENABLED="${VIZ_PREPROCESS_ENABLED:-true}"
+export VIZ_BRAIN_EXTRACTION_ENABLED="${VIZ_BRAIN_EXTRACTION_ENABLED:-true}"
+export VIZ_REGISTRATION_ENABLED="${VIZ_REGISTRATION_ENABLED:-true}"
+export VIZ_SEGMENTATION_ENABLED="${VIZ_SEGMENTATION_ENABLED:-true}"
+export VIZ_DETECTION_ENABLED="${VIZ_DETECTION_ENABLED:-true}"
+export VIZ_DETECTION_MAX_REGIONS="${VIZ_DETECTION_MAX_REGIONS:-12}"   # per-region figures: subdivisions always, nuclei/tracts with detections up to this many
 
 # Note: reporting also reuses CROSS_MODAL_SUBDIR (cross-modal table location)
 # and SKIP_VISUALIZATION (skip the report visualizations) from the blocks above.

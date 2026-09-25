@@ -586,7 +586,8 @@ build_probmap_dseg() {
     if [ -n "$maxv" ] && awk -v m="$maxv" 'BEGIN{exit !(m > 1.0)}'; then
         t=$(awk -v x="$thr" 'BEGIN{print x*100}')
     fi
-    if ! safe_fslmaths "probmap->dseg $name" "$pmap" -thr "$t" -bin "$out_dseg" >/dev/null 2>&1 || [ ! -f "$out_dseg" ]; then
+    # -nan first: some releases (Dahl 2022 LC meta-mask) store NaN background.
+    if ! safe_fslmaths "probmap->dseg $name" "$pmap" -nan -thr "$t" -bin "$out_dseg" >/dev/null 2>&1 || [ ! -f "$out_dseg" ]; then
         log_formatted "WARNING" "probmap dseg build failed for $pmap"
         return 1
     fi

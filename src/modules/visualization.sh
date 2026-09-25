@@ -1097,3 +1097,221 @@ launch_visual_qa() {
 }
 
 log_message "Visualization module loaded"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-stage QC figures (python renderer). Each is GRACEFUL (returns 0 when
+# inputs or the renderer are absent) and idempotent (re-renders in place).
+# Output: <RESULTS_DIR>/visualizations/<stage>/<name>.png (+ .caption.txt).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# viz_preprocess_figures <basename> <oriented> <denoised> <n4_output>
+#   Denoise and N4 before/after/difference panels for one modality.
+viz_preprocess_figures() {
+    local base="$1" oriented="${2:-}" denoised="${3:-}" n4="${4:-}"
+    [ "${VIZ_PREPROCESS_ENABLED:-true}" = "true" ] || return 0
+    if [ -n "$oriented" ] && [ -f "$oriented" ] && [ -n "$denoised" ] && [ -f "$denoised" ] && [ "$oriented" != "$denoised" ]; then
+        viz_figure preprocess "${base}_denoise" diff --before "$oriented" --after "$denoised" --labels "oriented,denoised" \
+            --planes axial --slices 2 --title "${base}: denoising" \
+            --caption "${base}: denoised vs oriented input; the difference panel should look like structure-free noise" >/dev/null || true
+    fi
+    if [ -n "$denoised" ] && [ -f "$denoised" ] && [ -n "$n4" ] && [ -f "$n4" ] && [ "$denoised" != "$n4" ]; then
+        viz_figure preprocess "${base}_n4" diff --before "$denoised" --after "$n4" --labels "denoised,N4" \
+            --planes axial,coronal --slices 2 --title "${base}: N4 bias correction" \
+            --caption "${base}: N4 bias-corrected vs denoised; the difference panel is the estimated bias field (smooth, low-frequency)" >/dev/null || true
+    fi
+    return 0
+}
+
+# viz_brain_extraction_figures <input_image> <brain_mask> [method]
+#   Brain-mask contour tri-planar (slices spread through the mask) plus a
+#   posterior-fossa focused axial/sagittal set (brainstem + cerebellum
+#   inclusion is the failure mode that matters for this pipeline).
+viz_brain_extraction_figures() {
+    local img="$1" mask="$2" method="${3:-${BRAIN_EXTRACTION_METHOD:-}}"
+    [ "${VIZ_BRAIN_EXTRACTION_ENABLED:-true}" = "true" ] || return 0
+    [ -f "$img" ] && [ -f "$mask" ] || return 0
+    local base; base=$(basename "$img" .nii.gz)
+    viz_figure brain_extraction "${base}_mask" overlay --bg "$img" --mask "${mask}:name=brain,mode=contour,colour=#00ff7f" \
+        --slices 6 --center mask --title "${base}: brain mask${method:+ ($method)}" \
+        --caption "${base}: brain-extraction mask contour${method:+ ($method)}; check the cerebellum and brainstem are inside the contour and no dura/eye is included" >/dev/null || true
+    # Posterior fossa: the lowest third of the mask, sagittal + axial.
+    viz_figure brain_extraction "${base}_mask_posterior_fossa" overlay --bg "$img" --mask "${mask}:name=brain,mode=fill,alpha=0.25,colour=#00ff7f" \
+        --planes sagittal,axial --slices 4 --center mask --zoom-mm 70 --title "${base}: posterior fossa coverage" \
+        --caption "${base}: posterior-fossa view of the brain mask (medulla/pons/cerebellum must be filled)" >/dev/null || true
+    return 0
+}
+
+# viz_registration_figures <fixed> <moving_registered> <pair_name> [focus_mask]
+#   Checkerboard + moving-edge overlay for one registered pair.
+viz_registration_figures() {
+    local fixed="$1" moving="$2" pair="$3" focus="${4:-}"
+    [ "${VIZ_REGISTRATION_ENABLED:-true}" = "true" ] || return 0
+    [ -f "$fixed" ] && [ -f "$moving" ] || return 0
+    local -a extra=()
+    [ -n "$focus" ] && [ -f "$focus" ] && extra=(--mask "$focus")
+    viz_figure registration "${pair}_checkerboard" checkerboard --fixed "$fixed" --moving "$moving" --tiles 8 \
+        --planes axial,coronal,sagittal --slices 2 "${extra[@]}" --title "registration: ${pair}" \
+        --caption "${pair}: checkerboard of fixed/moving (tiles must be continuous) and moving-image edges (red) on the fixed image" >/dev/null || true
+    return 0
+}
+
+# viz_registration_stage_figures <results_dir> <t1_std> <flair_registered> [brainstem_mask]
+#   All registration pairs of a run: FLAIR->T1 (or the reference) plus every
+#   contrast-matched secondary (*_to_flairWarped / *_to_t1_composedWarped).
+viz_registration_stage_figures() {
+    local results_dir="$1" t1="$2" flair_reg="$3" focus="${4:-}"
+    [ "${VIZ_REGISTRATION_ENABLED:-true}" = "true" ] || return 0
+    [ -n "$t1" ] && [ -f "$t1" ] && [ -n "$flair_reg" ] && [ -f "$flair_reg" ] && \
+        viz_registration_figures "$t1" "$flair_reg" "flair_to_t1" "$focus"
+    local cm="${results_dir}/registered/${CONTRAST_MATCHED_SUBDIR:-contrast_matched}"
+    [ -d "$cm" ] || return 0
+    local f pair anchor
+    for f in "$cm"/*_to_flairWarped.nii.gz "$cm"/*_to_t1_composedWarped.nii.gz; do
+        [ -f "$f" ] || continue
+        pair=$(basename "$f" .nii.gz)
+        case "$pair" in *_to_flairWarped) anchor="$flair_reg" ;; *) anchor="$t1" ;; esac
+        [ -f "$anchor" ] || continue
+        viz_registration_figures "$anchor" "$f" "$pair" "$focus"
+    done
+    return 0
+}
+
+# viz_segmentation_stage_figures <results_dir>
+#   (a) one colour-coded label figure per atlas source (subject-space dseg +
+#       its LUT from the registry/multi-atlas provenance), (b) the PONS FOCUS
+#       figure: every pons-level mask from every source as contours in the
+#       source colour on the T1, (c) gross brainstem + subdivisions.
+viz_segmentation_stage_figures() {
+    local results_dir="$1"
+    [ "${VIZ_SEGMENTATION_ENABLED:-true}" = "true" ] || return 0
+    local t1; t1=$(_viz_find_base_image "T1" "$results_dir")
+    [ -n "$t1" ] && [ -f "$t1" ] || { log_message "viz: no T1 base image for segmentation figures"; return 0; }
+    local seg="${results_dir}/segmentation" detailed="${results_dir}/segmentation/detailed_brainstem"
+    local gross; gross=$(find "${seg}/brainstem" -maxdepth 1 -name "*_brainstem.nii.gz" ! -name "*intensity*" 2>/dev/null | head -1)
+
+    # (a) per-source label figures
+    local dseg key lut prov
+    for dseg in "${seg}"/multi_atlas/*_in_subject.nii.gz "${seg}"/nextbrain/nextbrain_in_subject.nii.gz; do
+        [ -f "$dseg" ] || continue
+        key=$(basename "$dseg" _in_subject.nii.gz)
+        lut=""
+        prov="${seg}/multi_atlas/${key}_provenance.tsv"
+        [ -f "$prov" ] && lut=$(awk -F'\t' '$1=="lut"{print $2}' "$prov" 2>/dev/null | head -1)
+        [ -n "$lut" ] && [ -f "$lut" ] || lut=""
+        case "$key" in
+            bianciardi) [ -f "${ATLAS_DIR:-}/Bianciardi/derived/Bianciardi_MNI_labels.txt" ] && lut="${ATLAS_DIR}/Bianciardi/derived/Bianciardi_MNI_labels.txt" ;;
+            nextbrain)  [ -f "${seg}/nextbrain/lut.txt" ] && lut="${seg}/nextbrain/lut.txt" ;;
+        esac
+        viz_figure segmentation "labels_${key}" overlay --bg "$t1" --label "${dseg}${lut:+:lut=$lut},alpha=0.55" \
+            ${gross:+--mask "${gross}:name=brainstem,mode=contour,colour=#ffa500"} \
+            --slices 5 --center mask --zoom-mm 60 --title "${key}: labels in subject space" \
+            --caption "${key}: atlas labels warped into subject space (legend = label names); orange contour = gross brainstem" >/dev/null || true
+    done
+
+    # (b) pons focus: every pons-level mask from every source, contour in source colour
+    local -a pons_args=() ; local m nm src col
+    for m in "$detailed"/*_pons.nii.gz "$detailed"/*left_pons*.nii.gz "$detailed"/*right_pons*.nii.gz; do
+        [ -f "$m" ] || continue
+        nm=$(basename "$m" .nii.gz)
+        case "$nm" in *_intensity*|*_flair_*|*_core) continue ;; esac
+        src=$(_reporting_source_for_mask "$nm" 2>/dev/null || echo freesurfer)
+        [ "$src" = "freesurfer" ] && case "$nm" in bianciardi_*|cit168_*|aal3_*) src="${nm%%_*}" ;; esac
+        pons_args+=(--mask "${m}:name=${nm}")
+    done
+    if [ "${#pons_args[@]}" -gt 0 ]; then
+        viz_figure segmentation "pons_focus" overlay --bg "$t1" "${pons_args[@]}" \
+            ${gross:+--mask "${gross}:name=brainstem,mode=contour,colour=#ffa500"} \
+            --slices 5 --center mask --zoom-mm 45 --title "pons focus: all sources" \
+            --caption "every pons-level mask from every segmentation source as a contour (colour per source); disagreement between contours = segmentation uncertainty" >/dev/null || true
+    fi
+
+    # (c) gross + subdivisions
+    if [ -n "$gross" ]; then
+        local -a sub_args=(--mask "${gross}:name=brainstem,mode=contour,colour=#ffa500")
+        local s f
+        for s in midbrain pons medulla; do
+            f=$(find "$detailed" -maxdepth 1 -name "*_${s}.nii.gz" ! -iname "*left*" ! -iname "*right*" ! -iname "*label*" ! -iname "*core*" -print -quit 2>/dev/null || true)
+            [ -n "$f" ] && [ -f "$f" ] && sub_args+=(--mask "${f}:name=${s},mode=fill,alpha=0.35")
+        done
+        viz_figure segmentation "brainstem_subdivisions" overlay --bg "$t1" "${sub_args[@]}" --slices 5 --center mask --zoom-mm 60 \
+            --title "brainstem: gross extent + subdivisions" \
+            --caption "gross brainstem (orange contour) with midbrain / pons / medulla fills (first source found per subdivision)" >/dev/null || true
+    fi
+    return 0
+}
+
+export -f viz_preprocess_figures viz_brain_extraction_figures viz_registration_figures
+export -f viz_registration_stage_figures viz_segmentation_stage_figures
+
+# viz_detection_stage_figures <results_dir> <flair> <lesion_union> [agreement_count] [per_region_dir]
+#   (a) lesion union (red contour) + agreement-count heat map on FLAIR,
+#   (b) per-vote-unit detection maps as contours (source colours),
+#   (c) per-region z-score map + histogram with the chosen threshold and the
+#       fitted upper component, for the subdivisions and for any nucleus/tract
+#       region with a detection (capped by VIZ_DETECTION_MAX_REGIONS).
+viz_detection_stage_figures() {
+    local results_dir="$1" flair="$2" union="${3:-}" agreement="${4:-}" prdir="${5:-${results_dir}/per_region_analysis}"
+    [ "${VIZ_DETECTION_ENABLED:-true}" = "true" ] || return 0
+    [ -n "$flair" ] && [ -f "$flair" ] || return 0
+
+    if [ -n "$union" ] && [ -f "$union" ]; then
+        local -a a=(--mask "${union}:name=lesion,mode=contour,colour=#ff0000")
+        [ -n "$agreement" ] && [ -f "$agreement" ] && a+=(--map "${agreement}:cmap=hot,vmin=0.5,alpha=0.6")
+        viz_figure detection "lesion_union_agreement" overlay --bg "$flair" "${a[@]}" --slices 6 --center mask \
+            --title "hyperintensity detection: union + agreement" \
+            --caption "primary detection (union of all regions/sources, red contour) with the cross-source agreement count (heat: number of vote units flagging each voxel)" >/dev/null || true
+    fi
+
+    local agdir="${prdir}/agreement"
+    if [ -d "$agdir" ]; then
+        local -a b=() ; local f nm
+        for f in "$agdir"/source_*_detect.nii.gz; do
+            [ -f "$f" ] || continue
+            nm=$(basename "$f" _detect.nii.gz); nm="${nm#source_}"
+            b+=(--mask "${f}:name=${nm},mode=contour")
+        done
+        [ "${#b[@]}" -gt 0 ] && viz_figure detection "lesion_by_source" overlay --bg "$flair" "${b[@]}" --slices 6 --center mask \
+            --title "detections per vote unit" --caption "binary detection map of each consensus vote unit (source family) as a contour; overlap = agreement" >/dev/null || true
+    fi
+
+    # (c) per-region fits
+    local max="${VIZ_DETECTION_MAX_REGIONS:-12}" n=0 d tag z conn params thr um us uw comps
+    for d in "$prdir"/*_FLAIR_analysis/; do
+        [ -d "$d" ] || continue
+        tag=$(basename "$d"); tag="${tag%_FLAIR_analysis}"
+        z=$(find "$d" -maxdepth 1 -name '*_zscore.nii.gz' -print -quit 2>/dev/null)
+        [ -n "$z" ] && [ -f "$z" ] || continue
+        conn=$(find "$d" -maxdepth 1 -name '*_connectivity.nii.gz' -print -quit 2>/dev/null)
+        case "$tag" in
+            *pons|*midbrain|*medulla) ;;   # always figure the subdivisions
+            *) # nuclei/tracts only when something was detected
+               local v=0; [ -n "$conn" ] && [ -f "$conn" ] && v=$(fslstats "$conn" -V 2>/dev/null | awk '{print int($1)}')
+               [ "${v:-0}" -gt 0 ] || continue ;;
+        esac
+        n=$((n + 1)); [ "$n" -le "$max" ] || { log_message "viz: detection per-region figures capped at $max (VIZ_DETECTION_MAX_REGIONS)"; break; }
+        local rmask; rmask=$(find "$d" -maxdepth 1 -name '*_resampled.nii.gz' -print -quit 2>/dev/null)
+        local -a c=(--map "${z}:cmap=hot,vmin=1,vmax=5,alpha=0.75")
+        [ -n "$conn" ] && [ -f "$conn" ] && c+=(--mask "${conn}:name=detected,mode=contour,colour=#00ffff")
+        [ -n "$rmask" ] && [ -f "$rmask" ] && c+=(--mask "${rmask}:name=${tag},mode=contour,colour=#ffff00")
+        viz_figure detection "region_${tag}_zscore" overlay --bg "$flair" "${c[@]}" --slices 4 --center mask --zoom-mm 45 \
+            --title "${tag}: z-score + detection" --caption "${tag}: region-referenced z-score (heat, z>=1) with the region outline (yellow) and the final detection (cyan)" >/dev/null || true
+        params=$(find "$d/gmm_analysis" -maxdepth 1 -name '*_gmm_params.txt' -print -quit 2>/dev/null)
+        comps=""; thr=""
+        if [ -n "$params" ] && [ -f "$params" ]; then
+            thr=$(awk -F= '$1=="THRESHOLD"{print $2}' "$params"); um=$(awk -F= '$1=="UPPER_MEAN"{print $2}' "$params")
+            us=$(awk -F= '$1=="UPPER_STD"{print $2}' "$params"); uw=$(awk -F= '$1=="UPPER_WEIGHT"{print $2}' "$params")
+            [ -n "$um" ] && [ -n "$us" ] && comps="${uw:-1},${um},${us}"
+            # posterior engine: mu0/sd0 null + pi1 (written as NULL_MEAN/NULL_SD/PI1)
+            local nm0 ns0; nm0=$(awk -F= '$1=="NULL_MEAN"{print $2}' "$params"); ns0=$(awk -F= '$1=="NULL_SD"{print $2}' "$params")
+            [ -n "$nm0" ] && [ -n "$ns0" ] && comps="${comps:+$comps;}$(awk -F= '$1=="PI0"{print $2}' "$params" | sed 's/^$/1/'),${nm0},${ns0}"
+        fi
+        local -a h=()
+        [ -n "$comps" ] && h+=(--components "$comps")
+        [ -n "$thr" ] && h+=(--threshold "$thr")
+        [ -n "$rmask" ] && [ -f "$rmask" ] && h+=(--mask "$rmask")
+        viz_figure detection "region_${tag}_hist" hist --image "$z" "${h[@]}" --xlabel "z (region-referenced)" \
+            --title "${tag}: intensity model" --caption "${tag}: histogram of region z-scores with the fitted component(s) and the applied threshold (red)" >/dev/null || true
+    done
+    return 0
+}
+export -f viz_detection_stage_figures

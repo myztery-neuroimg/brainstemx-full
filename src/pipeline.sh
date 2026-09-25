@@ -1170,6 +1170,12 @@ reason=in-study T1 is contrast-enhanced; using external non-contrast anchor" || 
     # Create standard registration visualizations
     create_registration_visualizations "$t1_std" "$flair_std" "$flair_registered" "$validation_dir"
     
+    # Python-renderer registration QC: checkerboards + edge overlays for the
+    # FLAIR->T1 pair and every contrast-matched secondary (graceful no-op).
+    if declare -f viz_registration_stage_figures >/dev/null 2>&1; then
+      viz_registration_stage_figures "$RESULTS_DIR" "$t1_std" "$flair_registered" || true
+    fi
+
     # Validate visualization step — check for the diff PNG and metrics file actually produced
     validate_step "Registration visualizations" "registration_diff.png,metrics.csv" "validation/registration"
   else

@@ -358,6 +358,11 @@ extract_brainstem_final() {
     # Generate comprehensive visualization report
     generate_comprehensive_report "$input_file" "$input_basename"
 
+    # Python-renderer figures: per-source label maps, pons focus, subdivisions.
+    if declare -f viz_segmentation_stage_figures >/dev/null 2>&1; then
+        viz_segmentation_stage_figures "$RESULTS_DIR" || true
+    fi
+
     log_formatted "SUCCESS" "Comprehensive segmentation complete"
     return 0
 }

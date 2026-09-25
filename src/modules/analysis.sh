@@ -1419,6 +1419,11 @@ apply_per_region_gmm_analysis() {
             log_message "Provenance manifest: $provenance_manifest"
         fi
 
+        # Visual QC of the detection stage (python renderer; graceful no-op).
+        if declare -f viz_detection_stage_figures >/dev/null 2>&1; then
+            viz_detection_stage_figures "$RESULTS_DIR" "$flair_image" "$combined_result" "${ATLAS_GMM_AGREEMENT:-}" "$per_region_dir" || true
+        fi
+
         # Store combined result globally
         export ATLAS_GMM_RESULT="$combined_result"
 

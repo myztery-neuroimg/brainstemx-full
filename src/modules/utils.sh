@@ -651,6 +651,10 @@ perform_brain_extraction() {
 
   # Posterior-fossa sanity check (non-fatal).
   qc_posterior_fossa_coverage "$mask_file"
+  # Visual QC of the final mask (graceful no-op without the python renderer).
+  if declare -f viz_brain_extraction_figures >/dev/null 2>&1; then
+    viz_brain_extraction_figures "$input_file" "$mask_file" || true
+  fi
 
   return 0
 }

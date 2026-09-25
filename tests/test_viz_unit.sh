@@ -72,6 +72,50 @@ PYEOF
     assert_file_exists "$RESULTS_DIR/visualizations/index.html" "visualizations/index.html written"
     assert_contains "$(cat "$RESULTS_DIR/visualizations/index.html")" "segmentation/test_overlay.png" "index lists the stage figure"
     assert_file_exists "$RESULTS_DIR/visualizations/manifest.json" "manifest.json written"
+    # ── Stage figure functions on a synthetic results tree ──
+    begin_test_group "4. Per-stage figure functions (synthetic results tree)"
+    R="$RESULTS_DIR"; mkdir -p "$R/standardized" "$R/segmentation/brainstem" "$R/segmentation/detailed_brainstem" "$R/segmentation/multi_atlas" "$R/registered/contrast_matched"
+    cp "$TEMP_TEST_DIR/bg.nii.gz" "$R/standardized/T1_std.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$R/segmentation/brainstem/subj_brainstem.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$R/segmentation/detailed_brainstem/subj_pons.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$R/segmentation/detailed_brainstem/bianciardi_pons.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$R/segmentation/detailed_brainstem/subj_midbrain.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$R/segmentation/multi_atlas/jhu_in_subject.nii.gz"
+    printf '# value\tname\n1\tMiddle_cerebellar_peduncle\n' > "$TEMP_TEST_DIR/jhu_lut.txt"
+    printf 'key\tjhu\nlut\t%s\n' "$TEMP_TEST_DIR/jhu_lut.txt" > "$R/segmentation/multi_atlas/jhu_provenance.tsv"
+    cp "$TEMP_TEST_DIR/after.nii.gz" "$R/registered/contrast_matched/T2_SPACE_to_flairWarped.nii.gz"
+    source "$PROJECT_ROOT/src/modules/reporting.sh" 2>/dev/null || true   # _reporting_source_for_mask
+    viz_preprocess_figures subj "$TEMP_TEST_DIR/bg.nii.gz" "$TEMP_TEST_DIR/after.nii.gz" "$TEMP_TEST_DIR/bg.nii.gz" >/dev/null 2>&1
+    assert_file_exists "$R/visualizations/preprocess/subj_denoise.png" "preprocess: denoise before/after figure"
+    assert_file_exists "$R/visualizations/preprocess/subj_n4.png"      "preprocess: N4 before/after figure"
+    viz_brain_extraction_figures "$TEMP_TEST_DIR/bg.nii.gz" "$TEMP_TEST_DIR/mask.nii.gz" synthstrip >/dev/null 2>&1
+    assert_file_exists "$R/visualizations/brain_extraction/bg_mask.png"                 "brain extraction: mask contour figure"
+    assert_file_exists "$R/visualizations/brain_extraction/bg_mask_posterior_fossa.png" "brain extraction: posterior-fossa figure"
+    viz_registration_stage_figures "$R" "$TEMP_TEST_DIR/bg.nii.gz" "$TEMP_TEST_DIR/after.nii.gz" "$TEMP_TEST_DIR/mask.nii.gz" >/dev/null 2>&1
+    assert_file_exists "$R/visualizations/registration/flair_to_t1_checkerboard.png"            "registration: FLAIR->T1 checkerboard"
+    assert_file_exists "$R/visualizations/registration/T2_SPACE_to_flairWarped_checkerboard.png" "registration: contrast-matched secondary checkerboard"
+    viz_segmentation_stage_figures "$R" >/dev/null 2>&1
+    assert_file_exists "$R/visualizations/segmentation/labels_jhu.png"            "segmentation: per-source label figure (LUT from provenance)"
+    assert_file_exists "$R/visualizations/segmentation/pons_focus.png"            "segmentation: pons focus figure"
+    assert_file_exists "$R/visualizations/segmentation/brainstem_subdivisions.png" "segmentation: gross + subdivisions figure"
+    # detection stage: per-region work dirs + agreement maps
+    pr="$R/per_region_analysis"; mkdir -p "$pr/freesurfer_pons_FLAIR_analysis/gmm_analysis" "$pr/agreement"
+    cp "$TEMP_TEST_DIR/bg.nii.gz" "$pr/freesurfer_pons_FLAIR_analysis/pons_zscore.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$pr/freesurfer_pons_FLAIR_analysis/pons_resampled.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$pr/freesurfer_pons_FLAIR_analysis/pons_connectivity.nii.gz"
+    printf 'THRESHOLD=2.5\nUPPER_MEAN=2.0\nUPPER_STD=0.5\nUPPER_WEIGHT=0.1\n' > "$pr/freesurfer_pons_FLAIR_analysis/gmm_analysis/pons_gmm_params.txt"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$pr/agreement/source_atlas_detect.nii.gz"
+    cp "$TEMP_TEST_DIR/mask.nii.gz" "$pr/agreement/source_freesurfer_detect.nii.gz"
+    viz_detection_stage_figures "$R" "$TEMP_TEST_DIR/bg.nii.gz" "$TEMP_TEST_DIR/mask.nii.gz" "$TEMP_TEST_DIR/mask.nii.gz" "$pr" >/dev/null 2>&1
+    assert_file_exists "$R/visualizations/detection/lesion_union_agreement.png"   "detection: union + agreement figure"
+    assert_file_exists "$R/visualizations/detection/lesion_by_source.png"         "detection: per-vote-unit figure"
+    assert_file_exists "$R/visualizations/detection/region_freesurfer_pons_zscore.png" "detection: per-region z-score figure"
+    assert_file_exists "$R/visualizations/detection/region_freesurfer_pons_hist.png"   "detection: per-region histogram with fit + threshold"
+    VIZ_SEGMENTATION_ENABLED=false viz_segmentation_stage_figures "$R" >/dev/null 2>&1
+    assert_exit_code 0 $? "stage figures honour their VIZ_<STAGE>_ENABLED gate"
+    viz_gallery >/dev/null 2>&1
+    assert_contains "$(cat "$R/visualizations/index.html")" "pons_focus.png" "gallery picks up the stage figures"
+
     # failure path: bad input -> WARNING + return 1, never a crash
     msg=$(viz_render overlay --bg "$TEMP_TEST_DIR/missing.nii.gz" --out "$RESULTS_DIR/x.png" 2>&1 | sed 's/\x1b\[[0-9;]*m//g'); rc=${PIPESTATUS[0]}
     assert_exit_code 1 "$rc" "bad input -> returns 1"

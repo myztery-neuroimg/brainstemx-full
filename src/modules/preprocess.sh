@@ -617,6 +617,10 @@ process_n4_correction() {
   fi
   
   log_message "Saved bias-corrected image (denoised + N4): $output_file"
+  # Visual QC (graceful no-op without the python renderer / when disabled).
+  if declare -f viz_preprocess_figures >/dev/null 2>&1; then
+    viz_preprocess_figures "$basename" "$oriented_file" "$denoised_file" "$output_file" || true
+  fi
   return 0
 }
 

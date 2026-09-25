@@ -66,7 +66,10 @@ skipped cleanly and recorded as `absent` in the run manifest.
 ├── advanced_visualization/         # 3D renderings, intensity profiles
 ├── visualizations/                 # report visualizations (python renderer viz_render.py)
 │   ├── index.html + manifest.json  # gallery over every stage subdir (viz_gallery)
-│   ├── <stage>/*.png + *.caption.txt   # per-stage QC figures (viz_figure <stage> <name> ...)
+│   ├── <stage>/*.png + *.caption.txt   # per-stage QC figures (viz_figure <stage> <name> ...):
+│   │   preprocess/<mod>_{denoise,n4}.png · brain_extraction/<img>_mask{,_posterior_fossa}.png
+│   │   registration/<pair>_checkerboard.png · segmentation/{labels_<key>,pons_focus,brainstem_subdivisions}.png
+│   │   detection/{lesion_union_agreement,lesion_by_source,region_<tag>_{zscore,hist}}.png
 │   ├── seg_harvard_oxford_brainstem.png
 │   ├── seg_{freesurfer,bianciardi,cit168,aal3,jhu,xtract,aan,lc,dr,nextbrainmni,nextbrain}.png
 │   ├── hyperintensities_on_flair.png
