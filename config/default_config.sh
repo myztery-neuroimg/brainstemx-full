@@ -1482,6 +1482,13 @@ export C3D_PADDING_MM=5
 # minimal T1+FLAIR run still yields a valid (smaller) report; absent sections are
 # skipped cleanly. See docs/output_structure.md.
 export REPORTING_ENABLED=true     # master switch for the reporting stage
+# Python figure renderer (src/modules/viz_render.py via uv: numpy/nibabel/
+# matplotlib). Every stage's QC figure goes through visualization.sh::viz_render
+# and lands under <RESULTS_DIR>/visualizations/<stage>/ with a caption sidecar;
+# visualizations/index.html is the gallery. Falls back to FSL slicer for the
+# legacy snapshots when python is unavailable. SKIP_VISUALIZATION still wins.
+export VIZ_PYTHON_RENDERER="${VIZ_PYTHON_RENDERER:-true}"
+
 # Note: reporting also reuses CROSS_MODAL_SUBDIR (cross-modal table location)
 # and SKIP_VISUALIZATION (skip the report visualizations) from the blocks above.
 

@@ -33,7 +33,9 @@ bash tests/test_multi_atlas_unit.sh
 bash tests/test_atlas_registry_unit.sh
 bash tests/test_nextbrain_unit.sh
 bash tests/test_reporting_unit.sh
-uv run pytest tests/ -q                    # CI job "Python Unit Tests"
+bash tests/test_viz_unit.sh
+bash tests/test_cross_modal_unit.sh
+uv run pytest tests/ -q                    # CI job "Python Unit Tests" (incl. tests/test_viz_render.py)
 
 # Smoke test
 bash src/pipeline.sh --help | grep -q "Usage:"
@@ -72,7 +74,9 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
   wmh_segcsvd.sh         # optional WMH: segcsvdWMH CNN (FLAIR-only); off by default
   wmh_shiva.sh           # optional WMH: SHIVA-WMH small-lesion detector (high sensitivity); off by default
   wmh_mars.sh            # optional WMH: MARS-WMH deep-learning tool (MIAC); off by default
-  visualization.sh       # 3D rendering, QC HTML report, + report visualizations (per-method seg overlays, hyperintensity-on-FLAIR, multi-modal montage)
+  visualization.sh       # 3D rendering, QC HTML report, + report visualizations (per-method seg overlays, hyperintensity-on-FLAIR, multi-modal montage);
+                         #   viz_render/viz_figure/viz_stage_dir/viz_gallery = bash hooks into the python renderer (visualizations/<stage>/*.png + index.html)
+  viz_render.py          # headless figure renderer (numpy/nibabel/matplotlib): overlay (masks/labels/maps mosaic), checkerboard, diff, hist (mixture fit), gallery
   reporting.sh           # FINAL stage: aggregation/reporting layer — discovers all outputs, builds CSV/TSV+HTML summary tables (reports/tables/) and the top-level report (reports/brainstemx_report.html + .md). Gated/graceful/idempotent.
   reporting_tables.py    # stdlib-only aggregator behind reporting.sh (parses provenance/summaries, renders tables + top-level report; called via uv)
   qa.sh                  # 20+ validation checks
@@ -126,6 +130,9 @@ _MODULE_LOADED=1
 | `MULTI_ATLAS_SOURCE_TAGS` / `SEG_TOOL_SOURCE_TAGS` | the ONE list of atlas/tool source tags downstream consumers iterate over (derived; `nextbrain` for the FS tool) |
 | `MNI_2009C_TO_NLIN6_XFM` | TemplateFlow `tpl-MNI152NLin6Asym_from-MNI152NLin2009cAsym_mode-image_xfm.h5` for atlases released in ICBM-2009 space |
 | `BRAINSTEM_NEXTBRAIN_ENABLED` / `SEG_RUN_NEXTBRAIN` / `NEXTBRAIN_*` | NextBrain tool path (default on, no-op without FreeSurfer 8 + licence) |
+| `CONSENSUS_VOTE_BY` / `CONSENSUS_SOURCE_FAMILIES` | consensus vote unit: `family` (default: atlas / freesurfer / harvard_oxford / synthseg — correlated atlas priors cannot out-vote independent evidence) or legacy `source` |
+| `ANALYSIS_MIN_REGION_VOXELS` | per-region mixture-fit minimum (default 50); smaller regions are logged in `per_region_analysis/region_skips.tsv`, never silently dropped |
+| `VIZ_PYTHON_RENDERER` | use `viz_render.py` for all QC figures (default true); `SKIP_VISUALIZATION` still disables everything |
 | `ATLAS_DIR` | atlas root, default `${FSLDIR}/data/atlases` |
 
 ## Brainstem segmentation method & optional modules
@@ -169,7 +176,7 @@ Beyond the T1/FLAIR backbone, the pipeline brings the **secondary** T2-weighted 
 The FINAL pipeline stage (Step 8.5, `reporting.sh::generate_summary_report`, after analysis/QA/viz) is the aggregation/reporting layer over every merged capability. It DISCOVERS outputs wherever modules wrote them (it does not require every module to use fixed paths) and emits:
 
 - **Summary tables** under `reports/tables/`, each as **CSV/TSV + HTML** (and a `manifest.json`): `hyperintensity_per_region` (region × source: cluster count, volume, mean/peak z — from per-region GMM `region_provenance.tsv` + a `region_stats.tsv` sidecar the bash layer computes via `fslstats`), `wmh_tool_volumes` (one row per enabled tool, total + brainstem-restricted volume + clusters from each `<tool>_wmh_summary.txt`), `segmentation_volumes` (HO gross / FS substructures / multi-atlas nuclei / SynthSeg-aseg / subregions), `cross_modal` (passthrough of `analysis/cross_modal/cross_modal_clusters.csv`), `freesurfer_morphometry` (aseg volumes + eTIV from `freesurfer/harvest/stats/aseg.stats`), and a `run_manifest` (which seg paths / WMH tools / modalities / tables actually ran).
-- **Report visualizations** under `visualizations/` (`visualization.sh::generate_report_visualizations`): per-method segmentation overlays on T1, hyperintensity clusters on FLAIR, and a multi-modal montage (lesion mask on FLAIR/DWI/SWI/T2). Honours `SKIP_VISUALIZATION`.
+- **Report visualizations** under `visualizations/` (`visualization.sh::generate_report_visualizations`): per-method segmentation overlays on T1, hyperintensity clusters on FLAIR, and a multi-modal montage (lesion mask on FLAIR/DWI/SWI/T2), all drawn by `viz_render.py` (FSL `slicer` only as a fallback), plus per-stage figures under `visualizations/<stage>/` and the gallery `visualizations/index.html` (+ `manifest.json`) built by `viz_gallery`. Honours `SKIP_VISUALIZATION`.
 - **Top-level report** `reports/brainstemx_report.html` (+ `.md` fallback): a one-stop dashboard embedding all populated tables, the run manifest, and the discovered visualizations.
 
 Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv`); the bash layer owns only the FSL-dependent parts (mask discovery + `fslstats` volume sidecars). Everything is **gated/graceful** (a minimal T1+FLAIR run still produces a valid smaller report; absent sections render as "No data") and **idempotent**. Governed by `REPORTING_ENABLED` (default `true`). Canonical tree + table schemas: `docs/output_structure.md`.

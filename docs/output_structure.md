@@ -52,6 +52,8 @@ skipped cleanly and recorded as `absent` in the run manifest.
 │   └── clusters/                   # clusters.nii.gz (cluster index volume)
 ├── per_region_analysis/            # per-region GMM working dirs + provenance
 │   ├── region_provenance.tsv       # region_tag / region_base / source / mask_path
+│   ├── region_skips.tsv            # regions too small for a mixture fit (region_tag / reason / voxels / minimum)
+│   ├── agreement/                  # source_<family>_detect.nii.gz per consensus vote unit (CONSENSUS_VOTE_BY)
 │   └── region_stats.tsv            # (built by reporting) volume / clusters / z per region
 ├── analysis/
 │   ├── wmh/                        # optional WMH tools, one subdir each
@@ -62,7 +64,9 @@ skipped cleanly and recorded as `absent` in the run manifest.
 │       └── cross_modal_summary.txt
 ├── qc_visualizations/              # legacy QC PNGs / fsleyes scripts
 ├── advanced_visualization/         # 3D renderings, intensity profiles
-├── visualizations/                 # report visualizations (NEW)
+├── visualizations/                 # report visualizations (python renderer viz_render.py)
+│   ├── index.html + manifest.json  # gallery over every stage subdir (viz_gallery)
+│   ├── <stage>/*.png + *.caption.txt   # per-stage QC figures (viz_figure <stage> <name> ...)
 │   ├── seg_harvard_oxford_brainstem.png
 │   ├── seg_{freesurfer,bianciardi,cit168,aal3,jhu,xtract,aan,lc,dr,nextbrainmni,nextbrain}.png
 │   ├── hyperintensities_on_flair.png

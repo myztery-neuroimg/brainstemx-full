@@ -125,6 +125,21 @@ So the build is a **hybrid**:
 Verified: 86 total nuclei → 74 own ≥1 voxel, 12 overlay (exactly the reticular
 list above).
 
+The overlay nuclei are warped individually AND exposed as their own region
+masks `bianciardi_<nucleus>_label10NN.nii.gz` (the 1000+ "overlay" label range)
+in `detailed_brainstem/`, so per-region detection analyses them instead of
+silently dropping them.
+
+### Consensus with many correlated atlases
+
+Every registry key is one more source tag. Because atlas priors are
+correlated (Bianciardi, AAN, the LC atlas and NextBrain all label the LC; JHU
+and XTRACT both label the CST), the cross-source consensus counts one vote per
+source **family** by default (`CONSENSUS_VOTE_BY=family`,
+`CONSENSUS_SOURCE_FAMILIES`): `atlas`, `freesurfer` (FS parcels + NextBrain),
+`harvard_oxford`, `synthseg`. Regions below `ANALYSIS_MIN_REGION_VOXELS` are
+logged in `per_region_analysis/region_skips.tsv`.
+
 ### CIT168 (no resample)
 
 - Source: `tpl-MNI152NLin6Asym_atlas-CIT168_res-01_dseg.nii.gz`, a single dseg
@@ -282,7 +297,7 @@ regions as exploratory.
 | `jhu` | JHU ICBM-DTI-81 WM labels (Mori 2005; Hua 2008) | NLin6 1 mm | dseg | MCP, pontine crossing tract, CST, medial lemniscus, ICP/SCP, cerebral peduncle (labels 1,2,7–16) | ships with FSL (`JHU/`) | FSL |
 | `xtract` | XTRACT HCP tract atlas (Warrington 2020) | NLin6 1 mm | prob4d (thr 0.30) | CST L/R (15/16), MCP (35) | ships with FSL ≥ 6.0.4 (`XTRACT/`) | FSL |
 | `aan` | Harvard Ascending Arousal Network v2.0 (Edlow 2024) | MNI152 1 mm | dseg + FreeSurfer LUT | LC, PBC, PnO, LDTg, MnR, PTg (+ DR, PAG, VTA, mRt) | Dryad doi:10.5061/dryad.zw3r228d2 → `AAN/` | Dryad |
-| `lc` | Locus coeruleus probability map (Ye 2021 7T; alt. Dahl 2022 meta-mask) | 2009b 0.5 mm (Ye) / linear MNI (Dahl, use `ATLAS_LC_XFM`) | probmap, dilate 1 | LC | NITRC `lc_7t_prob` / OSF `sf2ky` → `LC/` | CC BY-NC-ND (Ye) / CC BY (Dahl) |
+| `lc` | Locus coeruleus probability map (Ye 2021 7T; alt. Dahl 2022 meta-mask) | ICBM 2009b asym 0.5 mm (Ye, verified) / linear MNI (Dahl, use `ATLAS_LC_XFM`) | probmap (`LC*prob*.nii*` glob), dilate 1 | LC | NITRC `lc_7t_prob` (free NITRC login required for the zip) / OSF `sf2ky` → `LC/` | CC BY-NC-ND 4.0 (Ye) / CC BY 4.0 (Dahl) |
 | `dr` | Dorsal raphe supratrochlear mask (Wearn 2024) | 2009b | probmap, dilate 1 | DR | Zenodo 10680563 → `DorsalRaphe/` | CC BY 4.0 |
 | `nextbrainmni` | NextBrain whole-brain atlas rendered on MNI152 1 mm (496 ROIs) | NLin6 1 mm | dseg + FreeSurfer LUT, name regex | pontine nuclei, LC, raphe, reticular formation, lemnisci, peduncles, cranial-nerve nuclei | github.com/compneurobilbao/nextbrain-mni-atlas → `NextBrain/` | see repo / NextBrain |
 

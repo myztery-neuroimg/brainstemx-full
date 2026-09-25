@@ -67,7 +67,7 @@ jobs:
           for suite in tests/test_environment_unit.sh tests/test_pipeline_control_unit.sh tests/test_import_unit.sh \
                        tests/test_dependency_report_unit.sh tests/test_multi_atlas_unit.sh \
                        tests/test_atlas_registry_unit.sh tests/test_nextbrain_unit.sh \
-                       tests/test_reporting_unit.sh; do
+                       tests/test_reporting_unit.sh tests/test_viz_unit.sh tests/test_cross_modal_unit.sh; do
             echo ""
             echo "========================================"
             echo "Running: $suite"
