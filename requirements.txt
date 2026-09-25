@@ -8,7 +8,7 @@ joblib==1.5.3
     # via scikit-learn
 nibabel==5.4.2
     # via brainstemx-full
-numpy==2.5.1
+numpy==2.5.2
     # via
     #   brainstemx-full
     #   nibabel
@@ -19,7 +19,7 @@ packaging==26.3
     # via
     #   nibabel
     #   pytest
-pandas==3.0.3
+pandas==3.0.5
     # via brainstemx-full
 pluggy==1.6.0
     # via pytest
@@ -33,7 +33,7 @@ python-dateutil==2.9.0.post0
     # via pandas
 scikit-learn==1.9.0
     # via brainstemx-full
-scipy==1.18.0
+scipy==1.18.1
     # via scikit-learn
 six==1.17.0
     # via python-dateutil

@@ -12,9 +12,9 @@ dependencies = [
     "iniconfig==2.3.0",
     "joblib==1.5.3",
     "nibabel==5.4.2",       # gmm_threshold.py, analyze_multimodal_brainstem.sh
-    "numpy==2.5.1",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
     "packaging==26.3",
-    "pandas==3.0.3",        # analyze_multimodal_brainstem.sh (inline Python)
+    "numpy==2.5.2",         # gmm_threshold.py, analyze_multimodal_brainstem.sh
+    "pandas==3.0.5",        # analyze_multimodal_brainstem.sh (inline Python)
     "pip>=26.1.2",
     "pluggy==1.6.0",
     "pydicom==3.0.2",       # extract_dicom_metadata.py
@@ -22,7 +22,7 @@ dependencies = [
     "pytest==9.1.1",
     "python-dateutil==2.9.0.post0",
     "scikit-learn==1.9.0",  # gmm_threshold.py (per-region GMM analysis)
-    "scipy==1.18.0",
+    "scipy==1.18.1",
     "six==1.17.0",
     "threadpoolctl==3.6.0",
     "tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'",
