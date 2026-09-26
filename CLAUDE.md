@@ -45,8 +45,8 @@ bash src/pipeline.sh --help | grep -q "Usage:"
 ## Project structure
 
 ```
-src/pipeline.sh          # main orchestrator — run_pipeline() is ~1000 lines
-src/modules/             # 35+ modules, each sourced by pipeline.sh
+src/pipeline.sh          # main orchestrator — run_pipeline() is ~1400 lines
+src/modules/             # 46 modules, each sourced by pipeline.sh
   environment.sh         # logging, error codes, path utils, dependency checks
   require_env.sh         # lightweight include guard — source instead of environment.sh in modules
   import.sh              # DICOM → NIfTI via dcm2niix
@@ -86,7 +86,7 @@ src/modules/             # 35+ modules, each sourced by pipeline.sh
 config/default_config.sh # all pipeline defaults (has include guard)
 src/benchmark/           # benchmark scaffolding: phantom generator, metrics, dataset registry (ds004199 anonymous fetch; MS/WMH challenges referenced), adapters (threshold / legacy_gmm / posterior / precomputed), A/B runner, report — docs/benchmarking.md
 scripts/benchmark.py     # CLI: phantom | datasets | fetch | run | ab | compare-known | report
-tests/                   # 31 bash test scripts (incl. test_atlas_registry_unit.sh, test_nextbrain_unit.sh) + pytest modules (reporting, gmm, viz_render, benchmark)
+tests/                   # 33 bash test scripts (incl. test_atlas_registry_unit.sh, test_nextbrain_unit.sh) + pytest modules (reporting, gmm, viz_render, benchmark)
 .claude/hooks/session-start.sh  # web-session bootstrap (uv sync, shellcheck, FSLDIR stub) — registered in .claude/settings.json
 ```
 
@@ -151,11 +151,11 @@ _MODULE_LOADED=1
 - `all` (default) — runs every ENABLED path below as **concurrent parallel paths** and analyses the UNION of all masks they produce. The fast paths (HO gross extent + multi-atlas warp, minutes) run alongside the multi-hour FreeSurfer recon-all; each path is independent and non-fatal (a failed/skipped path logs a WARNING, never aborts the others or the pipeline). The MNI→subject SyN warp is computed ONCE up front and reused by both the HO and multi-atlas paths (no race on the shared transform). Per-path toggles `SEG_RUN_HARVARD_OXFORD` / `SEG_RUN_MULTI_ATLAS` / `SEG_RUN_FREESURFER` (all default on) drop individual paths — set `SEG_RUN_FREESURFER=false` to keep the fast HO + multi-atlas paths and skip recon-all. Downstream per-region GMM (`find_all_atlas_regions` → `apply_per_region_gmm_analysis`) discovers the union of FS parcels + multi-atlas nuclei/subdivisions + HO gross mask and tags each region's provenance (`region_provenance.tsv`).
 - `freesurfer` — FreeSurfer `segmentBS`/`brainstemSsLabels` substructures (midbrain/pons/medulla/SCP) on the subject's own T1; gated by an FS↔HO agreement (Dice + leakage) check; falls back to the HO gross mask on disagreement or missing FreeSurfer/license.
 - `atlas` / `harvard_oxford` — Harvard-Oxford gross brainstem extent only (index 7, `maxprob-thr25`).
-- `multi_atlas` / `bianciardi` — additionally warps Bianciardi BrainstemNavigator / CIT168 / AAL3 into subject space (shared SyN→MNI + `GenericLabel`) for nucleus-level masks (`docs/multi_atlas_integration_spec.md`).
+- `multi_atlas` / `bianciardi` — additionally warps Bianciardi BrainstemNavigator / CIT168 / AAL3 into subject space (shared SyN→MNI + `GenericLabel`) for nucleus-level masks.
 
 The single-method values (`freesurfer`/`multi_atlas`/`bianciardi`/`atlas`/`harvard_oxford`) remain mutually exclusive and behave exactly as before.
 
-**Atlas registry** — extra MNI atlases are CONFIG ENTRIES (`atlas_registry.sh`, `docs/multi_atlas_integration_spec.md`): add a key to `MULTI_ATLAS_EXTRA` + an `ATLAS_<KEY>_*` block and nothing else; discovery (`find_all_atlas_regions`), provenance (`_region_source_from_path`), reporting and visualisation all iterate over `MULTI_ATLAS_SOURCE_TAGS`. Rules that matter: (1) whole-brain tract atlases MUST set `RESTRICT=brainstem`; (2) atlases in ICBM-2009 space need the TemplateFlow transform or an explicit `XFM` chain, otherwise they are skipped (never mis-warped); (3) FSL `<type>Label</type>` XMLs (JHU) are offset 0, `<type>Probabilistic</type>` (XTRACT/HO maxprob) offset 1; (4) NEVER commit atlas data/LUTs/libraries — reference them by URL, citation and licence only.
+**Atlas registry** — extra MNI atlases are CONFIG ENTRIES (`atlas_registry.sh`): add a key to `MULTI_ATLAS_EXTRA` + an `ATLAS_<KEY>_*` block and nothing else; discovery (`find_all_atlas_regions`), provenance (`_region_source_from_path`), reporting and visualisation all iterate over `MULTI_ATLAS_SOURCE_TAGS`. Rules that matter: (1) whole-brain tract atlases MUST set `RESTRICT=brainstem`; (2) atlases in ICBM-2009 space need the TemplateFlow transform or an explicit `XFM` chain, otherwise they are skipped (never mis-warped); (3) FSL `<type>Label</type>` XMLs (JHU) are offset 0, `<type>Probabilistic</type>` (XTRACT/HO maxprob) offset 1; (4) NEVER commit atlas data/LUTs/libraries — reference them by URL, citation and licence only.
 
 **Atlas-on-disk prerequisite** — `atlas`/`multi_atlas`/`bianciardi` need the atlases pre-downloaded under `$FSLDIR/data/atlases` (`ATLAS_DIR`): `Bianciardi/`, `CIT168/`, `AAL3/`, `HarvardOxford/`; registry keys under their `ATLAS_<KEY>_REL` (`JHU/` and `XTRACT/` ship with FSL; `AAN/`, `LC/`, `DorsalRaphe/`, `NextBrain/` are downloads). The startup `check_atlas_availability` step (`environment.sh`, called from `pipeline.sh`) reports presence/absence per atlas and warns if the selected method needs a missing one; absence is **non-fatal** — the pipeline degrades to the HO gross mask. Override layout via `ATLAS_{BIANCIARDI,CIT168,AAL3,HARVARDOXFORD}_REL`.
 
@@ -190,7 +190,7 @@ The FINAL pipeline stage (Step 8.5, `reporting.sh::generate_summary_report`, aft
 **Report visualizations** under `visualizations/` (`visualization.sh::generate_report_visualizations`): per-method segmentation overlays on T1, hyperintensity clusters on FLAIR, and a multi-modal montage (lesion mask on FLAIR/DWI/SWI/T2), all drawn by `viz_render.py` (FSL `slicer` only as a fallback), plus per-stage figures under `visualizations/<stage>/` and the gallery `visualizations/index.html` (+ `manifest.json`) built by `viz_gallery`. Honours `SKIP_VISUALIZATION`.
 - **Top-level report** `reports/brainstemx_report.html` (+ `.md` fallback): a one-stop dashboard embedding all populated tables, the run manifest, and the discovered visualizations.
 
-Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv`); the bash layer owns only the FSL-dependent parts (mask discovery + `fslstats` volume sidecars). Everything is **gated/graceful** (a minimal T1+FLAIR run still produces a valid smaller report; absent sections render as "No data") and **idempotent**. Governed by `REPORTING_ENABLED` (default `true`). Canonical tree + table schemas: `docs/output_structure.md`.
+Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv`); the bash layer owns only the FSL-dependent parts (mask discovery + `fslstats` volume sidecars). Everything is **gated/graceful** (a minimal T1+FLAIR run still produces a valid smaller report; absent sections render as "No data") and **idempotent**. Governed by `REPORTING_ENABLED` (default `true`).
 
 ## Agentic environment (Claude Code on the web)
 
@@ -214,4 +214,4 @@ Heavy parsing/rendering is in the stdlib-only `reporting_tables.py` (run via `uv
 - Environment: `source ~/.bash_profile` before running the pipeline
 - Multi-atlas labeling (`BRAINSTEM_SEGMENTATION_METHOD=multi_atlas`/`bianciardi`)
   requires the Bianciardi/CIT168/AAL3 atlases on disk under `$FSLDIR/data/atlases`
-  — see `docs/multi_atlas_integration_spec.md`. Caches build under `*/derived/`.
+  — see `src/modules/atlas_registry.sh`. Caches build under `*/derived/`.
