@@ -14,7 +14,7 @@ dependencies = [
     "nibabel==5.4.2", # gmm_threshold.py, analyze_multimodal_brainstem.sh
     "packaging==26.3",
     "numpy==2.5.2", # gmm_threshold.py, analyze_multimodal_brainstem.sh
-    "pandas==3.0.5", # analyze_multimodal_brainstem.sh (inline Python)
+    "pandas==3.0.6", # analyze_multimodal_brainstem.sh (inline Python)
     "pip>=26.1.2",
     "pluggy==1.6.0",
     "pydicom==3.0.2", # extract_dicom_metadata.py
