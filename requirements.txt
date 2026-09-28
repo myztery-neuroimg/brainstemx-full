@@ -4,7 +4,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via pytest
 iniconfig==2.3.0
     # via pytest
-joblib==1.5.3
+joblib==1.6.0
     # via scikit-learn
 nibabel==5.4.2
     # via brainstemx-full
