@@ -10,7 +10,7 @@ dependencies = [
     "colorama==0.4.6 ; sys_platform == 'win32'",
     # Core dependencies used by Python modules and inline Python in bash scripts
     "iniconfig==2.3.0",
-    "joblib==1.5.3",
+    "joblib==1.6.0",
     "nibabel==5.4.2", # gmm_threshold.py, analyze_multimodal_brainstem.sh
     "packaging==26.3",
     "numpy==2.5.2", # gmm_threshold.py, analyze_multimodal_brainstem.sh
